@@ -245,6 +245,12 @@ test('Home, Library and Search expose only music features', async () => {
 
 test('fresh app opens settings without sources or a passphrase flow', async () => {
   const view = await openSources();
+  expect(view.findAllByProps({ testID: 'settings-car-connection' })).toHaveLength(0);
+  expect(
+    view.findAllByProps({ accessibilityLabel: '车载互联与蓝牙' }),
+  ).toHaveLength(0);
+  expect(view.findByProps({ testID: 'settings-playback-panel' })).toBeTruthy();
+  expect(view.findByProps({ testID: 'settings-theme-grid' })).toBeTruthy();
   expect(view.findByProps({ testID: 'source-empty-state' })).toBeTruthy();
   expect(
     view.findByProps({ testID: 'import-source-button' }).props.disabled,

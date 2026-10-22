@@ -310,12 +310,6 @@ export function SettingsScreen({
         >
           {item.id === 'appearance' ? <AppearancePanel /> : null}
           {item.id === 'playback' ? <PlaybackPanel /> : null}
-          {item.id === 'playback' ? (
-            <StickyPressable testID="settings-car-connection" accessibilityRole="button" accessibilityLabel="车载互联与蓝牙"
-              onPress={() => { NativeModules.LiuliuCarConnection?.open?.().catch(() => undefined); }} style={s.carConnection}>
-              <Text style={s.carConnectionText}>车载互联与蓝牙</Text>
-            </StickyPressable>
-          ) : null}
           {item.id === 'desktop-lyrics' ? (
             <View testID="settings-desktop-lyrics-panel"><DesktopLyricsSettings /></View>
           ) : null}
@@ -1204,8 +1198,6 @@ function useSettingsStyles() {
 
 const settingsStyles = (theme: ThemePalette) =>
   ({
-    carConnection: { minHeight: 56, justifyContent: 'center', paddingHorizontal: 24 },
-    carConnectionText: { color: theme.text, fontSize: 17 },
     root: { flex: 1, backgroundColor: 'transparent' },
     content: { paddingHorizontal: 14, paddingTop: 6 },
     header: {
