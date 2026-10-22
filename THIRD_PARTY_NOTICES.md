@@ -15,4 +15,4 @@ The root Apache License 2.0 and the project terms in README apply to project-aut
 
 Full JavaScript dependency versions are pinned in `mobile-react-native/package-lock.json`. Transitive packages keep their own licenses. Binary distributors must retain required upstream notices for the artifacts they distribute.
 
-The LX-compatible script contract is an interoperability interface. No third-party playback source is bundled or linked for download. The manufacturer image marks and private reference-board images have been excluded from this public edition. Abstract replacement artwork is project-authored and covered by the root license and project terms.
+The LX-compatible script contract is an interoperability interface. No third-party playback source is bundled or linked for download. The manufacturer image marks and private reference-board images have been excluded from this public edition. Theme backgrounds use the project's existing 32 theme images; the gradient placeholders from V1.0.0 have been removed. Reference-board replacement graphics remain separate from theme backgrounds. The source-code license does not replace any applicable artwork license.
