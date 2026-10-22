@@ -1,6 +1,6 @@
 # liuliu-music · 六六音乐
 
-基于 React Native、TypeScript 和 Android Media3 的音乐播放器。保留首页目录、搜索、歌单、本地音乐、播放队列、音效、桌面歌词和车载媒体控制。
+基于 React Native、TypeScript 和 Android Media3 的音乐播放器。保留首页目录、搜索、歌单、本地音乐、播放队列、音效、桌面歌词和车载媒体控制。车载问题一直没解决！！！
 
 使用的 LX 2.0 兼容 `.js` 音源。应用不提供音源文件、音源下载服务器。本项目仅供学习使用
 
