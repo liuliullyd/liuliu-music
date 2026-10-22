@@ -20,7 +20,7 @@ npm start
 
 另开终端运行 `npm run android`，或在 Android Studio 打开 `mobile-react-native/android`。使用系统 `ANDROID_HOME`，也可在忽略的 `android/local.properties` 中配置 `sdk.dir`。
 
-项目目前以 Android 为目标；未包含旧桌面端、iOS 工程或原开发仓库的历史记录。
+项目目前以 Android 为目标；未包含桌面端、iOS 鸿蒙
 
 ## 构建
 
