@@ -1,6 +1,6 @@
 # Third-party notices
 
-The root MIT license applies to project-authored code. It does not replace upstream licenses or grant rights in music, trademarks or third-party services.
+The root Apache License 2.0 and the project terms in README apply to project-authored code. They do not replace upstream licenses or grant rights in music, trademarks or third-party services.
 
 | Component | Upstream | License / retained notice |
 | --- | --- | --- |
@@ -15,4 +15,4 @@ The root MIT license applies to project-authored code. It does not replace upstr
 
 Full JavaScript dependency versions are pinned in `mobile-react-native/package-lock.json`. Transitive packages keep their own licenses. Binary distributors must retain required upstream notices for the artifacts they distribute.
 
-The LX-compatible script contract is an interoperability interface. No third-party playback source is bundled or linked for download. The manufacturer image marks and private reference-board images have been excluded from this public edition. Abstract replacement artwork is project-authored and covered by the root MIT license.
+The LX-compatible script contract is an interoperability interface. No third-party playback source is bundled or linked for download. The manufacturer image marks and private reference-board images have been excluded from this public edition. Abstract replacement artwork is project-authored and covered by the root license and project terms.
