@@ -1,0 +1,66 @@
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'com.facebook.react'
+
+react {
+    autolinkLibrariesWithApp()
+    extraPackagerArgs = ['--max-workers', '1']
+}
+
+def signingValue = { name -> providers.environmentVariable(name).orNull ?: project.findProperty(name) }
+def signingNames = ['LIULIU_RELEASE_STORE_FILE', 'LIULIU_RELEASE_STORE_PASSWORD', 'LIULIU_RELEASE_KEY_ALIAS', 'LIULIU_RELEASE_KEY_PASSWORD']
+def hasReleaseSigning = signingNames.every { signingValue(it) }
+
+android {
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    compileSdk rootProject.ext.compileSdkVersion
+    namespace 'com.liuliu.agentmusic'
+    defaultConfig {
+        applicationId 'com.liuliu.music.opensource'
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName '1.0.0'
+        externalNativeBuild {
+            cmake { arguments '-DCMAKE_OBJECT_PATH_MAX=240' }
+        }
+    }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(signingValue('LIULIU_RELEASE_STORE_FILE'))
+                storePassword signingValue('LIULIU_RELEASE_STORE_PASSWORD')
+                keyAlias signingValue('LIULIU_RELEASE_KEY_ALIAS')
+                keyPassword signingValue('LIULIU_RELEASE_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (hasReleaseSigning) signingConfig signingConfigs.release
+            debuggable false
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            if (project.hasProperty('liuliuNativeBuildDir')) {
+                buildStagingDirectory file(project.property('liuliuNativeBuildDir'))
+            }
+        }
+    }
+}
+dependencies {
+    implementation('com.facebook.react:react-android')
+    implementation('androidx.media3:media3-exoplayer:1.10.1')
+    implementation('androidx.media3:media3-session:1.10.1')
+    implementation('androidx.media3:media3-datasource-okhttp:1.10.1')
+    implementation('com.facebook.react:hermes-android')
+}
+tasks.register('verifyPublicSource', Exec) {
+    workingDir rootProject.projectDir.parentFile.parentFile
+    commandLine 'node', 'scripts/check-public.cjs'
+}
+tasks.named('preBuild').configure { dependsOn('verifyPublicSource') }

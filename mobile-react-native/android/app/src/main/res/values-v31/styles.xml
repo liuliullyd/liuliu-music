@@ -1,0 +1,8 @@
+<resources>
+    <!-- System-origin launches can ignore windowDisablePreview on Android 12+.
+         Skip that separate starting window, then restore normal opacity when
+         the complete themed React splash is ready for its first draw. -->
+    <style name="LaunchTheme" parent="AppTheme">
+        <item name="android:windowIsTranslucent">true</item>
+    </style>
+</resources>

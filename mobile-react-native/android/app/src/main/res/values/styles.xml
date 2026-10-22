@@ -1,0 +1,23 @@
+<resources>
+
+    <!-- Base application theme. -->
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <!-- Customize your theme here. -->
+        <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">false</item>
+        <!-- The first application frame is the existing complete RN splash. -->
+        <item name="android:windowDisablePreview">true</item>
+        <!-- React Native owns the system-bar appearance.  A solid theme color
+             here becomes a stale sampled-looking strip before/behind the
+             player page, even when its StatusBar is translucent. -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- Android versions without the system icon splash use the normal window. -->
+    <style name="LaunchTheme" parent="AppTheme" />
+
+</resources>
