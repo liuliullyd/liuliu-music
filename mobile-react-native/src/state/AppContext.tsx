@@ -1,17 +1,3 @@
-import { SourceBindingUnavailableError, isSourceBindingUnavailable, PLATFORM_UNBOUND_MESSAGE } from '../services/playbackSourceAvailability';
-import { savedPlaylistReference, renameLinkedPlaylist, deleteLinkedPlaylist } from '../services/linkedPlaylist';
-import { collectionFavoriteKey } from '../services/collectionIdentity';
-import { commitPlaylistImport, type PlaylistImportResult as PlaylistImportPreview, type PlaylistImportOptions, type PlaylistReference, type PlaylistClipboardSource } from '../services/playlistImport';
-import { commitPersonalPlaylistImport } from '../services/personalPlaylistShare';
-import { isSourceAuthorized, isSourceEnabled } from '../services/sourcePolicy';
-import { downloadNetworkQuality, playbackNetworkQuality, readWifiNetwork, subscribeWifiNetwork, isWifiNetwork } from '../services/networkQuality';
-import { DesktopLyricsBridge } from './useDesktopLyrics';
-import { platformLabel } from '../services/platformPresentation';
-import { settingsQualityLabel } from '../domain/types';
-import { audioQuality } from '../services/audioQuality';
-import { readStartupAppearance, STARTUP_PALETTES, StartupSplashView } from '../components/StartupSplash';
-import { downloadTrackKey, playbackDownloadSource, positiveBytes, type DownloadActivity, type DownloadPreview } from '../services/downloadPresentation';
-import { resolveWithImportedSourcePrewarm, hasValidatedPlaybackPrewarm } from '../services/sourceRuntime';
 import React, {
   createContext,
   useCallback,
@@ -21,147 +7,241 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import {
+  AppState,
+  BackHandler,
+  DeviceEventEmitter,
+  NativeModules,
+  PermissionsAndroid,
+  Platform,
+  StatusBar,
+  View,
+} from 'react-native';
+import {
+  readStartupAppearance,
+  STARTUP_PALETTES,
+  StartupSplashView,
+} from '../components/StartupSplash';
 import { catalog } from '../data/catalog';
 import type {
   AppSettings,
-  DiscoveryCategory,
   CatalogItem,
-  NativePlayerState,
-  PlatformSetting,
-  PersistedState,
-  SourceSetting,
-  Track,
+  DiscoveryCategory,
   EqualizerPreset,
   EqualizerPresetCategory,
-  PlaybackMode,
   LibraryMediaKind,
   MusicHistoryOrigin,
+  NativePlayerState,
+  PersistedState,
+  PlatformSetting,
+  PlaybackMode,
   Playlist,
+  SourceSetting,
+  Track,
 } from '../domain/types';
-import {
-  MusicEntityHistoryRecorder,
-  mergeMusicEntityHistory,
-} from '../services/musicEntityHistory';
-import {
-  localMediaFileIdentity,
-  localMediaTracks,
-  syncDownloadedMedia,
-  syncDownloadedMusic,
-  localMusicFileReferences,
-  resolveLocalMusicArtwork,
-  removeDownloadedMusic,
-} from '../services/localMusicLibrary';
-import { getLibraryTrackArtwork } from '../services/libraryTrackArtwork';
-import { recoverMissingMusicDownload, replaceRecoveredMusicDownload } from '../services/localMusicRecovery';
 import {
   equalizerPresetLabels,
   playbackModeSettings,
+  settingsQualityLabel,
   trackQueueKey,
 } from '../domain/types';
-import { learn } from '../services/recommendation';
-import {
-  importSourceScript,
-  allCacheCleanupParts,
-  type CacheCleanupPart,
-  clearNativeCache,
-  chooseDownloadDirectory,
-  exportStateBackup,
-  importStateBackup,
-  pickLocalAudioFiles,
-  scanLocalMusicDirectory,
-  scanAllLocalMusic,
-  scanLocalMediaDirectory,
-  deleteLocalFile,
-  queryLocalFileIdentities,
-  downloadAudio,
-  downloadAudioWithProgress,
-  queryDownloadHeaders,
-  queryLocalFileSize,
-  queryDownloadStatus,
-  readLocalAudioArtwork,
-  probeLocalAudio,
-  loadState,
-  saveState,
-  getStateStorageStatus,
-  subscribeStateStorageStatus,
-  testImportedSourceScript,
-} from '../services/storage';
-import { clearSafeRuntimeCaches } from '../services/runtimeCache';
+import type { AdvancedEffects } from '../services/audioEffectState';
+import { AudioEffectStateManager } from '../services/audioEffectState';
+import { audioQuality } from '../services/audioQuality';
 import { forgetClearedLocalArtwork } from '../services/cacheCleanup';
-import { rememberMusicHistory, retainRecentMusicState } from '../services/musicHistoryRetention';
+import { holdQueuePageTask } from '../services/carLibraryTasks';
+import { collectionFavoriteKey } from '../services/collectionIdentity';
+import {
+  downloadTrackKey,
+  playbackDownloadSource,
+  positiveBytes,
+  type DownloadActivity,
+  type DownloadPreview,
+} from '../services/downloadPresentation';
+import type { EffectEditTarget } from '../services/effectEditing';
+import {
+  effectEditingTarget,
+  effectTargetMatches,
+  normalizeEffectUserOverrides,
+  savedEffectHasScope,
+} from '../services/effectEditing';
+import type {
+  EffectApplyOptions,
+  EffectScope,
+} from '../services/effectIsolation';
+import {
+  commitEffects,
+  effectScope,
+  forgetSavedEffect,
+  readEffects,
+  restoreLaunchEffects,
+} from '../services/effectIsolation';
+import { gtoScenes, presetTuning, zeusScenes } from '../services/effectScenes';
+import {
+  deleteEqualizerPreset,
+  storeEqualizerPreset,
+  validEqualizerGains,
+} from '../services/equalizer';
+import { EqualizerUpdates } from '../services/equalizerUpdates';
+import {
+  loadHomeMenuFirstBatch,
+  type HomeMenuCursor,
+} from '../services/homeMenuDiscovery';
+import {
+  advanceExhaustedMenuRound,
+  menuProgressEntry,
+  mergeMenuProgress,
+} from '../services/homeMenuProgress';
+import {
+  libraryLocalPlaybackFailure,
+  localPlaybackReference,
+  resolveLocalPlaybackReference,
+  validateLocalPlaybackAudio,
+} from '../services/libraryPlayback';
+import { getLibraryTrackArtwork } from '../services/libraryTrackArtwork';
+import {
+  deleteLinkedPlaylist,
+  renameLinkedPlaylist,
+  savedPlaylistReference,
+} from '../services/linkedPlaylist';
+import {
+  constituentArtists,
+  detectHealthyPlatforms,
+  loadCategoryFeed,
+  loadDesktopHealthSample,
+  orderedHealthyProviders,
+  startPlatformHealthDetection,
+  type PlatformHealthResult,
+} from '../services/liveDiscovery';
+import {
+  localMusicFileReferences,
+  removeDownloadedMusic,
+  resolveLocalMusicArtwork,
+  syncDownloadedMusic,
+} from '../services/localMusicLibrary';
+import {
+  recoverMissingMusicDownload,
+  replaceRecoveredMusicDownload,
+} from '../services/localMusicRecovery';
+import { hasExternalMediaOrigin } from '../services/mediaDiscoveryPaging';
+import {
+  allDownloads,
+  collectionMediaKind,
+  mediaDownloads,
+  trackMediaKind,
+} from '../services/mediaLibrary';
+import {
+  mergeMusicEntityHistory,
+  MusicEntityHistoryRecorder,
+} from '../services/musicEntityHistory';
+import {
+  rememberMusicHistory,
+  retainRecentMusicState,
+} from '../services/musicHistoryRetention';
+import {
+  accumulateMusicStatistics,
+  favoriteStatisticsFor,
+  memoryStatisticsFor,
+} from '../services/musicPreferenceStatistics';
+import { nativePlayer } from '../services/nativePlayer';
+import {
+  downloadNetworkQuality,
+  isWifiNetwork,
+  playbackNetworkQuality,
+  readWifiNetwork,
+  subscribeWifiNetwork,
+} from '../services/networkQuality';
 import {
   resolvePlayback,
-  resolvePlaybackWithQuality,
   resolvePlaybackAddress,
   resolvePlaybackPrewarm,
+  resolvePlaybackWithQuality,
   searchOnline,
   searchOnlinePlaylists,
   type PlaybackTimingObserver,
 } from '../services/onlineMusic';
-import { nativePlayer } from '../services/nativePlayer';
-import { extendOrderedQueue, queueIndexForKey } from '../services/queueOrder';
-import { deleteEqualizerPreset, storeEqualizerPreset, validEqualizerGains } from '../services/equalizer';
-import { EqualizerUpdates } from '../services/equalizerUpdates';
-import { AudioEffectStateManager } from '../services/audioEffectState';
-import type { AdvancedEffects } from '../services/audioEffectState';
-import { commitEffects, effectScope, readEffects, forgetSavedEffect, restoreLaunchEffects } from '../services/effectIsolation';
-import type { EffectApplyOptions, EffectScope } from '../services/effectIsolation';
-import { presetTuning, zeusScenes, gtoScenes } from '../services/effectScenes';
-import { effectEditingTarget, effectTargetMatches, normalizeEffectUserOverrides, savedEffectHasScope } from '../services/effectEditing';
-import type { EffectEditTarget } from '../services/effectEditing';
+import { commitPersonalPlaylistImport } from '../services/personalPlaylistShare';
+import { platformLabel } from '../services/platformPresentation';
 import {
-  localPlaybackReference,
-  libraryLocalPlaybackFailure,
-  resolveLocalPlaybackReference,
-  validateLocalPlaybackAudio,
-} from '../services/libraryPlayback';
+  prepareValidatedTracks,
+  selectFirstResolvableTrack,
+} from '../services/playbackPreparation';
 import {
-  isMenuSceneQueue,
-  scenePlaybackFailure,
-  type ScenePlaybackStage,
-} from '../services/scenePlaybackPolicy';
+  isSourceBindingUnavailable,
+  PLATFORM_UNBOUND_MESSAGE,
+  SourceBindingUnavailableError,
+} from '../services/playbackSourceAvailability';
+import { PlayerQueuePreparation } from '../services/playerQueuePreparation';
 import {
   automaticPlayerTarget,
   manualPlayerTarget,
   PlayerRequestCancelled,
   waitForPlayerRequest,
 } from '../services/playerRequest';
-import { removeTrackPlaylistMembership } from '../services/trackActionState';
 import {
-  AppState,
-  BackHandler,
-  InteractionManager,
-  NativeModules,
-  PermissionsAndroid,
-  Platform,
-  DeviceEventEmitter,
-  StatusBar,
-  View,
-} from 'react-native';
+  commitPlaylistImport,
+  type PlaylistClipboardSource,
+  type PlaylistImportOptions,
+  type PlaylistImportResult as PlaylistImportPreview,
+  type PlaylistReference,
+} from '../services/playlistImport';
+import { queueAheadTarget } from '../services/queueAhead';
+import { extendOrderedQueue, queueIndexForKey } from '../services/queueOrder';
 import {
-  detectHealthyPlatforms,
-  loadDesktopHealthSample,
-  loadCategoryFeed,
-  constituentArtists,
-  orderedHealthyProviders,
-  startPlatformHealthDetection,
-  type PlatformHealthResult,
-} from '../services/liveDiscovery';
-import {
-  nextQueuePage,
   isStartupQueueSource,
+  nextQueuePage,
+  QUEUE_BATCH_SIZE,
+  QUEUE_PAGE_TIMEOUT_MS,
   queueSourceProgressKey,
   sourceWithSeenKeys,
   withQueueRemainder,
-  QUEUE_BATCH_SIZE,
-  QUEUE_PAGE_TIMEOUT_MS,
   type QueueSource,
 } from '../services/queuePaging';
-import { queueAheadTarget } from '../services/queueAhead';
-import { holdQueuePageTask } from '../services/carLibraryTasks';
-import { accumulateMusicStatistics, favoriteStatisticsFor, memoryStatisticsFor } from '../services/musicPreferenceStatistics';
-import { loadHomeMenuFirstBatch, type HomeMenuCursor } from '../services/homeMenuDiscovery';
-import { advanceExhaustedMenuRound, menuProgressEntry, mergeMenuProgress } from '../services/homeMenuProgress';
+import { learn } from '../services/recommendation';
+import { clearSafeRuntimeCaches } from '../services/runtimeCache';
+import {
+  isMenuSceneQueue,
+  scenePlaybackFailure,
+  type ScenePlaybackStage,
+} from '../services/scenePlaybackPolicy';
+import { isCurrentSourceHealthGeneration } from '../services/sourceHealthGeneration';
+import { isSourceAuthorized, isSourceEnabled } from '../services/sourcePolicy';
+import {
+  clearResolvedSourceCache,
+  hasValidatedPlaybackPrewarm,
+  probeManualSource,
+  resetLaunchBackendPools,
+  resolveWithImportedSourcePrewarm,
+  sourceAddressCacheKey,
+  sourceResolutionCacheToken,
+} from '../services/sourceRuntime';
+import {
+  allCacheCleanupParts,
+  chooseDownloadDirectory,
+  clearNativeCache,
+  deleteLocalFile,
+  downloadAudio,
+  downloadAudioWithProgress,
+  exportStateBackup,
+  getStateStorageStatus,
+  importSourceScript,
+  importStateBackup,
+  loadState,
+  pickLocalAudioFiles,
+  probeLocalAudio,
+  queryDownloadHeaders,
+  queryDownloadStatus,
+  queryLocalFileIdentities,
+  queryLocalFileSize,
+  readLocalAudioArtwork,
+  saveState,
+  scanAllLocalMusic,
+  scanLocalMusicDirectory,
+  subscribeStateStorageStatus,
+  testImportedSourceScript,
+  type CacheCleanupPart,
+} from '../services/storage';
+import { removeTrackPlaylistMembership } from '../services/trackActionState';
 import {
   filterPlayableCandidates,
   isRuntimeTrackBlocked,
@@ -169,39 +249,11 @@ import {
   subscribeRuntimeTrackBlacklist,
 } from '../services/trackPlaybackPolicy';
 import {
-  prepareValidatedTracks,
-  selectFirstResolvableTrack,
-} from '../services/playbackPreparation';
-import { PlayerQueuePreparation } from '../services/playerQueuePreparation';
-import { isCurrentSourceHealthGeneration } from '../services/sourceHealthGeneration';
-import {
   UrlPrewarmScheduler,
   type UrlPrewarmLane,
   type UrlPrewarmOutcome,
 } from '../services/urlPrewarmScheduler';
-import {
-  clearResolvedSourceCache,
-  probeManualSource,
-  resetLaunchBackendPools,
-  sourceAddressCacheKey,
-  sourceResolutionCacheToken,
-} from '../services/sourceRuntime';
-import {
-  mediaProviders,
-  hasExternalMediaOrigin,
-} from '../services/mediaDiscoveryPaging';
-import {
-  allDownloads,
-  collectionMediaKind,
-  mediaBucket,
-  mediaDownloads,
-  trackMediaKind,
-} from '../services/mediaLibrary';
-import {
-  MediaProgressRecorder, rememberMediaPlayback, updateMediaProgress,
-  type MediaProgressUpdate,
-} from '../services/mediaPlaybackProgress';
-
+import { DesktopLyricsBridge } from './useDesktopLyrics';
 export type AppTab = 'discovery' | 'search' | 'library' | 'settings';
 export interface PlayTrackOptions {
   openPlayer?: boolean;
@@ -210,8 +262,6 @@ export interface PlayTrackOptions {
   queueOrigin?: QueueOrigin;
   /** Descriptive provenance only; never changes queue construction or playback. */
   historyOrigin?: MusicHistoryOrigin | null;
-  /** Explicit podcast/audiobook recent-history playhead; ordinary taps start at zero. */
-  resumePositionSeconds?: number;
   /** Internal bounded fallback depth used by the player after a failed start. */
   fallbackDepth?: number;
   /** Process-only visited entries for a single menu-scene failure chain. */
@@ -246,8 +296,6 @@ export type AppPage =
   | 'new-albums'
   | 'radio'
   | 'video'
-  | 'podcast'
-  | 'audiobook'
   | 'live'
   | 'history'
   | 'playlists'
@@ -268,20 +316,13 @@ export type AppPage =
   | 'shortcuts'
   | 'experiments'
   | 'about';
-
 function sanitizeStartupError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   if (/音源|后端|脚本|无数据|播放链路|HTTP|所有后端均失败/i.test(message))
     return '启动推荐暂时不可用：当前歌曲没有可播放的在线音源';
   return '启动推荐暂时不可用';
 }
-export type SearchCategory =
-  | 'song'
-  | 'artist'
-  | 'album'
-  | 'playlist'
-  | 'radio'
-  | 'audiobook';
+export type SearchCategory = 'song' | 'artist' | 'album' | 'playlist';
 export interface SearchState {
   query: string;
   category: SearchCategory;
@@ -315,48 +356,103 @@ interface QueueOriginTarget {
   item?: CatalogItem | null;
   personalPlaylistId?: string;
   menuChoiceId?: string;
-  detailView?: { identity: string; provider?: string | null; episodeOrder?: 'default' | 'oldest' };
+  detailView?: {
+    identity: string;
+    provider?: string | null;
+  };
 }
 // Only navigation selectors belong to provenance. Catalog data, generations,
 // page cursors, request functions and playback URLs stay in their own services.
-const queueOriginNavigationDefaults: Record<AppTab, Array<[string, unknown]>> = {
-  discovery: [['home-selected', null], ['home-playlist-browser-context', { mediaKind: 'music', title: '歌单推荐' }], ['home-detail-catalog-list', null], ['home-origin-scroll-y', 0], ['home-menu-choice', 'mode-default']],
+const queueOriginNavigationDefaults: Record<
+  AppTab,
+  Array<[string, unknown]>
+> = {
+  discovery: [
+    ['home-selected', null],
+    [
+      'home-playlist-browser-context',
+      { mediaKind: 'music', title: '歌单推荐' },
+    ],
+    ['home-detail-catalog-list', null],
+    ['home-origin-scroll-y', 0],
+    ['home-menu-choice', 'mode-default'],
+  ],
   search: [['search-detail', null]],
-  library: [['library-mode', 'music'], ['library-music-list', 'history'], ['library-media-list', { podcast: 'history', audiobook: 'history' }], ['library-playlist-tab', 'curated'], ['library-detail', null], ['library-detail-home-reference', false], ['library-detail-resume-key', null], ['library-playlist-opened', null], ['library-record-filters', {}]],
+  library: [
+    ['library-mode', 'music'],
+    ['library-music-list', 'history'],
+    ['library-playlist-tab', 'curated'],
+    ['library-detail', null],
+    ['library-detail-home-reference', false],
+    ['library-playlist-opened', null],
+    ['library-record-filters', {}],
+  ],
   settings: [],
 };
 const originPageLabels: Partial<Record<AppPage, string>> = {
-  root: '首页', 'home-menu': '歌曲分类', feed: '综合推荐', 'new-songs': '新歌首发',
-  podcast: '播客', audiobook: '听书', radio: '电台', live: 'Live 现场',
-  history: '最近播放', favorites: '我的收藏', downloads: '已下载', local: '本地文件',
-  playlists: '我的歌单', 'personal-playlist': '我的歌单', playlist: '歌单推荐', 'catalog-list': '歌曲列表',
+  root: '首页',
+  'home-menu': '歌曲分类',
+  feed: '综合推荐',
+  'new-songs': '新歌首发',
+  radio: '电台',
+  live: 'Live 现场',
+  history: '最近播放',
+  favorites: '我的收藏',
+  downloads: '已下载',
+  local: '本地文件',
+  playlists: '我的歌单',
+  'personal-playlist': '我的歌单',
+  playlist: '歌单推荐',
+  'catalog-list': '歌曲列表',
 };
 // Retained directory data owns its cursor and metadata; audio bindings remain
 // exclusively in the existing process playback caches, including buffered rows.
 function copyOriginCatalogMetadata(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(copyOriginCatalogMetadata);
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => key !== 'playUrl')
-    .map(([key, nested]) => [key, copyOriginCatalogMetadata(nested)]));
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'playUrl')
+      .map(([key, nested]) => [key, copyOriginCatalogMetadata(nested)]),
+  );
 }
 export interface Controller {
   rememberHomeMenuBatch?: (cursor: HomeMenuCursor, tracks: Track[]) => void;
   catalogViewState: Map<string, unknown>;
-  catalogRestore: { version: number; keys: string[]; originKey?: number };
+  catalogRestore: {
+    version: number;
+    keys: string[];
+    originKey?: number;
+  };
   catalogConfigurationKey: string;
   queueOriginCatalog: {
-    stage: (origin: QueueOrigin, key: string, snapshot: unknown, owner?: object) => void;
-    read: <T>(key: string, owner?: object, returnOriginKey?: number) => T | undefined;
+    stage: (
+      origin: QueueOrigin,
+      key: string,
+      snapshot: unknown,
+      owner?: object,
+    ) => void;
+    read: <T>(
+      key: string,
+      owner?: object,
+      returnOriginKey?: number,
+    ) => T | undefined;
     update: (key: string, snapshot: unknown, owner?: object) => void;
     finishReturn: (originKey: number) => void;
   };
   queueOrigin: QueueOrigin | null;
-  captureQueueOrigin: (label?: string, target?: QueueOriginTarget) => QueueOrigin;
+  captureQueueOrigin: (
+    label?: string,
+    target?: QueueOriginTarget,
+  ) => QueueOrigin;
   returnToQueueOrigin: () => void;
   startupHealth: PlatformHealthResult | null;
   ready: boolean;
-  startup: { visible: boolean; label: string; progress: number };
+  startup: {
+    visible: boolean;
+    label: string;
+    progress: number;
+  };
   tab: AppTab;
   page: AppPage;
   homeMenuOrigin: 'home' | 'player' | null;
@@ -379,9 +475,18 @@ export interface Controller {
   setFeedPage: (value: number) => void;
   feed: Track[];
   queue: Track[];
-  queuePage: { loading: boolean; hasMore: boolean; error: string };
+  queuePage: {
+    loading: boolean;
+    hasMore: boolean;
+    error: string;
+  };
   loadMoreQueue: () => Promise<void>;
-  prefetchQueueAt: (index: number, options?: { gesture?: boolean }) => Promise<void>;
+  prefetchQueueAt: (
+    index: number,
+    options?: {
+      gesture?: boolean;
+    },
+  ) => Promise<void>;
   removeQueueTrack: (trackId: string, keyHint?: string) => Promise<void>;
   current: Track | null;
   player: NativePlayerState;
@@ -408,7 +513,11 @@ export interface Controller {
   playDefaultTrack: () => Promise<void>;
   prewarmHomeTracks: (tracks: Track[]) => void;
   prewarmContextKey: string;
-  prewarmDetailTracks: (tracks: Track[], owner: object, onResult?: (result: { key: string; outcome: UrlPrewarmOutcome }) => void) => Promise<void>;
+  prewarmDetailTracks: (
+    tracks: Track[],
+    owner: object,
+    onResult?: (result: { key: string; outcome: UrlPrewarmOutcome }) => void,
+  ) => Promise<void>;
   releaseDetailPrewarm: (owner: object) => void;
   waitForQueuePrewarm: () => Promise<void>;
   trackBlacklistVersion: number;
@@ -422,11 +531,31 @@ export interface Controller {
     quality: PersistedState['settings']['quality'],
   ) => Promise<void>;
   applyEqualizer: (preset: EqualizerPreset) => Promise<void>;
-  applyCustomEqualizer: (gains: number[], savedId?: string, options?: EffectApplyOptions) => Promise<boolean>;
+  applyCustomEqualizer: (
+    gains: number[],
+    savedId?: string,
+    options?: EffectApplyOptions,
+  ) => Promise<boolean>;
   flushEqualizerUpdates: () => void;
-  commitEqualizerEdit: (target: EffectEditTarget, gains: number[], advanced?: AdvancedEffects, part?: 'equalizer' | 'advanced') => Promise<boolean>;
-  saveEqualizerDraft: (name: string, gains: number[], category: EqualizerPresetCategory, scope?: EffectScope, advanced?: AdvancedEffects) => Promise<boolean>;
-  saveCustomEqualizer: (name: string, gains: number[], category?: EqualizerPresetCategory, scope?: EffectScope) => Promise<boolean>;
+  commitEqualizerEdit: (
+    target: EffectEditTarget,
+    gains: number[],
+    advanced?: AdvancedEffects,
+    part?: 'equalizer' | 'advanced',
+  ) => Promise<boolean>;
+  saveEqualizerDraft: (
+    name: string,
+    gains: number[],
+    category: EqualizerPresetCategory,
+    scope?: EffectScope,
+    advanced?: AdvancedEffects,
+  ) => Promise<boolean>;
+  saveCustomEqualizer: (
+    name: string,
+    gains: number[],
+    category?: EqualizerPresetCategory,
+    scope?: EffectScope,
+  ) => Promise<boolean>;
   deleteCustomEqualizer: (id: string) => Promise<boolean>;
   setPlaybackMode: (mode: PlaybackMode) => Promise<void>;
   toggleFavorite: (track: Track, favorite?: boolean) => void;
@@ -451,17 +580,6 @@ export interface Controller {
   backupData: () => Promise<void>;
   restoreData: () => Promise<void>;
   importLocalMusic: () => Promise<void>;
-  scanLocalMedia: (kind: Exclude<LibraryMediaKind, 'music'>) => Promise<Track[]>;
-  addLocalMediaTracks: (
-    kind: Exclude<LibraryMediaKind, 'music'>,
-    tracks: Track[],
-  ) => void;
-  addLocalMediaDirectory: (
-    kind: Exclude<LibraryMediaKind, 'music'>,
-  ) => Promise<void>;
-  refreshLocalMediaArtwork: (
-    kind: Exclude<LibraryMediaKind, 'music'>,
-  ) => Promise<void>;
   addLocalMusicDirectory: () => Promise<void>;
   scanLocalMusic: () => Promise<void>;
   refreshLocalMusicArtwork: () => Promise<void>;
@@ -478,24 +596,60 @@ export interface Controller {
   ) => Promise<void>;
   downloadTrack: (
     track: Track,
-    options?: { useLaunchBinding?: boolean; usePlaybackUrl?: boolean; resolved?: DownloadPreview },
+    options?: {
+      useLaunchBinding?: boolean;
+      usePlaybackUrl?: boolean;
+      resolved?: DownloadPreview;
+    },
   ) => Promise<void>;
   downloadsFor: (kind: LibraryMediaKind) => ReturnType<typeof mediaDownloads>;
   downloadActivities: DownloadActivity[];
-  downloadDestination: { kind: LibraryMediaKind; version: number } | null;
+  downloadDestination: {
+    kind: LibraryMediaKind;
+    version: number;
+  } | null;
   consumeDownloadDestination: (version: number) => void;
-  prepareDownloadPreview: (track: Track, signal: AbortSignal, options?: { useLaunchBinding?: boolean; usePlaybackUrl?: boolean }) => Promise<DownloadPreview>;
-  beginUserDownloads: (tracks: Track[], options?: { onDownload?: (track: Track, resolved?: DownloadPreview) => Promise<void>; preferredQuality?: AppSettings['quality']; usePlaybackUrl?: boolean; resolved?: Record<string, DownloadPreview> }) => void;
-  refreshDownloadFileSizes: (entries: ReturnType<typeof mediaDownloads>) => Promise<void>;
+  prepareDownloadPreview: (
+    track: Track,
+    signal: AbortSignal,
+    options?: {
+      useLaunchBinding?: boolean;
+      usePlaybackUrl?: boolean;
+    },
+  ) => Promise<DownloadPreview>;
+  beginUserDownloads: (
+    tracks: Track[],
+    options?: {
+      onDownload?: (track: Track, resolved?: DownloadPreview) => Promise<void>;
+      preferredQuality?: AppSettings['quality'];
+      usePlaybackUrl?: boolean;
+      resolved?: Record<string, DownloadPreview>;
+    },
+  ) => void;
+  refreshDownloadFileSizes: (
+    entries: ReturnType<typeof mediaDownloads>,
+  ) => Promise<void>;
   addTrackToPlaylist: (track: Track, playlistId?: string) => void;
   removeTrackFromPlaylist: (track: Track, playlistId: string) => void;
   createPlaylist: (title?: string) => void;
-  importPlaylist: (preview: PlaylistImportPreview, options?: PlaylistImportOptions) => Promise<void>;
+  importPlaylist: (
+    preview: PlaylistImportPreview,
+    options?: PlaylistImportOptions,
+  ) => Promise<void>;
   isPlaylistSaved: (preview: PlaylistImportPreview) => boolean;
   openPersonalPlaylist: (id: string) => void;
   openLinkedPlaylist: (item: CatalogItem) => void;
-  playlistImportRequest: { id: number; input: string; autoRead: boolean; clipboard?: PlaylistClipboardSource } | null;
-  openPlaylistImport: (input?: string, autoRead?: boolean, clipboard?: PlaylistClipboardSource) => void;
+  playlistImportRequest: {
+    id: number;
+    input: string;
+    autoRead: boolean;
+    clipboard?: PlaylistClipboardSource;
+  } | null;
+  openPlaylistImport: (
+    input?: string,
+    autoRead?: boolean,
+    clipboard?: PlaylistClipboardSource,
+  ) => void;
   closePlaylistImport: () => void;
   cancelPlaylistImport: () => void;
   renamePlaylist: (id: string, title: string) => void;
@@ -515,11 +669,9 @@ export interface Controller {
   setSleepTimer: (mode: 'minutes' | 'track', minutes?: number) => Promise<void>;
   cancelSleepTimer: () => Promise<void>;
 }
-
 const Context = createContext<Controller | null>(null);
-
 export const EXIT_HINT_MESSAGE = '再按一次回到桌面';
-const EXIT_CONFIRM_WINDOW_MS = 2_000;
+const EXIT_CONFIRM_WINDOW_MS = 2000;
 // Only coalesce same-frame/re-entrant back events.  A longer debounce would
 // swallow a legitimate back immediately after the animated Home menu closes.
 const NAVIGATION_GUARD_MS = 32;
@@ -530,8 +682,8 @@ const PLAYER_FAILURE_FALLBACK_LIMIT = 6;
 const URL_PREWARM_CONCURRENCY = 2;
 const STARTUP_READY_HOLD_MS = 350;
 const STARTUP_CROSSFADE_SETTLE_MS = 440;
-const STARTUP_FIRST_RESOLVE_BUDGET_MS = 30_000;
-const STARTUP_FIRST_RESOLVE_ATTEMPT_MS = 5_000;
+const STARTUP_FIRST_RESOLVE_BUDGET_MS = 30000;
+const STARTUP_FIRST_RESOLVE_ATTEMPT_MS = 5000;
 const initialPlayer: NativePlayerState = {
   playing: false,
   index: 0,
@@ -552,75 +704,138 @@ const rememberTrack = (tracks: Track[], track: Track) => [
   track,
   ...tracks.filter(item => trackQueueKey(item) !== trackQueueKey(track)),
 ];
-
-const patchMediaBucket = (
-  value: PersistedState,
-  kind: Exclude<LibraryMediaKind, 'music'>,
-  update: (
-    bucket: PersistedState['podcastLibrary'],
-  ) => PersistedState['podcastLibrary'],
-) =>
-  kind === 'podcast'
-    ? { ...value, podcastLibrary: update(value.podcastLibrary) }
-    : { ...value, audiobookLibrary: update(value.audiobookLibrary) };
-
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const catalogViewState = useRef(new Map<string, unknown>()).current;
-  const [catalogRestore, setCatalogRestore] = useState<{ version: number; keys: string[]; originKey?: number }>({ version: 0, keys: [] });
+  const [catalogRestore, setCatalogRestore] = useState<{
+    version: number;
+    keys: string[];
+    originKey?: number;
+  }>({ version: 0, keys: [] });
   const [queueOrigin, setQueueOrigin] = useState<QueueOrigin | null>(null);
   const queueOriginRef = useRef<QueueOrigin | null>(null);
   const originCatalogSequence = useRef(0);
   const originCatalogState = useRef<{
-    active: { origin: QueueOrigin; states: Map<string, { metadata: unknown; owner?: object }> } | null;
-    candidate: { origin: QueueOrigin; states: Map<string, { metadata: unknown; owner?: object }> } | null;
-    returning: { origin: QueueOrigin; states: Map<string, { metadata: unknown; owner?: object }> } | null;
+    active: {
+      origin: QueueOrigin;
+      states: Map<
+        string,
+        {
+          metadata: unknown;
+          owner?: object;
+        }
+      >;
+    } | null;
+    candidate: {
+      origin: QueueOrigin;
+      states: Map<
+        string,
+        {
+          metadata: unknown;
+          owner?: object;
+        }
+      >;
+    } | null;
+    returning: {
+      origin: QueueOrigin;
+      states: Map<
+        string,
+        {
+          metadata: unknown;
+          owner?: object;
+        }
+      >;
+    } | null;
   }>({ active: null, candidate: null, returning: null });
-  const queueOriginCatalog = useMemo<Controller['queueOriginCatalog']>(() => ({
-    stage: (origin, key, snapshot, owner) => {
-      const cache = originCatalogState.current;
-      const retained = { metadata: copyOriginCatalogMetadata(snapshot), owner };
-      if (cache.active?.origin.catalogKey === origin.catalogKey) {
-        cache.active.states.set(key, retained);
-        return;
-      }
-      if (cache.candidate?.origin.catalogKey !== origin.catalogKey) {
-        if (cache.candidate?.origin.catalogKey === queueOriginRef.current?.catalogKey) cache.active = cache.candidate;
-        cache.candidate = { origin, states: new Map() };
-      }
-      cache.candidate.states.set(key, retained);
-    },
-    read: <T,>(key: string, owner?: object, returnOriginKey?: number) => {
-      const cache = originCatalogState.current;
-      const requestedOriginKey = returnOriginKey ?? queueOriginRef.current?.catalogKey;
-      const entry = returnOriginKey !== undefined && cache.returning?.origin.catalogKey === returnOriginKey
-        ? cache.returning : cache.candidate?.origin.catalogKey === requestedOriginKey
-        ? cache.candidate : cache.active?.origin.catalogKey === requestedOriginKey ? cache.active : null;
-      const retained = entry?.states.get(key);
-      if (retained && owner) retained.owner = owner;
-      return retained?.metadata as T | undefined;
-    },
-    update: (key, snapshot, owner) => {
-      for (const entry of [originCatalogState.current.active, originCatalogState.current.candidate]) {
+  const queueOriginCatalog = useMemo<Controller['queueOriginCatalog']>(
+    () => ({
+      stage: (origin, key, snapshot, owner) => {
+        const cache = originCatalogState.current;
+        const retained = {
+          metadata: copyOriginCatalogMetadata(snapshot),
+          owner,
+        };
+        if (cache.active?.origin.catalogKey === origin.catalogKey) {
+          cache.active.states.set(key, retained);
+          return;
+        }
+        if (cache.candidate?.origin.catalogKey !== origin.catalogKey) {
+          if (
+            cache.candidate?.origin.catalogKey ===
+            queueOriginRef.current?.catalogKey
+          )
+            cache.active = cache.candidate;
+          cache.candidate = { origin, states: new Map() };
+        }
+        cache.candidate.states.set(key, retained);
+      },
+      read: <T,>(key: string, owner?: object, returnOriginKey?: number) => {
+        const cache = originCatalogState.current;
+        const requestedOriginKey =
+          returnOriginKey ?? queueOriginRef.current?.catalogKey;
+        const entry =
+          returnOriginKey !== undefined &&
+          cache.returning?.origin.catalogKey === returnOriginKey
+            ? cache.returning
+            : cache.candidate?.origin.catalogKey === requestedOriginKey
+            ? cache.candidate
+            : cache.active?.origin.catalogKey === requestedOriginKey
+            ? cache.active
+            : null;
         const retained = entry?.states.get(key);
-        if (retained && retained.owner === owner) retained.metadata = copyOriginCatalogMetadata(snapshot);
-      }
-    },
-    finishReturn: originKey => {
-      if (originCatalogState.current.returning?.origin.catalogKey === originKey) originCatalogState.current.returning = null;
-    },
-  }), []);
-  const pendingFeedRestore = useRef<{ category: DiscoveryCategory; page: number; tracks: Track[]; config: string } | null>(null);
+        if (retained && owner) retained.owner = owner;
+        return retained?.metadata as T | undefined;
+      },
+      update: (key, snapshot, owner) => {
+        for (const entry of [
+          originCatalogState.current.active,
+          originCatalogState.current.candidate,
+        ]) {
+          const retained = entry?.states.get(key);
+          if (retained && retained.owner === owner)
+            retained.metadata = copyOriginCatalogMetadata(snapshot);
+        }
+      },
+      finishReturn: originKey => {
+        if (
+          originCatalogState.current.returning?.origin.catalogKey === originKey
+        )
+          originCatalogState.current.returning = null;
+      },
+    }),
+    [],
+  );
+  const pendingFeedRestore = useRef<{
+    category: DiscoveryCategory;
+    page: number;
+    tracks: Track[];
+    config: string;
+  } | null>(null);
   const searchGeneration = useRef(0);
-  const [playlistImportRequest, setPlaylistImportRequest] = useState<Controller['playlistImportRequest']>(null);
+  const [playlistImportRequest, setPlaylistImportRequest] =
+    useState<Controller['playlistImportRequest']>(null);
   const playlistImportRequestRef = useRef(playlistImportRequest);
   const playlistImportSequence = useRef(0);
-  const importedPlaylistDestination = useRef<PlaylistReference | { personalPlaylistId: string } | null>(null);
+  const importedPlaylistDestination = useRef<
+    | PlaylistReference
+    | {
+        personalPlaylistId: string;
+      }
+    | null
+  >(null);
   const playlistImportInFlight = useRef(false);
-  const openPlaylistImport = useCallback((input = '', autoRead = false, clipboard?: PlaylistClipboardSource) => {
-    const request = { id: ++playlistImportSequence.current, input, autoRead, clipboard };
-    playlistImportRequestRef.current = request;
-    setPlaylistImportRequest(request);
-  }, []);
+  const openPlaylistImport = useCallback(
+    (input = '', autoRead = false, clipboard?: PlaylistClipboardSource) => {
+      const request = {
+        id: ++playlistImportSequence.current,
+        input,
+        autoRead,
+        clipboard,
+      };
+      playlistImportRequestRef.current = request;
+      setPlaylistImportRequest(request);
+    },
+    [],
+  );
   const closePlaylistImport = useCallback(() => {
     playlistImportRequestRef.current = null;
     setPlaylistImportRequest(null);
@@ -666,10 +881,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [queueOrderChanging, setQueueOrderChanging] = useState(false),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(''),
-    [stateStorageStatus, setStateStorageStatus] = useState(() =>
-      getStateStorageStatus?.() ?? { readError: null, writeError: null },
+    [stateStorageStatus, setStateStorageStatus] = useState(
+      () => getStateStorageStatus?.() ?? { readError: null, writeError: null },
     ),
-    [stateStorageErrorDismissed, setStateStorageErrorDismissed] = useState(false),
+    [stateStorageErrorDismissed, setStateStorageErrorDismissed] =
+      useState(false),
     [trackBlacklistVersion, setTrackBlacklistVersion] = useState(0),
     [search, setSearch] = useState<SearchState>({
       query: '',
@@ -685,13 +901,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const queueReversedRef = useRef(false);
   const clearSystemPlaylistClipboard = useCallback(async () => {
     const bridge = NativeModules.LiuliuMediaLibrary;
-    if (!bridge?.clearPlaylistClipboard) throw new Error('Clipboard bridge unavailable');
+    if (!bridge?.clearPlaylistClipboard)
+      throw new Error('Clipboard bridge unavailable');
     await bridge.clearPlaylistClipboard();
   }, []);
   const cancelPlaylistImport = useCallback(() => {
-    if (!playlistImportRequestRef.current || playlistImportInFlight.current) return;
+    if (!playlistImportRequestRef.current || playlistImportInFlight.current)
+      return;
     closePlaylistImport();
-    clearSystemPlaylistClipboard().catch(() => setMessage('系统剪贴板未清空，请重试'));
+    clearSystemPlaylistClipboard().catch(() =>
+      setMessage('系统剪贴板未清空，请重试'),
+    );
   }, [clearSystemPlaylistClipboard, closePlaylistImport]);
   const homeRefreshFlight = useRef<number | null>(null);
   const homeRefreshGeneration = useRef(0);
@@ -722,14 +942,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     queuePageReadyRequest = useRef<Promise<void> | null>(null),
     queueReadyRequest = useRef<Promise<void> | null>(null),
     queueProgressWaiters = useRef(new Set<() => void>()),
-    catalogPlaybackGate = useRef<{ generation: number; ready: boolean; key: string; preparedAccepted?: boolean } | null>(
-      null,
-    ),
+    catalogPlaybackGate = useRef<{
+      generation: number;
+      ready: boolean;
+      key: string;
+      preparedAccepted?: boolean;
+    } | null>(null),
     playerQueuePreparation = useRef(new PlayerQueuePreparation()),
     preparedNeighbourContexts = useRef(new Map<string, string>()),
     playerPreparationCommit = useRef<Promise<void>>(Promise.resolve()),
     pendingTrackPreparations = useRef(
-      new Map<string, Promise<Track & { playUrl: string }>>(),
+      new Map<
+        string,
+        Promise<
+          Track & {
+            playUrl: string;
+          }
+        >
+      >(),
     ),
     queueGeneration = useRef(0),
     musicEntityRecorder = useRef(new MusicEntityHistoryRecorder()),
@@ -746,7 +976,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     handledPlayerEnd = useRef(''),
     advanceEndedPlayer = useRef<(index: number) => void>(() => undefined),
     actualPlayingKey = useRef(''),
-    prefetchQueueRuntime = useRef<(index: number) => Promise<void>>(async () => undefined),
+    prefetchQueueRuntime = useRef<(index: number) => Promise<void>>(
+      async () => undefined,
+    ),
     supersededSceneKey = useRef(''),
     scenePlayback = useRef<{
       generation: number;
@@ -767,7 +999,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     recoverExpiredUrl = useRef<(value: NativePlayerState) => void>(
       () => undefined,
     ),
-    pendingDisplay = useRef<{ key: string; index: number } | null>(null),
+    pendingDisplay = useRef<{
+      key: string;
+      index: number;
+    } | null>(null),
     queueListOpenRef = useRef(false),
     qualityPreferenceRef =
       useRef<PersistedState['settings']['quality']>('320k'),
@@ -788,26 +1023,51 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     homePrewarmDeferred = useRef(new Map<string, Track>()),
     startFeedRef = useRef<Controller['playTrack']>(async () => undefined);
   const [wifiConnected, setWifiConnected] = useState(false);
-  const [downloadActivities, setDownloadActivities] = useState<DownloadActivity[]>([]);
+  const [downloadActivities, setDownloadActivities] = useState<
+    DownloadActivity[]
+  >([]);
   const downloadRecordStateRef = useRef(state);
   downloadRecordStateRef.current = state;
   const downloadActivityRef = useRef(new Map<string, DownloadActivity>());
-  const [downloadDestination, setDownloadDestination] = useState<{ kind: LibraryMediaKind; version: number } | null>(null);
+  const [downloadDestination, setDownloadDestination] = useState<{
+    kind: LibraryMediaKind;
+    version: number;
+  } | null>(null);
   const downloadNavigationVersion = useRef(0);
-  const consumeDownloadDestination = useCallback((version: number) => setDownloadDestination(value => value?.version === version ? null : value), []);
+  const consumeDownloadDestination = useCallback(
+    (version: number) =>
+      setDownloadDestination(value =>
+        value?.version === version ? null : value,
+      ),
+    [],
+  );
   const publishDownloadActivity = useCallback((activity: DownloadActivity) => {
     downloadActivityRef.current.set(downloadTrackKey(activity.track), activity);
     setDownloadActivities([...downloadActivityRef.current.values()]);
   }, []);
   useEffect(() => {
-    const subscription = DeviceEventEmitter.addListener('downloadProgress', event => {
-      const task = [...downloadActivityRef.current.values()].find(item => item.id === event.requestId);
-      if (!task || task.phase === 'failed' || task.phase === 'downloaded') return;
-      publishDownloadActivity({ ...task, phase: 'downloading', bytesDownloaded: event.bytesDownloaded, totalBytes: positiveBytes(event.totalBytes), fileSize: positiveBytes(event.fileSize) });
-    });
+    const subscription = DeviceEventEmitter.addListener(
+      'downloadProgress',
+      event => {
+        const task = [...downloadActivityRef.current.values()].find(
+          item => item.id === event.requestId,
+        );
+        if (!task || task.phase === 'failed' || task.phase === 'downloaded')
+          return;
+        publishDownloadActivity({
+          ...task,
+          phase: 'downloading',
+          bytesDownloaded: event.bytesDownloaded,
+          totalBytes: positiveBytes(event.totalBytes),
+          fileSize: positiveBytes(event.fileSize),
+        });
+      },
+    );
     return () => subscription.remove();
   }, [publishDownloadActivity]);
-  qualityPreferenceRef.current = state ? playbackNetworkQuality(state.settings, wifiConnected) : '320k';
+  qualityPreferenceRef.current = state
+    ? playbackNetworkQuality(state.settings, wifiConnected)
+    : '320k';
   useEffect(() => subscribeWifiNetwork(setWifiConnected), []);
   musicEntityPlaylists.current = state?.playlists ?? [];
   const setQueueListOpen = useCallback((open: boolean) => {
@@ -822,11 +1082,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     queueProgressWaiters.current.clear();
     waiters.forEach(resolve => resolve());
   }, []);
-  useEffect(() => () => {
-    queuePaging.current = null;
-    queuePageAbort.current?.abort();
-    queuePageAbort.current = null;
-  }, []);
+  useEffect(
+    () => () => {
+      queuePaging.current = null;
+      queuePageAbort.current?.abort();
+      queuePageAbort.current = null;
+    },
+    [],
+  );
   const waitForQueueProgress = useCallback(
     () =>
       new Promise<void>(resolve => {
@@ -850,9 +1113,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const enabledPlatforms =
     healthyProviderIds === null ? null : recommendationPlatforms;
-  const catalogConfigurationKey = `${sourceSelectionGeneration.current}:${pageRefreshToken}:${recommendationPlatforms.map(platform => platform.id).join('|')}`;
+  const catalogConfigurationKey = `${
+    sourceSelectionGeneration.current
+  }:${pageRefreshToken}:${recommendationPlatforms
+    .map(platform => platform.id)
+    .join('|')}`;
   const dislikedTrackIds = state?.disliked;
-  const feedConfigurationKey = `${catalogConfigurationKey}:${dislikedTrackIds?.join('|') ?? ''}`;
+  const feedConfigurationKey = `${catalogConfigurationKey}:${
+    dislikedTrackIds?.join('|') ?? ''
+  }`;
   // Stamp loaded rows without making configuration changes new Feed triggers.
   const feedConfigurationRef = useRef(feedConfigurationKey);
   feedConfigurationRef.current = feedConfigurationKey;
@@ -874,10 +1143,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const appliedEqualizerKey = useRef<string | null>(null);
   useEffect(() => () => equalizerUpdates.dispose(), [equalizerUpdates]);
   equalizerState.current = state;
-  useEffect(
-    () => subscribeStateStorageStatus?.(setStateStorageStatus),
-    [],
-  );
+  useEffect(() => subscribeStateStorageStatus?.(setStateStorageStatus), []);
   useEffect(() => {
     setStateStorageErrorDismissed(false);
   }, [
@@ -890,13 +1156,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     loadState().then(async persisted => {
       const settings = restoreLaunchEffects(persisted.settings);
       const value = { ...persisted, settings };
-      const gains = settings.equalizer === 'Custom' ? settings.customEqualizerGains : undefined;
-      const configuration = AudioEffectStateManager.configuration(settings.customEqualizerAdvanced);
+      const gains =
+        settings.equalizer === 'Custom'
+          ? settings.customEqualizerGains
+          : undefined;
+      const configuration = AudioEffectStateManager.configuration(
+        settings.customEqualizerAdvanced,
+      );
       // Replace the native saved mirror before startup can prepare/play audio.
       // Failed updates remain eligible for the existing settings-sync retry.
       await equalizerUpdates.request(async () => {
-        await nativePlayer.setEqualizer(settings.equalizer, gains, configuration);
-        appliedEqualizerKey.current = JSON.stringify([settings.equalizer, gains, configuration]);
+        await nativePlayer.setEqualizer(
+          settings.equalizer,
+          gains,
+          configuration,
+        );
+        appliedEqualizerKey.current = JSON.stringify([
+          settings.equalizer,
+          gains,
+          configuration,
+        ]);
         return true;
       });
       setWifiConnected(await readWifiNetwork());
@@ -941,8 +1220,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const previous = detailNavigationLog.current;
     detailNavigationLog.current = page;
-    if (previous !== page && [previous, page].some(value =>
-      (['playlist-detail', 'search-playlist', 'catalog-list', 'player'] as AppPage[]).includes(value)))
+    if (
+      previous !== page &&
+      [previous, page].some(value =>
+        (
+          [
+            'playlist-detail',
+            'search-playlist',
+            'catalog-list',
+            'player',
+          ] as AppPage[]
+        ).includes(value),
+      )
+    )
       console.info('[detail-navigation]', JSON.stringify({ previous, page }));
     pageRef.current = page;
     if (page === 'player' || page === 'queue') {
@@ -977,52 +1267,49 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const patchState = useCallback(
     (update: (value: PersistedState) => PersistedState) =>
-      setState(value => (value ? retainRecentMusicState(update(value)) : value)),
+      setState(value =>
+        value ? retainRecentMusicState(update(value)) : value,
+      ),
     [],
   );
   const rememberTrackPlayback = useCallback(
     (track: Track) =>
       patchState(value => {
         const kind = trackMediaKind(track);
-        if (kind === 'music')
-          return {
-            ...value,
-            history: rememberMusicHistory(value.history, track),
-            profile: { ...value.profile, memoryStatistics: accumulateMusicStatistics(memoryStatisticsFor(value.profile, value.history), track) },
-            savedTracks: rememberTrack(value.savedTracks, track),
-          };
-        return patchMediaBucket(value, kind, bucket => ({
-          ...rememberMediaPlayback(bucket, track, queuePaging.current?.source),
-          savedTracks: rememberTrack(bucket.savedTracks, track),
-        }));
+        return {
+          ...value,
+          history: rememberMusicHistory(value.history, track),
+          profile: {
+            ...value.profile,
+            memoryStatistics: accumulateMusicStatistics(
+              memoryStatisticsFor(value.profile, value.history),
+              track,
+            ),
+          },
+          savedTracks: rememberTrack(value.savedTracks, track),
+        };
       }),
     [patchState],
   );
-  const rememberHomeMenuBatch = useCallback((cursor: HomeMenuCursor, tracks: Track[]) => {
-    patchState(value=>({...value,menuRecommendationProgress:mergeMenuProgress(value.menuRecommendationProgress,cursor,tracks)}));
-  },[patchState]);
+  const rememberHomeMenuBatch = useCallback(
+    (cursor: HomeMenuCursor, tracks: Track[]) => {
+      patchState(value => ({
+        ...value,
+        menuRecommendationProgress: mergeMenuProgress(
+          value.menuRecommendationProgress,
+          cursor,
+          tracks,
+        ),
+      }));
+    },
+    [patchState],
+  );
   const lastHistoryPlayback = useRef('');
-  const mediaProgressRecorder = useRef(new MediaProgressRecorder());
   useEffect(() => {
-    const publishProgress = (updates: MediaProgressUpdate[], persistImmediately = false) => {
-      if (!updates.length) return;
-      if (persistImmediately && persistTimer.current) clearTimeout(persistTimer.current);
-      patchState(current => {
-        let next = current;
-        for (const update of updates) {
-          const kind = trackMediaKind(update.track);
-          if (kind !== 'music') {
-            const oldBucket = mediaBucket(next, kind);
-            const bucket = updateMediaProgress(oldBucket, update);
-            if (bucket !== oldBucket) next = patchMediaBucket(next, kind, () => bucket);
-          }
-        }
-        if (persistImmediately) void saveState(next).catch(() => undefined);
-        return next;
-      });
-    };
-    const publishNativeState = (value: NativePlayerState, forceProgress = false) => {
-      publishProgress(mediaProgressRecorder.current.transition(value.previousItem), forceProgress);
+    const publishNativeState = (
+      value: NativePlayerState,
+      forceProgress = false,
+    ) => {
       const nativeTrack = queueRef.current[value.index];
       const nativeKey =
         value.mediaId ?? (nativeTrack ? trackQueueKey(nativeTrack) : '');
@@ -1052,7 +1339,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         actualPlayingKey.current = nativeKey;
         setPlayerPreparationReadyKey(nativeKey);
         const gate = catalogPlaybackGate.current;
-        if (gate?.preparedAccepted && gate.generation === queueGeneration.current && gate.key === nativeKey) {
+        if (
+          gate?.preparedAccepted &&
+          gate.generation === queueGeneration.current &&
+          gate.key === nativeKey
+        ) {
           gate.ready = true;
           urlPrewarmScheduler.current!.setPlaybackReady(true);
         }
@@ -1064,7 +1355,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           !navigationPending.current &&
           !menuInitialBatch
         )
-          void prefetchQueueRuntime.current(logicalIndex).catch(() => undefined);
+          void prefetchQueueRuntime
+            .current(logicalIndex)
+            .catch(() => undefined);
         const scene = scenePlayback.current;
         if (
           scene?.generation === queueGeneration.current &&
@@ -1108,7 +1401,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           )}:${nativeKey}`;
           if (lastHistoryPlayback.current !== historyToken) {
             lastHistoryPlayback.current = historyToken;
-            mediaProgressRecorder.current.confirm(playedTrack);
             rememberTrackPlayback(playedTrack);
           }
           const entries = musicEntityRecorder.current.confirm(
@@ -1127,8 +1419,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             }));
         }
       }
-      if (!recovering)
-        publishProgress(mediaProgressRecorder.current.observe(value, forceProgress), forceProgress);
       if (recovering) {
         if (recovery.status === 'pending' && recovery.resume)
           recoverExpiredUrl.current(value);
@@ -1175,10 +1465,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = nativePlayer.subscribe(publishNativeState);
     const appStateSubscription = AppState.addEventListener('change', next => {
       if (next === 'active') return;
-      nativePlayer.getState().then(value => {
-        publishNativeState(value, true);
-        publishProgress(mediaProgressRecorder.current.flush(), true);
-      }).catch(() => publishProgress(mediaProgressRecorder.current.flush(), true));
+      nativePlayer
+        .getState()
+        .then(value => {
+          publishNativeState(value, true);
+        })
+        .catch(() => undefined);
     });
     const timer = setInterval(
       () =>
@@ -1195,14 +1487,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       expiredUrlRequest.current?.abort.abort();
     };
   }, [patchState, rememberTrackPlayback]);
-
   useEffect(() => {
     if (!enabledPlatforms || !dislikedTrackIds) return;
     const revision = ++feedRequest.current;
     const config = feedConfigurationRef.current;
     const restored = pendingFeedRestore.current;
     pendingFeedRestore.current = null;
-    if (restored?.category === category && restored.page === feedPage && restored.config === config) {
+    if (
+      restored?.category === category &&
+      restored.page === feedPage &&
+      restored.config === config
+    ) {
       feedLoadRef.current = null;
       return;
     }
@@ -1212,10 +1507,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     request
       .then(tracks => {
         if (revision === feedRequest.current) {
-          const visible = tracks.filter(track => !dislikedTrackIds.includes(track.id));
+          const visible = tracks.filter(
+            track => !dislikedTrackIds.includes(track.id),
+          );
           feedCatalogOwner.current = requestOwner;
           setFeed(visible);
-          queueOriginCatalog.update(`feed:${category}:${feedPage}`, { category, page: feedPage, tracks: visible.map(({ playUrl: _url, ...track }) => track), config }, requestOwner);
+          queueOriginCatalog.update(
+            `feed:${category}:${feedPage}`,
+            {
+              category,
+              page: feedPage,
+              tracks: visible.map(({ playUrl: _url, ...track }) => track),
+              config,
+            },
+            requestOwner,
+          );
         }
       })
       .catch(error => {
@@ -1229,7 +1535,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       .finally(() => {
         if (feedLoadRef.current === request) feedLoadRef.current = null;
       });
-  }, [category, dislikedTrackIds, enabledPlatforms, feedPage, queueOriginCatalog]);
+  }, [
+    category,
+    dislikedTrackIds,
+    enabledPlatforms,
+    feedPage,
+    queueOriginCatalog,
+  ]);
   const currentByMediaId = player.mediaId
     ? queue.find(track => trackQueueKey(track) === player.mediaId) ??
       logicalQueueRef.current.find(
@@ -1270,15 +1582,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const update = updates.get(entry.id);
           if (!update) continue;
           const latest = downloadRecordStateRef.current;
-          if (!latest || !mediaDownloads(latest, trackMediaKind(entry.track)).some(item => item.id === entry.id && downloadTrackKey(item.track) === downloadTrackKey(entry.track))) continue;
-          const existing = downloadActivityRef.current.get(downloadTrackKey(entry.track));
+          if (
+            !latest ||
+            !mediaDownloads(latest, trackMediaKind(entry.track)).some(
+              item =>
+                item.id === entry.id &&
+                downloadTrackKey(item.track) === downloadTrackKey(entry.track),
+            )
+          )
+            continue;
+          const existing = downloadActivityRef.current.get(
+            downloadTrackKey(entry.track),
+          );
           if (existing?.token && existing.token !== entry.id) continue;
           publishDownloadActivity({
-            ...(existing ?? { id: entry.id, track: entry.track, createdAt: entry.createdAt }),
+            ...(existing ?? {
+              id: entry.id,
+              track: entry.track,
+              createdAt: entry.createdAt,
+            }),
             token: entry.id,
-            phase: update.status === 'queued' ? (update.bytesDownloaded ? 'downloading' : 'queued') : update.status,
-            bytesDownloaded: update.bytesDownloaded, totalBytes: positiveBytes(update.totalBytes),
-            fileSize: positiveBytes(update.fileSize), reason: update.reason,
+            phase:
+              update.status === 'queued'
+                ? update.bytesDownloaded
+                  ? 'downloading'
+                  : 'queued'
+                : update.status,
+            bytesDownloaded: update.bytesDownloaded,
+            totalBytes: positiveBytes(update.totalBytes),
+            fileSize: positiveBytes(update.fileSize),
+            reason: update.reason,
             quality: existing?.quality ?? entry.quality,
           });
         }
@@ -1297,30 +1630,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                     : entry.track,
                 };
               });
-            const podcastDownloads = updateEntries(value.podcastLibrary.downloads);
-            const audiobookDownloads = updateEntries(value.audiobookLibrary.downloads);
             return {
               ...value,
               ...syncDownloadedMusic(
                 value.localTracks,
                 updateEntries(value.downloads),
               ),
-              podcastLibrary: {
-                ...value.podcastLibrary,
-                ...syncDownloadedMedia(
-                  value.podcastLibrary.localTracks ?? [],
-                  podcastDownloads,
-                  'podcast',
-                ),
-              },
-              audiobookLibrary: {
-                ...value.audiobookLibrary,
-                ...syncDownloadedMedia(
-                  value.audiobookLibrary.localTracks ?? [],
-                  audiobookDownloads,
-                  'audiobook',
-                ),
-              },
             };
           });
       } finally {
@@ -1329,14 +1644,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     refresh().catch(() => undefined);
     const timer = setInterval(refresh, 2500);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [
-    patchState,
-    publishDownloadActivity,
-    state?.downloads,
-    state?.podcastLibrary.downloads,
-    state?.audiobookLibrary.downloads,
-  ]);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [patchState, publishDownloadActivity, state?.downloads]);
   const disarmExitHint = useCallback(() => {
     exitArmedUntilRef.current = 0;
     if (exitHintTimerRef.current) clearTimeout(exitHintTimerRef.current);
@@ -1346,7 +1658,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const invalidateOriginReturn = useCallback(() => {
     originCatalogState.current.returning = null;
     pendingFeedRestore.current = null;
-    setCatalogRestore(value => value.originKey === undefined ? value : { version: value.version, keys: [], originKey: undefined });
+    setCatalogRestore(value =>
+      value.originKey === undefined
+        ? value
+        : { version: value.version, keys: [], originKey: undefined },
+    );
   }, []);
   const open = useCallback(
     (next: AppPage) => {
@@ -1434,126 +1750,275 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [disarmExitHint, invalidateOriginReturn],
   );
-  const refreshHome = useCallback(
-    () => {
-      if (homeRefreshFlight.current !== null) return;
-      const token = ++homeRefreshGeneration.current;
-      homeRefreshFlight.current = token;
-      setHomeRefreshing(true);
-      setHomeRefreshToken(token);
-    },
-    [],
-  );
+  const refreshHome = useCallback(() => {
+    if (homeRefreshFlight.current !== null) return;
+    const token = ++homeRefreshGeneration.current;
+    homeRefreshFlight.current = token;
+    setHomeRefreshing(true);
+    setHomeRefreshToken(token);
+  }, []);
   const finishHomeRefresh = useCallback((token: number) => {
     if (homeRefreshFlight.current !== token) return;
     homeRefreshFlight.current = null;
     setHomeRefreshing(false);
   }, []);
-  const publishQueueOrigin = useCallback((origin: QueueOrigin | null, accepted = true) => {
-    const cache = originCatalogState.current;
-    if (!origin) { cache.active = null; cache.candidate = null; cache.returning = null; }
-    else if (accepted && cache.active?.origin.catalogKey !== origin.catalogKey) {
-      cache.active = cache.candidate?.origin.catalogKey === origin.catalogKey ? cache.candidate : { origin, states: new Map() };
-      cache.candidate = null;
-    }
-    queueOriginRef.current = origin;
-    setQueueOrigin(origin);
-  }, []);
-  const captureQueueOrigin = useCallback((label?: string, target?: QueueOriginTarget): QueueOrigin => {
-    const originTab = target?.tab ?? tab;
-    const originPage = target?.page ?? pageRef.current;
-    const navigation = queueOriginNavigationDefaults[originTab].map(([key, initial]): [string, unknown] =>
-      [key, catalogViewState.has(key) ? catalogViewState.get(key) : initial]);
-    const context = new Map(navigation);
-    if (target?.menuChoiceId) context.set('home-menu-choice', target.menuChoiceId);
-    if (target?.detailView) context.set('queue-origin-detail-view', target.detailView);
-    for (const key of ['home-playlist-browser-context', 'home-detail-catalog-list']) {
-      const value = context.get(key);
-      if (value && typeof value === 'object') {
-        const selector = Object.fromEntries(Object.entries(value).filter(([name]) => name !== 'initialSnapshot' && name !== 'initialItems'));
-        context.set(key, selector);
+  const publishQueueOrigin = useCallback(
+    (origin: QueueOrigin | null, accepted = true) => {
+      const cache = originCatalogState.current;
+      if (!origin) {
+        cache.active = null;
+        cache.candidate = null;
+        cache.returning = null;
+      } else if (
+        accepted &&
+        cache.active?.origin.catalogKey !== origin.catalogKey
+      ) {
+        cache.active =
+          cache.candidate?.origin.catalogKey === origin.catalogKey
+            ? cache.candidate
+            : { origin, states: new Map() };
+        cache.candidate = null;
       }
-    }
-    const detailKey = originTab === 'search' ? 'search-detail' : originTab === 'library' ? 'library-detail' : 'home-selected';
-    if (target?.item !== undefined) context.set(detailKey, target.item);
-    const personalPlaylistId = target?.personalPlaylistId ??
-      (originTab === 'library' && originPage === 'personal-playlist'
-        ? context.get('library-playlist-opened') as string | undefined : undefined);
-    if (personalPlaylistId) {
-      context.set('library-playlist-opened', personalPlaylistId);
-    }
-    const item = context.get(detailKey) as CatalogItem | null | undefined;
-    let sourceLabel = label;
-    if (!sourceLabel && (originPage === 'playlist-detail' || originPage === 'search-playlist')) sourceLabel = item?.title;
-    if (!sourceLabel && personalPlaylistId) sourceLabel = state?.playlists.find(value => value.id === personalPlaylistId)?.title;
-    if (!sourceLabel && originTab === 'search') {
-      const type = { song: '单曲', artist: '歌手', album: '专辑', playlist: '歌单', radio: '电台', audiobook: '听书' }[search.category];
-      const providerLabel = search.provider === 'all' ? '全部平台' : platformLabel(search.provider) || '自定义';
-      sourceLabel = `搜索：${search.query} · ${type} · ${providerLabel}`;
-    }
-    if (!sourceLabel && originTab === 'library') {
-      const mode = context.get('library-mode') as LibraryMediaKind;
-      const mediaLists = context.get('library-media-list') as Record<string, string>;
-      const list = originPage === 'root'
-        ? mode === 'music' ? context.get('library-music-list') as AppPage : mediaLists?.[mode] as AppPage
-        : originPage;
-      sourceLabel = `${{ music: '音乐', podcast: '播客', audiobook: '听书' }[mode] ?? '音乐'} · ${originPageLabels[list] ?? '媒体库'}`;
-    }
-    if (!sourceLabel && originPage === 'catalog-list') sourceLabel = (context.get('home-detail-catalog-list') as { title?: string } | null)?.title;
-    if (!sourceLabel && originPage === 'feed') sourceLabel = `${category}推荐`;
-    const searchSnapshot = originTab === 'search' ? {
-      ...search, loading: false,
-      tracks: search.tracks.map(({ playUrl: _url, ...track }) => track),
-      queueProviderPages: search.queueProviderPages ? { ...search.queueProviderPages } : undefined,
-    } : undefined;
-    const origin: QueueOrigin = {
-      catalogKey: ++originCatalogSequence.current,
-      label: sourceLabel || originPageLabels[originPage] || '当前列表',
-      tab: originTab, page: originPage,
-      homeMenuOrigin: originPage === 'home-menu' ? homeMenuOriginRef.current : null,
-      stack: target?.page !== undefined ? (originPage === 'root' ? [] : ['root']) : [...navigationStackRef.current],
-      navigation: [...context],
-      ...(searchSnapshot ? { search: searchSnapshot } : {}),
-      ...(originPage === 'feed' || originPage === 'new-songs' ? { category, feedPage } : {}),
-      ...(personalPlaylistId ? { personalPlaylistId } : {}),
-    };
-    if (origin.category) queueOriginCatalog.stage(origin, `feed:${category}:${feedPage}`, {
-      category, page: feedPage, tracks: feed.map(({ playUrl: _url, ...track }) => track),
-      config: feedCatalogOwner.current.config,
-    }, feedCatalogOwner.current);
-    return origin;
-  }, [catalogViewState, category, feed, feedPage, queueOriginCatalog, search, state?.playlists, tab]);
+      queueOriginRef.current = origin;
+      setQueueOrigin(origin);
+    },
+    [],
+  );
+  const captureQueueOrigin = useCallback(
+    (label?: string, target?: QueueOriginTarget): QueueOrigin => {
+      const originTab = target?.tab ?? tab;
+      const originPage = target?.page ?? pageRef.current;
+      const navigation = queueOriginNavigationDefaults[originTab].map(
+        ([key, initial]): [string, unknown] => [
+          key,
+          catalogViewState.has(key) ? catalogViewState.get(key) : initial,
+        ],
+      );
+      const context = new Map(navigation);
+      if (target?.menuChoiceId)
+        context.set('home-menu-choice', target.menuChoiceId);
+      if (target?.detailView)
+        context.set('queue-origin-detail-view', target.detailView);
+      for (const key of [
+        'home-playlist-browser-context',
+        'home-detail-catalog-list',
+      ]) {
+        const value = context.get(key);
+        if (value && typeof value === 'object') {
+          const selector = Object.fromEntries(
+            Object.entries(value).filter(
+              ([name]) => name !== 'initialSnapshot' && name !== 'initialItems',
+            ),
+          );
+          context.set(key, selector);
+        }
+      }
+      const detailKey =
+        originTab === 'search'
+          ? 'search-detail'
+          : originTab === 'library'
+          ? 'library-detail'
+          : 'home-selected';
+      if (target?.item !== undefined) context.set(detailKey, target.item);
+      const personalPlaylistId =
+        target?.personalPlaylistId ??
+        (originTab === 'library' && originPage === 'personal-playlist'
+          ? (context.get('library-playlist-opened') as string | undefined)
+          : undefined);
+      if (personalPlaylistId) {
+        context.set('library-playlist-opened', personalPlaylistId);
+      }
+      const item = context.get(detailKey) as CatalogItem | null | undefined;
+      let sourceLabel = label;
+      if (
+        !sourceLabel &&
+        (originPage === 'playlist-detail' || originPage === 'search-playlist')
+      )
+        sourceLabel = item?.title;
+      if (!sourceLabel && personalPlaylistId)
+        sourceLabel = state?.playlists.find(
+          value => value.id === personalPlaylistId,
+        )?.title;
+      if (!sourceLabel && originTab === 'search') {
+        const type = {
+          song: '单曲',
+          artist: '歌手',
+          album: '专辑',
+          playlist: '歌单',
+          radio: '电台',
+        }[search.category];
+        const providerLabel =
+          search.provider === 'all'
+            ? '全部平台'
+            : platformLabel(search.provider) || '自定义';
+        sourceLabel = `搜索：${search.query} · ${type} · ${providerLabel}`;
+      }
+      if (!sourceLabel && originTab === 'library') {
+        const mode = context.get('library-mode') as LibraryMediaKind;
+        const mediaLists = context.get('library-media-list') as Record<
+          string,
+          string
+        >;
+        const list =
+          originPage === 'root'
+            ? mode === 'music'
+              ? (context.get('library-music-list') as AppPage)
+              : (mediaLists?.[mode] as AppPage)
+            : originPage;
+        sourceLabel = `${{ music: '音乐' }[mode] ?? '音乐'} · ${
+          originPageLabels[list] ?? '媒体库'
+        }`;
+      }
+      if (!sourceLabel && originPage === 'catalog-list')
+        sourceLabel = (
+          context.get('home-detail-catalog-list') as {
+            title?: string;
+          } | null
+        )?.title;
+      if (!sourceLabel && originPage === 'feed')
+        sourceLabel = `${category}推荐`;
+      const searchSnapshot =
+        originTab === 'search'
+          ? {
+              ...search,
+              loading: false,
+              tracks: search.tracks.map(({ playUrl: _url, ...track }) => track),
+              queueProviderPages: search.queueProviderPages
+                ? { ...search.queueProviderPages }
+                : undefined,
+            }
+          : undefined;
+      const origin: QueueOrigin = {
+        catalogKey: ++originCatalogSequence.current,
+        label: sourceLabel || originPageLabels[originPage] || '当前列表',
+        tab: originTab,
+        page: originPage,
+        homeMenuOrigin:
+          originPage === 'home-menu' ? homeMenuOriginRef.current : null,
+        stack:
+          target?.page !== undefined
+            ? originPage === 'root'
+              ? []
+              : ['root']
+            : [...navigationStackRef.current],
+        navigation: [...context],
+        ...(searchSnapshot ? { search: searchSnapshot } : {}),
+        ...(originPage === 'feed' || originPage === 'new-songs'
+          ? { category, feedPage }
+          : {}),
+        ...(personalPlaylistId ? { personalPlaylistId } : {}),
+      };
+      if (origin.category)
+        queueOriginCatalog.stage(
+          origin,
+          `feed:${category}:${feedPage}`,
+          {
+            category,
+            page: feedPage,
+            tracks: feed.map(({ playUrl: _url, ...track }) => track),
+            config: feedCatalogOwner.current.config,
+          },
+          feedCatalogOwner.current,
+        );
+      return origin;
+    },
+    [
+      catalogViewState,
+      category,
+      feed,
+      feedPage,
+      queueOriginCatalog,
+      search,
+      state?.playlists,
+      tab,
+    ],
+  );
   const returnToQueueOrigin = useCallback(() => {
     const origin = queueOriginRef.current;
     setQueueListOpen(false);
     setPlayerOverlayOpen(false);
     const targetContext = new Map(origin?.navigation ?? []);
-    const missingDetail = origin && (origin.page === 'playlist-detail' || origin.page === 'search-playlist') &&
-      !targetContext.get(origin.tab === 'search' ? 'search-detail' : origin.tab === 'library' ? 'library-detail' : 'home-selected');
-    const missingList = origin?.page === 'catalog-list' && !targetContext.get('home-detail-catalog-list');
-    const detail = targetContext.get(origin?.tab === 'search' ? 'search-detail' : origin?.tab === 'library' ? 'library-detail' : 'home-selected') as CatalogItem | null;
-    const view = targetContext.get('queue-origin-detail-view') as { provider?: string | null } | undefined;
-    const detailTarget = origin?.page === 'playlist-detail' || origin?.page === 'search-playlist';
-    const provider = view?.provider ?? (detailTarget ? detail?.provider : undefined) ?? origin?.search?.provider;
-    const missingProvider = provider && provider !== 'all' && provider !== 'custom' && !recommendationPlatforms.some(item => item.id === provider);
-    const savedFeed = origin?.category && origin.feedPage !== undefined
-      ? queueOriginCatalog.read<{ category: DiscoveryCategory; page: number; tracks: Track[]; config: string }>(`feed:${origin.category}:${origin.feedPage}`)
-      : undefined;
-    const missingFeed = origin?.category && savedFeed?.config !== feedConfigurationKey;
-    if (!origin || missingDetail || missingList || missingProvider || missingFeed || (origin.personalPlaylistId && !state?.playlists.some(item => item.id === origin.personalPlaylistId))) {
+    const missingDetail =
+      origin &&
+      (origin.page === 'playlist-detail' ||
+        origin.page === 'search-playlist') &&
+      !targetContext.get(
+        origin.tab === 'search'
+          ? 'search-detail'
+          : origin.tab === 'library'
+          ? 'library-detail'
+          : 'home-selected',
+      );
+    const missingList =
+      origin?.page === 'catalog-list' &&
+      !targetContext.get('home-detail-catalog-list');
+    const detail = targetContext.get(
+      origin?.tab === 'search'
+        ? 'search-detail'
+        : origin?.tab === 'library'
+        ? 'library-detail'
+        : 'home-selected',
+    ) as CatalogItem | null;
+    const view = targetContext.get('queue-origin-detail-view') as
+      | {
+          provider?: string | null;
+        }
+      | undefined;
+    const detailTarget =
+      origin?.page === 'playlist-detail' || origin?.page === 'search-playlist';
+    const provider =
+      view?.provider ??
+      (detailTarget ? detail?.provider : undefined) ??
+      origin?.search?.provider;
+    const missingProvider =
+      provider &&
+      provider !== 'all' &&
+      provider !== 'custom' &&
+      !recommendationPlatforms.some(item => item.id === provider);
+    const savedFeed =
+      origin?.category && origin.feedPage !== undefined
+        ? queueOriginCatalog.read<{
+            category: DiscoveryCategory;
+            page: number;
+            tracks: Track[];
+            config: string;
+          }>(`feed:${origin.category}:${origin.feedPage}`)
+        : undefined;
+    const missingFeed =
+      origin?.category && savedFeed?.config !== feedConfigurationKey;
+    if (
+      !origin ||
+      missingDetail ||
+      missingList ||
+      missingProvider ||
+      missingFeed ||
+      (origin.personalPlaylistId &&
+        !state?.playlists.some(item => item.id === origin.personalPlaylistId))
+    ) {
       setMessage('播放列表来源已不可用');
       return;
     }
     // Hold only this click's directory entry until its first render/layout
     // consumes it; a pending play may publish another origin in the same batch.
     const cache = originCatalogState.current;
-    cache.returning = origin.page === 'playlist-detail' || origin.page === 'search-playlist' || origin.page === 'catalog-list'
-      ? cache.candidate?.origin.catalogKey === origin.catalogKey ? cache.candidate
-        : cache.active?.origin.catalogKey === origin.catalogKey ? cache.active : null
-      : null;
+    cache.returning =
+      origin.page === 'playlist-detail' ||
+      origin.page === 'search-playlist' ||
+      origin.page === 'catalog-list'
+        ? cache.candidate?.origin.catalogKey === origin.catalogKey
+          ? cache.candidate
+          : cache.active?.origin.catalogKey === origin.catalogKey
+          ? cache.active
+          : null
+        : null;
     disarmExitHint();
-    for (const [key, value] of origin.navigation) catalogViewState.set(key, value);
-    setCatalogRestore(value => ({ version: value.version + 1, keys: origin.navigation.map(([key]) => key), originKey: origin.catalogKey }));
+    for (const [key, value] of origin.navigation)
+      catalogViewState.set(key, value);
+    setCatalogRestore(value => ({
+      version: value.version + 1,
+      keys: origin.navigation.map(([key]) => key),
+      originKey: origin.catalogKey,
+    }));
     if (origin.search) {
       searchGeneration.current += 1;
       setSearch(origin.search);
@@ -1562,10 +2027,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (origin.feedPage !== undefined) setFeedPage(origin.feedPage);
     if (origin.category && origin.feedPage !== undefined && savedFeed) {
       const returnedOwner = { config: feedConfigurationKey };
-      queueOriginCatalog.read(`feed:${origin.category}:${origin.feedPage}`, returnedOwner);
+      queueOriginCatalog.read(
+        `feed:${origin.category}:${origin.feedPage}`,
+        returnedOwner,
+      );
       feedRequest.current += 1;
       feedCatalogOwner.current = returnedOwner;
-      pendingFeedRestore.current = category !== origin.category || feedPage !== origin.feedPage ? savedFeed : null;
+      pendingFeedRestore.current =
+        category !== origin.category || feedPage !== origin.feedPage
+          ? savedFeed
+          : null;
       setFeed(savedFeed.tracks);
     }
     navigationGuardUntilRef.current = 0;
@@ -1576,12 +2047,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     pageRef.current = origin.page;
     setTabState(origin.tab);
     setPage(origin.page);
-  }, [catalogViewState, category, disarmExitHint, feedConfigurationKey, feedPage, queueOriginCatalog, recommendationPlatforms, setQueueListOpen, state?.playlists]);
+  }, [
+    catalogViewState,
+    category,
+    disarmExitHint,
+    feedConfigurationKey,
+    feedPage,
+    queueOriginCatalog,
+    recommendationPlatforms,
+    setQueueListOpen,
+    state?.playlists,
+  ]);
   const refreshPage = useCallback(
     () => setPageRefreshToken(value => value + 1),
     [],
   );
-
   const playbackSourcesFor = useCallback(
     (track: Track) => {
       if (!state) return [];
@@ -1602,39 +2082,84 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [state],
   );
-  const assertPlaybackSourceBinding = useCallback((track: Track) => {
-    if (track.provider === 'custom' || localPlaybackReference(track) ||
-        !verifiedSourceIdsByProvider.current) return;
-    if (!playbackSourcesFor(track).some(source => source.healthy === true && isSourceEnabled(source)))
-      throw new SourceBindingUnavailableError(platformSourceKeys[track.provider]);
-  }, [playbackSourcesFor]);
-  const pendingLocalMusicRepairs = useRef(new Map<string, ReturnType<typeof recoverMissingMusicDownload>>());
+  const assertPlaybackSourceBinding = useCallback(
+    (track: Track) => {
+      if (
+        track.provider === 'custom' ||
+        localPlaybackReference(track) ||
+        !verifiedSourceIdsByProvider.current
+      )
+        return;
+      if (
+        !playbackSourcesFor(track).some(
+          source => source.healthy === true && isSourceEnabled(source),
+        )
+      )
+        throw new SourceBindingUnavailableError(
+          platformSourceKeys[track.provider],
+        );
+    },
+    [playbackSourcesFor],
+  );
+  const pendingLocalMusicRepairs = useRef(
+    new Map<string, ReturnType<typeof recoverMissingMusicDownload>>(),
+  );
   const restoreLogicalTailContinuation = useCallback(async () => {
     onDemandPlayerQueue.current = true;
     await nativePlayer.setRepeatMode(partialQueueRepeatMode.current);
   }, []);
-  const discardFuturePreparation = useCallback((allNeighbours = false) => {
-    playerQueuePreparation.current.pause();
-    const request = playerPreparationCommit.current.catch(() => undefined).then(async () => {
-      const native = await nativePlayer.getState();
-      const key = native.mediaId ?? actualPlayingKey.current;
-      const currentIndex = queueRef.current.findIndex(item => trackQueueKey(item) === key);
-      if (currentIndex < 0) return;
-      if (queueRef.current.some((_, index) => index !== currentIndex && (allNeighbours || index > currentIndex)))
-        await restoreLogicalTailContinuation();
-      for (let index = queueRef.current.length - 1; index >= 0; index -= 1) {
-        if (index === currentIndex || (!allNeighbours && index < currentIndex)) continue;
-        const active = await nativePlayer.getState();
-        if ((active.mediaId && active.mediaId !== key) ||
-          (actualPlayingKey.current && actualPlayingKey.current !== key)) return;
-        const removed = await nativePlayer.removePreparedQueueItem(key, trackQueueKey(queueRef.current[index]!), index);
-        if (!removed) return;
-        queueRef.current = queueRef.current.filter((_, itemIndex) => itemIndex !== index);
-      }
-    });
-    playerPreparationCommit.current = request.catch(() => undefined);
-    return request;
-  }, [restoreLogicalTailContinuation]);
+  const discardFuturePreparation = useCallback(
+    (allNeighbours = false) => {
+      playerQueuePreparation.current.pause();
+      const request = playerPreparationCommit.current
+        .catch(() => undefined)
+        .then(async () => {
+          const native = await nativePlayer.getState();
+          const key = native.mediaId ?? actualPlayingKey.current;
+          const currentIndex = queueRef.current.findIndex(
+            item => trackQueueKey(item) === key,
+          );
+          if (currentIndex < 0) return;
+          if (
+            queueRef.current.some(
+              (_, index) =>
+                index !== currentIndex &&
+                (allNeighbours || index > currentIndex),
+            )
+          )
+            await restoreLogicalTailContinuation();
+          for (
+            let index = queueRef.current.length - 1;
+            index >= 0;
+            index -= 1
+          ) {
+            if (
+              index === currentIndex ||
+              (!allNeighbours && index < currentIndex)
+            )
+              continue;
+            const active = await nativePlayer.getState();
+            if (
+              (active.mediaId && active.mediaId !== key) ||
+              (actualPlayingKey.current && actualPlayingKey.current !== key)
+            )
+              return;
+            const removed = await nativePlayer.removePreparedQueueItem(
+              key,
+              trackQueueKey(queueRef.current[index]!),
+              index,
+            );
+            if (!removed) return;
+            queueRef.current = queueRef.current.filter(
+              (_, itemIndex) => itemIndex !== index,
+            );
+          }
+        });
+      playerPreparationCommit.current = request.catch(() => undefined);
+      return request;
+    },
+    [restoreLogicalTailContinuation],
+  );
   const prepareTrack = useCallback(
     async (
       track: Track,
@@ -1653,7 +2178,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         let audio: Awaited<ReturnType<typeof probeLocalAudio>>;
         let reference = localReference;
         try {
-          uri = await resolveLocalPlaybackReference(localReference, queryDownloadStatus);
+          uri = await resolveLocalPlaybackReference(
+            localReference,
+            queryDownloadStatus,
+          );
           audio = await probeLocalAudio(uri);
           validateLocalPlaybackAudio(track, audio);
         } catch (error) {
@@ -1665,16 +2193,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               query: queryDownloadStatus,
               probe: probeLocalAudio,
               download: async input => {
-                if (sourceGeneration !== sourceSelectionGeneration.current) throw new Error('音源设置已变更，请重新点击播放');
+                if (sourceGeneration !== sourceSelectionGeneration.current)
+                  throw new Error('音源设置已变更，请重新点击播放');
                 setMessage('正在恢复本地下载…');
                 const sources = playbackSourcesFor(input);
-                if (input.provider === 'custom' || !verifiedSourceIdsByProvider.current?.[input.provider]?.length ||
-                  !sources.some(source => source.enabled && source.healthy === true && Boolean(source.script)))
-                  throw new Error('该平台本次检测没有可用的绑定音源，无法恢复下载');
-                const url = await resolvePlayback(input, sources, downloadNetworkQuality(state.settings));
+                if (
+                  input.provider === 'custom' ||
+                  !verifiedSourceIdsByProvider.current?.[input.provider]
+                    ?.length ||
+                  !sources.some(
+                    source =>
+                      source.enabled &&
+                      source.healthy === true &&
+                      Boolean(source.script),
+                  )
+                )
+                  throw new Error(
+                    '该平台本次检测没有可用的绑定音源，无法恢复下载',
+                  );
+                const url = await resolvePlayback(
+                  input,
+                  sources,
+                  downloadNetworkQuality(state.settings),
+                );
                 return downloadAudio(url, input.title, input.artist);
               },
-              update: (previous, replacement) => patchState(value => replaceRecoveredMusicDownload(value, previous, replacement)),
+              update: (previous, replacement) =>
+                patchState(value =>
+                  replaceRecoveredMusicDownload(value, previous, replacement),
+                ),
             }).finally(() => pendingLocalMusicRepairs.current.delete(key));
             pendingLocalMusicRepairs.current.set(key, recovery);
           }
@@ -1734,15 +2281,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               preference: preferredQuality,
             }),
           );
-        const resolved =
-          await resolvePlaybackWithQuality(
-                input,
-                playbackSourcesFor(input),
-                preferredQuality,
-                refreshExpiredUrl,
-                timing,
-                cachedUrlOnly,
-              );
+        const resolved = await resolvePlaybackWithQuality(
+          input,
+          playbackSourcesFor(input),
+          preferredQuality,
+          refreshExpiredUrl,
+          timing,
+          cachedUrlOnly,
+        );
         return {
           ...input,
           metadata: {
@@ -1883,56 +2429,74 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }),
     [],
   );
-  const prewarmIdentity = useCallback((track: Track) => {
-    const sources = playbackSourcesFor(track);
-    return typeof sourceAddressCacheKey === 'function'
-      ? sourceAddressCacheKey(track, sources, qualityPreferenceRef.current)
-      : trackQueueKey(track);
-  }, [playbackSourcesFor]);
-  const bindPrewarmedTrack = useCallback((track: Track, result: Awaited<ReturnType<typeof resolvePlaybackPrewarm>>) => {
-    const key = trackQueueKey(track);
-    const bind = (item: Track) => {
-      if (trackQueueKey(item) !== key || item.metadata?._playbackAudio ||
-          (item.playUrl === result.url && item.metadata?._prewarmedUrl === true &&
-           item.metadata._prewarmedQuality === result.quality &&
-           item.metadata._prewarmedReportedQuality === result.reportedQuality &&
-           item.metadata._prewarmedAudio === result.audio))
-        return item;
-      return {
-        ...item,
-        playUrl: result.url,
-        metadata: {
-          ...item.metadata,
-          _prewarmedUrl: true,
-          _prewarmedAt: Date.now(),
-          _prewarmedQuality: result.quality,
-          _prewarmedReportedQuality: result.reportedQuality,
-          _prewarmedAudio: result.audio,
-        },
+  const prewarmIdentity = useCallback(
+    (track: Track) => {
+      const sources = playbackSourcesFor(track);
+      return typeof sourceAddressCacheKey === 'function'
+        ? sourceAddressCacheKey(track, sources, qualityPreferenceRef.current)
+        : trackQueueKey(track);
+    },
+    [playbackSourcesFor],
+  );
+  const bindPrewarmedTrack = useCallback(
+    (
+      track: Track,
+      result: Awaited<ReturnType<typeof resolvePlaybackPrewarm>>,
+    ) => {
+      const key = trackQueueKey(track);
+      const bind = (item: Track) => {
+        if (
+          trackQueueKey(item) !== key ||
+          item.metadata?._playbackAudio ||
+          (item.playUrl === result.url &&
+            item.metadata?._prewarmedUrl === true &&
+            item.metadata._prewarmedQuality === result.quality &&
+            item.metadata._prewarmedReportedQuality ===
+              result.reportedQuality &&
+            item.metadata._prewarmedAudio === result.audio)
+        )
+          return item;
+        return {
+          ...item,
+          playUrl: result.url,
+          metadata: {
+            ...item.metadata,
+            _prewarmedUrl: true,
+            _prewarmedAt: Date.now(),
+            _prewarmedQuality: result.quality,
+            _prewarmedReportedQuality: result.reportedQuality,
+            _prewarmedAudio: result.audio,
+          },
+        };
       };
-    };
-    const bindTracks = (items: Track[]) => {
-      let changed = false;
-      const next = items.map(item => {
-        const value = bind(item);
-        if (value !== item) changed = true;
-        return value;
+      const bindTracks = (items: Track[]) => {
+        let changed = false;
+        const next = items.map(item => {
+          const value = bind(item);
+          if (value !== item) changed = true;
+          return value;
+        });
+        return changed ? next : items;
+      };
+      queueRef.current = bindTracks(queueRef.current);
+      logicalQueueRef.current = bindTracks(logicalQueueRef.current);
+      if (queuePublishedRef.current)
+        queuePublishedRef.current = bindTracks(queuePublishedRef.current);
+      setQueue(bindTracks);
+      setFeed(bindTracks);
+      setSearch(value => {
+        const tracks = bindTracks(value.tracks);
+        return tracks === value.tracks ? value : { ...value, tracks };
       });
-      return changed ? next : items;
-    };
-    queueRef.current = bindTracks(queueRef.current);
-    logicalQueueRef.current = bindTracks(logicalQueueRef.current);
-    if (queuePublishedRef.current)
-      queuePublishedRef.current = bindTracks(queuePublishedRef.current);
-    setQueue(bindTracks);
-    setFeed(bindTracks);
-    setSearch(value => {
-      const tracks = bindTracks(value.tracks);
-      return tracks === value.tracks ? value : { ...value, tracks };
-    });
-  }, []);
+    },
+    [],
+  );
   const dropUnavailableQueueTrack = useCallback((key: string) => {
-    if (key === actualPlayingKey.current || key === catalogPlaybackGate.current?.key) return;
+    if (
+      key === actualPlayingKey.current ||
+      key === catalogPlaybackGate.current?.key
+    )
+      return;
     const logical = logicalQueueRef.current;
     if (!logical.some(track => trackQueueKey(track) === key)) return;
     const remaining = logical.filter(track => trackQueueKey(track) !== key);
@@ -1940,85 +2504,188 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     queuePublishedRef.current = remaining;
     queuePreparationVersion.current += 1;
     setQueue(remaining);
-    setPlayer(value => ({ ...value, index: Math.max(0, remaining.findIndex(track => trackQueueKey(track) === actualPlayingKey.current)) }));
+    setPlayer(value => ({
+      ...value,
+      index: Math.max(
+        0,
+        remaining.findIndex(
+          track => trackQueueKey(track) === actualPlayingKey.current,
+        ),
+      ),
+    }));
     const generation = queueGeneration.current;
     if (queueRef.current.some(track => trackQueueKey(track) === key)) {
-      const cleanup = playerPreparationCommit.current.catch(() => undefined).then(async () => {
-        if (queueGeneration.current !== generation || key === actualPlayingKey.current || key === catalogPlaybackGate.current?.key) return;
-        const index = queueRef.current.findIndex(track => trackQueueKey(track) === key);
-        if (index < 0) return;
-        await nativePlayer.removeQueueItem(index);
-        if (queueGeneration.current === generation)
-          queueRef.current = queueRef.current.filter(track => trackQueueKey(track) !== key);
-      });
+      const cleanup = playerPreparationCommit.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (
+            queueGeneration.current !== generation ||
+            key === actualPlayingKey.current ||
+            key === catalogPlaybackGate.current?.key
+          )
+            return;
+          const index = queueRef.current.findIndex(
+            track => trackQueueKey(track) === key,
+          );
+          if (index < 0) return;
+          await nativePlayer.removeQueueItem(index);
+          if (queueGeneration.current === generation)
+            queueRef.current = queueRef.current.filter(
+              track => trackQueueKey(track) !== key,
+            );
+        });
       playerPreparationCommit.current = cleanup.catch(() => undefined);
     }
   }, []);
   const enqueueUrlPrewarm = useCallback(
-    (lane: UrlPrewarmLane, tracks: Track[], owner?: object, onResult?: (result: { key: string; outcome: UrlPrewarmOutcome }) => void) => {
+    (
+      lane: UrlPrewarmLane,
+      tracks: Track[],
+      owner?: object,
+      onResult?: (result: { key: string; outcome: UrlPrewarmOutcome }) => void,
+    ) => {
       if (!state) return;
       const healthy = new Set(recommendationPlatforms.map(item => item.id));
       if (lane === 'queue')
-        urlPrewarmScheduler.current!.setQueueOrder(logicalQueueRef.current.map(prewarmIdentity));
+        urlPrewarmScheduler.current!.setQueueOrder(
+          logicalQueueRef.current.map(prewarmIdentity),
+        );
       const sourceGenerationAtEnqueue = sourceSelectionGeneration.current;
       const qualityAtEnqueue = qualityPreferenceRef.current;
       const cacheTokenAtEnqueue = sourceResolutionCacheToken();
       const outcomes: Promise<UrlPrewarmOutcome>[] = [];
       for (const track of tracks) {
         if (trackQueueKey(track) === actualPlayingKey.current) continue;
-        if (track.provider === 'custom' || localPlaybackReference(track) || !healthy.has(track.provider))
+        if (
+          track.provider === 'custom' ||
+          localPlaybackReference(track) ||
+          !healthy.has(track.provider)
+        )
           continue;
         const key = prewarmIdentity(track);
-        const onFailure = lane === 'queue'
-          ? async (signal: AbortSignal) => {
-              if (signal.aborted || sourceSelectionGeneration.current !== sourceGenerationAtEnqueue ||
-                  qualityPreferenceRef.current !== qualityAtEnqueue || sourceResolutionCacheToken() !== cacheTokenAtEnqueue)
-                return;
-              const failedTrack = logicalQueueRef.current.find(
-                item => prewarmIdentity(item) === key,
-              );
-              if (!failedTrack) return;
-              const failedKey = trackQueueKey(failedTrack);
-              if (
-                failedKey === actualPlayingKey.current ||
-                failedKey === catalogPlaybackGate.current?.key
-              ) return;
-              dropUnavailableQueueTrack(failedKey);
-            }
-          : undefined;
-        const outcome = urlPrewarmScheduler.current!.enqueue(lane, key, async signal => {
-          const startedAt = Date.now();
-          const preferred = qualityPreferenceRef.current;
-          const cacheToken = sourceResolutionCacheToken();
-          const result = lane === 'queue'
-            ? await resolveWithImportedSourcePrewarm(track, playbackSourcesFor(track), preferred, signal)
-            : await resolvePlaybackPrewarm(track, playbackSourcesFor(track), preferred, signal);
-          if (signal.aborted) throw new Error('URL prewarm interrupted');
-          if (preferred !== qualityPreferenceRef.current || cacheToken !== sourceResolutionCacheToken()) return;
-          bindPrewarmedTrack(track, result);
-          console.info('[url-prewarm]', JSON.stringify({ key: trackQueueKey(track), lane, ...(owner ? { surface: 'detail' } : {}),
-            stage: 'bound', requestedQuality: preferred, quality: result.quality,
-            audioValidated: Boolean(result.audio), elapsedMs: Date.now() - startedAt }));
-        }, owner, onFailure);
+        const onFailure =
+          lane === 'queue'
+            ? async (signal: AbortSignal) => {
+                if (
+                  signal.aborted ||
+                  sourceSelectionGeneration.current !==
+                    sourceGenerationAtEnqueue ||
+                  qualityPreferenceRef.current !== qualityAtEnqueue ||
+                  sourceResolutionCacheToken() !== cacheTokenAtEnqueue
+                )
+                  return;
+                const failedTrack = logicalQueueRef.current.find(
+                  item => prewarmIdentity(item) === key,
+                );
+                if (!failedTrack) return;
+                const failedKey = trackQueueKey(failedTrack);
+                if (
+                  failedKey === actualPlayingKey.current ||
+                  failedKey === catalogPlaybackGate.current?.key
+                )
+                  return;
+                dropUnavailableQueueTrack(failedKey);
+              }
+            : undefined;
+        const outcome = urlPrewarmScheduler.current!.enqueue(
+          lane,
+          key,
+          async signal => {
+            const startedAt = Date.now();
+            const preferred = qualityPreferenceRef.current;
+            const cacheToken = sourceResolutionCacheToken();
+            const result =
+              lane === 'queue'
+                ? await resolveWithImportedSourcePrewarm(
+                    track,
+                    playbackSourcesFor(track),
+                    preferred,
+                    signal,
+                  )
+                : await resolvePlaybackPrewarm(
+                    track,
+                    playbackSourcesFor(track),
+                    preferred,
+                    signal,
+                  );
+            if (signal.aborted) throw new Error('URL prewarm interrupted');
+            if (
+              preferred !== qualityPreferenceRef.current ||
+              cacheToken !== sourceResolutionCacheToken()
+            )
+              return;
+            bindPrewarmedTrack(track, result);
+            console.info(
+              '[url-prewarm]',
+              JSON.stringify({
+                key: trackQueueKey(track),
+                lane,
+                ...(owner ? { surface: 'detail' } : {}),
+                stage: 'bound',
+                requestedQuality: preferred,
+                quality: result.quality,
+                audioValidated: Boolean(result.audio),
+                elapsedMs: Date.now() - startedAt,
+              }),
+            );
+          },
+          owner,
+          onFailure,
+        );
         outcomes.push(outcome);
-        if (onResult) void outcome.then(value => onResult({ key: trackQueueKey(track), outcome: value }));
+        if (onResult)
+          void outcome.then(value =>
+            onResult({ key: trackQueueKey(track), outcome: value }),
+          );
       }
       return Promise.all(outcomes);
     },
-    [bindPrewarmedTrack, dropUnavailableQueueTrack, playbackSourcesFor, prewarmIdentity, recommendationPlatforms, state],
+    [
+      bindPrewarmedTrack,
+      dropUnavailableQueueTrack,
+      playbackSourcesFor,
+      prewarmIdentity,
+      recommendationPlatforms,
+      state,
+    ],
   );
-  const prewarmDetailTracks = useCallback(async (tracks: Track[], owner: object, onResult?: (result: { key: string; outcome: UrlPrewarmOutcome }) => void) => {
-    const currentPage = pageRef.current;
-    const detailVisible = (['playlist-detail', 'search-playlist', 'new-songs', 'new-albums', 'catalog-list'] as AppPage[]).includes(currentPage) ||
-      (currentPage === 'root' && tab === 'search') ||
-      ((['root', 'personal-playlist', 'favorites', 'history'] as AppPage[]).includes(currentPage) && tab === 'library');
-    urlPrewarmScheduler.current!.retainOwner(owner, detailVisible ? tracks.map(prewarmIdentity) : []);
-    if (!detailVisible || startup.visible) return;
-    await enqueueUrlPrewarm('home-visible', tracks, owner, result => {
-      onResult?.(result);
-      console.info('[detail-url-prewarm-outcome]', JSON.stringify({ ...result, page: currentPage }));
-    });
-  }, [enqueueUrlPrewarm, prewarmIdentity, startup.visible, tab]);
+  const prewarmDetailTracks = useCallback(
+    async (
+      tracks: Track[],
+      owner: object,
+      onResult?: (result: { key: string; outcome: UrlPrewarmOutcome }) => void,
+    ) => {
+      const currentPage = pageRef.current;
+      const detailVisible =
+        (
+          [
+            'playlist-detail',
+            'search-playlist',
+            'new-songs',
+            'new-albums',
+            'catalog-list',
+          ] as AppPage[]
+        ).includes(currentPage) ||
+        (currentPage === 'root' && tab === 'search') ||
+        ((
+          ['root', 'personal-playlist', 'favorites', 'history'] as AppPage[]
+        ).includes(currentPage) &&
+          tab === 'library');
+      urlPrewarmScheduler.current!.retainOwner(
+        owner,
+        detailVisible ? tracks.map(prewarmIdentity) : [],
+      );
+      if (!detailVisible || startup.visible) return;
+      await enqueueUrlPrewarm('home-visible', tracks, owner, result => {
+        onResult?.(result);
+        console.info(
+          '[detail-url-prewarm-outcome]',
+          JSON.stringify({ ...result, page: currentPage }),
+        );
+      });
+    },
+    [enqueueUrlPrewarm, prewarmIdentity, startup.visible, tab],
+  );
   const releaseDetailPrewarm = useCallback((owner: object) => {
     urlPrewarmScheduler.current!.retainOwner(owner, []);
   }, []);
@@ -2029,8 +2696,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const prewarmHomeTracks = useCallback(
     (tracks: Track[]) => {
       const isHomeSurface =
-        tab === 'discovery' &&
-        (['root', 'podcast', 'audiobook'] as AppPage[]).includes(page);
+        tab === 'discovery' && (['root'] as AppPage[]).includes(page);
       const isSearchSurface =
         tab === 'search' &&
         (['root', 'search-playlist'] as AppPage[]).includes(page);
@@ -2086,7 +2752,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
   const reverseQueue = useCallback(() => {
     if (queueReverseRequest.current) return queueReverseRequest.current;
-    if (busy || navigationPending.current || (catalogPlaybackGate.current && !catalogPlaybackGate.current.ready)) {
+    if (
+      busy ||
+      navigationPending.current ||
+      (catalogPlaybackGate.current && !catalogPlaybackGate.current.ready)
+    ) {
       setMessage('请等待当前播放准备完成后再倒序');
       return Promise.resolve();
     }
@@ -2100,14 +2770,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         await previousNativeCommit.catch(() => undefined);
         if (queueGeneration.current !== generation) return;
         const prepared = [...queueRef.current].reverse();
-        if (prepared.length > 1) await nativePlayer.reorderQueue(key, prepared.map(trackQueueKey));
+        if (prepared.length > 1)
+          await nativePlayer.reorderQueue(key, prepared.map(trackQueueKey));
         queueRef.current = [...queueRef.current].reverse();
         if (queueGeneration.current !== generation) return;
-        const logical = [...(queuePublishedRef.current ?? logicalQueueRef.current)].reverse();
+        const logical = [
+          ...(queuePublishedRef.current ?? logicalQueueRef.current),
+        ].reverse();
         if (logical.length < 2) return;
         logicalQueueRef.current = logical;
         queuePublishedRef.current = logical;
-        urlPrewarmScheduler.current!.setQueueOrder(logical.map(prewarmIdentity));
+        urlPrewarmScheduler.current!.setQueueOrder(
+          logical.map(prewarmIdentity),
+        );
         queueReversedRef.current = !queueReversedRef.current;
         setQueueReversed(queueReversedRef.current);
         setQueue(logical);
@@ -2116,28 +2791,48 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setPlayer(value => ({ ...value, index }));
         setQueueOrderVersion(value => value + 1);
       } catch (error) {
-        if (queueGeneration.current === generation) setMessage(error instanceof Error ? error.message : '播放列表倒序失败');
+        if (queueGeneration.current === generation)
+          setMessage(
+            error instanceof Error ? error.message : '播放列表倒序失败',
+          );
       } finally {
         setQueueOrderChanging(false);
       }
     })();
     queueReverseRequest.current = request;
     playerPreparationCommit.current = request.catch(() => undefined);
-    void request.finally(() => { if (queueReverseRequest.current === request) queueReverseRequest.current = null; });
+    void request.finally(() => {
+      if (queueReverseRequest.current === request)
+        queueReverseRequest.current = null;
+    });
     return request;
   }, [busy, current, prewarmIdentity]);
-
   const publishQueueAdditions = useCallback((additions: Track[]) => {
     const previous = queuePublishedRef.current ?? logicalQueueRef.current;
-    const next = extendOrderedQueue(previous, additions, queueReversedRef.current);
+    const next = extendOrderedQueue(
+      previous,
+      additions,
+      queueReversedRef.current,
+    );
     logicalQueueRef.current = next;
     queuePublishedRef.current = next;
     setQueue(next);
     const context = queuePaging.current;
-    if (context) context.publishedCount = (context.publishedCount ?? 0) + additions.length;
-    if (queueReversedRef.current) setPlayer(value => ({ ...value, index: queueIndexForKey(next, value.mediaId ?? (previous[value.index] ? trackQueueKey(previous[value.index]!) : ''), value.index) }));
+    if (context)
+      context.publishedCount = (context.publishedCount ?? 0) + additions.length;
+    if (queueReversedRef.current)
+      setPlayer(value => ({
+        ...value,
+        index: queueIndexForKey(
+          next,
+          value.mediaId ??
+            (previous[value.index]
+              ? trackQueueKey(previous[value.index]!)
+              : ''),
+          value.index,
+        ),
+      }));
   }, []);
-
   const loadMoreQueue = useCallback(() => {
     if (catalogPlaybackGate.current && !catalogPlaybackGate.current.ready)
       return Promise.resolve();
@@ -2199,10 +2894,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const targetPageSize =
         context.source.kind === 'home-menu' && context.source.initialMenuBatch
           ? context.source.initialMenuBatch.remaining
-          : context.source.kind === 'collection' && context.source.initialEpisodeBatch
-          ? context.source.initialEpisodeBatch.remaining
-          : context.source.kind !== 'home-menu' && context.desiredTotal &&
-            !context.satisfiedAheadTotal && logicalQueueRef.current.length < QUEUE_BATCH_SIZE
+          : context.source.kind !== 'home-menu' &&
+            context.desiredTotal &&
+            !context.satisfiedAheadTotal &&
+            logicalQueueRef.current.length < QUEUE_BATCH_SIZE
           ? QUEUE_BATCH_SIZE - logicalQueueRef.current.length
           : QUEUE_BATCH_SIZE;
       setQueuePage({ loading: true, hasMore: true, error: '' });
@@ -2211,7 +2906,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         [...logicalQueueRef.current, ...queueRef.current].map(trackQueueKey),
       );
       let additions: Track[] = [];
-      let publishedAdditions=0;
+      let publishedAdditions = 0;
       const deadline = Date.now() + QUEUE_PAGE_TIMEOUT_MS;
       let releaseTimerTask: () => void = () => undefined;
       try {
@@ -2251,20 +2946,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (cursor.kind === 'home-menu') {
             // Commit each advancing short page before trying another one, so
             // failure/cancellation cannot lose already published progress.
-            const pageTracks=additions.slice(publishedAdditions);
+            const pageTracks = additions.slice(publishedAdditions);
             if (pageTracks.length) publishQueueAdditions(pageTracks);
-            publishedAdditions=additions.length;
-            context.source=cursor;
-            rememberHomeMenuBatch(cursor.cursor,pageTracks);
-            console.info('[menu-batch]', JSON.stringify({choice:cursor.cursor.choiceId,stage:'continuation',
-              revision:cursor.cursor.batchRevision,added:pageTracks.length,total:logicalQueueRef.current.length,
-              hasMore:cursor.hasMore,initialRemaining:cursor.initialMenuBatch?.remaining ?? 0,
-              actualPlayingKey:actualPlayingKey.current}));
+            publishedAdditions = additions.length;
+            context.source = cursor;
+            rememberHomeMenuBatch(cursor.cursor, pageTracks);
+            console.info(
+              '[menu-batch]',
+              JSON.stringify({
+                choice: cursor.cursor.choiceId,
+                stage: 'continuation',
+                revision: cursor.cursor.batchRevision,
+                added: pageTracks.length,
+                total: logicalQueueRef.current.length,
+                hasMore: cursor.hasMore,
+                initialRemaining: cursor.initialMenuBatch?.remaining ?? 0,
+                actualPlayingKey: actualPlayingKey.current,
+              }),
+            );
           }
           if (!result.tracks.length && !cursor.hasMore) break;
         }
         if (queuePaging.current !== context) return;
-        if (additions.length>publishedAdditions) {
+        if (additions.length > publishedAdditions) {
           publishQueueAdditions(additions.slice(publishedAdditions));
         }
         // Publish the fetched page and advance its cursor before any audio
@@ -2316,10 +3020,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (partial.length) {
             publishQueueAdditions(partial);
             if (catalogPlaybackGate.current?.ready)
-              enqueueUrlPrewarm('queue', partial.filter(track => trackQueueKey(track) !== actualPlayingKey.current));
+              enqueueUrlPrewarm(
+                'queue',
+                partial.filter(
+                  track => trackQueueKey(track) !== actualPlayingKey.current,
+                ),
+              );
           }
           context.source = cursor;
-          context.error = error instanceof Error ? error.message : '播放列表加载失败';
+          context.error =
+            error instanceof Error ? error.message : '播放列表加载失败';
           context.prefetchErrorKey = actualPlayingKey.current || undefined;
           setQueuePage({
             loading: false,
@@ -2335,7 +3045,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         context.loading = false;
         markPageReady();
         markReady();
-        if (queuePageAbort.current === controller) queuePageAbort.current = null;
+        if (queuePageAbort.current === controller)
+          queuePageAbort.current = null;
       }
     })();
     queuePageRequest.current = request;
@@ -2346,53 +3057,109 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
       .catch(() => undefined);
     return request;
-  }, [enqueueUrlPrewarm, publishQueueAdditions, recommendationPlatforms, rememberHomeMenuBatch, signalQueueProgress, state]);
-  const prefetchQueueAt = useCallback((index: number, options?: { gesture?: boolean }) => {
-    const context = queuePaging.current;
-    if (!context || !catalogPlaybackGate.current?.ready || catalogPlaybackGate.current.generation !== queueGeneration.current || !actualPlayingKey.current || navigationPending.current)
-      return Promise.resolve();
-    context.desiredTotal = Math.max(context.desiredTotal ?? 0, queueAheadTarget(index, logicalQueueRef.current.length, queueReversedRef.current));
-    if (context.aheadRequest) return context.aheadRequest;
-    if (!options?.gesture && (context.satisfiedAheadTotal ?? 0) >= context.desiredTotal)
-      return Promise.resolve();
-    if (context.error && context.prefetchErrorKey === actualPlayingKey.current)
-      return Promise.resolve();
-    if (context.error) {
-      context.error = '';
-      context.prefetchErrorKey = actualPlayingKey.current;
-      setQueuePage(value => ({ ...value, error: '' }));
-    }
-    const request = Promise.resolve().then(async () => {
-      // Count supplied directory entries independently of later audio failures.
-      // Those failures still remove the song, but cannot drain remote pages
-      // forever while the same viewport/playing group remains stationary.
-      let suppliedTotal = logicalQueueRef.current.length;
-      let published = context.publishedCount ?? 0;
-      while (queuePaging.current === context && context.source.hasMore && !context.error &&
-        catalogPlaybackGate.current?.ready && !navigationPending.current &&
-        Math.max(suppliedTotal, logicalQueueRef.current.length) < (context.desiredTotal ?? 0)) {
-        const before = logicalQueueRef.current.length;
-        const previousCursor = queueSourceProgressKey(context.source);
-        const borrowedRequest = queuePageRequest.current;
-        await loadMoreQueue();
-        if (queuePaging.current !== context) return;
-        suppliedTotal += (context.publishedCount ?? 0) - published;
-        published = context.publishedCount ?? 0;
-        if (context.source.kind === 'home-menu' && context.source.initialMenuBatch) break;
-        if (logicalQueueRef.current.length === before && queueSourceProgressKey(context.source) === previousCursor) {
-          // The borrowed request may belong to a superseded queue. Its release
-          // still leaves this queue's goal pending, so let this context load it.
-          if (borrowedRequest) continue;
-          break;
-        }
+  }, [
+    enqueueUrlPrewarm,
+    publishQueueAdditions,
+    recommendationPlatforms,
+    rememberHomeMenuBatch,
+    signalQueueProgress,
+    state,
+  ]);
+  const prefetchQueueAt = useCallback(
+    (
+      index: number,
+      options?: {
+        gesture?: boolean;
+      },
+    ) => {
+      const context = queuePaging.current;
+      if (
+        !context ||
+        !catalogPlaybackGate.current?.ready ||
+        catalogPlaybackGate.current.generation !== queueGeneration.current ||
+        !actualPlayingKey.current ||
+        navigationPending.current
+      )
+        return Promise.resolve();
+      context.desiredTotal = Math.max(
+        context.desiredTotal ?? 0,
+        queueAheadTarget(
+          index,
+          logicalQueueRef.current.length,
+          queueReversedRef.current,
+        ),
+      );
+      if (context.aheadRequest) return context.aheadRequest;
+      if (
+        !options?.gesture &&
+        (context.satisfiedAheadTotal ?? 0) >= context.desiredTotal
+      )
+        return Promise.resolve();
+      if (
+        context.error &&
+        context.prefetchErrorKey === actualPlayingKey.current
+      )
+        return Promise.resolve();
+      if (context.error) {
+        context.error = '';
+        context.prefetchErrorKey = actualPlayingKey.current;
+        setQueuePage(value => ({ ...value, error: '' }));
       }
-      if (!context.error && Math.max(suppliedTotal, logicalQueueRef.current.length) >= (context.desiredTotal ?? 0))
-        context.satisfiedAheadTotal = context.desiredTotal;
-    });
-    context.aheadRequest = request;
-    void request.finally(() => { if (context.aheadRequest === request) context.aheadRequest = undefined; }).catch(() => undefined);
-    return request;
-  }, [loadMoreQueue]);
+      const request = Promise.resolve().then(async () => {
+        // Count supplied directory entries independently of later audio failures.
+        // Those failures still remove the song, but cannot drain remote pages
+        // forever while the same viewport/playing group remains stationary.
+        let suppliedTotal = logicalQueueRef.current.length;
+        let published = context.publishedCount ?? 0;
+        while (
+          queuePaging.current === context &&
+          context.source.hasMore &&
+          !context.error &&
+          catalogPlaybackGate.current?.ready &&
+          !navigationPending.current &&
+          Math.max(suppliedTotal, logicalQueueRef.current.length) <
+            (context.desiredTotal ?? 0)
+        ) {
+          const before = logicalQueueRef.current.length;
+          const previousCursor = queueSourceProgressKey(context.source);
+          const borrowedRequest = queuePageRequest.current;
+          await loadMoreQueue();
+          if (queuePaging.current !== context) return;
+          suppliedTotal += (context.publishedCount ?? 0) - published;
+          published = context.publishedCount ?? 0;
+          if (
+            context.source.kind === 'home-menu' &&
+            context.source.initialMenuBatch
+          )
+            break;
+          if (
+            logicalQueueRef.current.length === before &&
+            queueSourceProgressKey(context.source) === previousCursor
+          ) {
+            // The borrowed request may belong to a superseded queue. Its release
+            // still leaves this queue's goal pending, so let this context load it.
+            if (borrowedRequest) continue;
+            break;
+          }
+        }
+        if (
+          !context.error &&
+          Math.max(suppliedTotal, logicalQueueRef.current.length) >=
+            (context.desiredTotal ?? 0)
+        )
+          context.satisfiedAheadTotal = context.desiredTotal;
+      });
+      context.aheadRequest = request;
+      void request
+        .finally(() => {
+          if (context.aheadRequest === request)
+            context.aheadRequest = undefined;
+        })
+        .catch(() => undefined);
+      return request;
+    },
+    [loadMoreQueue],
+  );
   prefetchQueueRuntime.current = prefetchQueueAt;
   startMenuInitialCompletion.current = () => {
     const context = queuePaging.current;
@@ -2405,7 +3172,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       context.menuFirstBatchPlayed ||
       !gate?.ready ||
       gate.generation !== queueGeneration.current ||
-      (scene && (!scene.started || scene.paused || scene.generation !== queueGeneration.current))
+      (scene &&
+        (!scene.started ||
+          scene.paused ||
+          scene.generation !== queueGeneration.current))
     )
       return;
     context.menuFirstBatchPlayed = true;
@@ -2515,11 +3285,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ? trackQueueKey(track) === keyHint
           : track.id === trackId,
       )
-        ? trackQueueKey(queueRef.current.find(track =>
-            keyHint !== undefined
-              ? trackQueueKey(track) === keyHint
-              : track.id === trackId,
-          )!)
+        ? trackQueueKey(
+            queueRef.current.find(track =>
+              keyHint !== undefined
+                ? trackQueueKey(track) === keyHint
+                : track.id === trackId,
+            )!,
+          )
         : trackId;
       const wasCurrent = currentKey === removeKey;
       const nextQueue = queueRef.current.filter(
@@ -2592,7 +3364,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!equalizer) return;
     const gains = equalizer === 'Custom' ? customEqualizerGains : undefined;
-    const configuration=AudioEffectStateManager.configuration(customEqualizerAdvanced,headphoneCalibration);
+    const configuration = AudioEffectStateManager.configuration(
+      customEqualizerAdvanced,
+      headphoneCalibration,
+    );
     const key = JSON.stringify([equalizer, gains, configuration]);
     if (appliedEqualizerKey.current === key || equalizerUpdates.busy) return;
     equalizerUpdates.request(async () => {
@@ -2602,8 +3377,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       appliedEqualizerKey.current = key;
       return true;
     });
-  }, [equalizer, customEqualizerGains, customEqualizerAdvanced, headphoneCalibration, page, equalizerUpdates]);
-
+  }, [
+    equalizer,
+    customEqualizerGains,
+    customEqualizerAdvanced,
+    headphoneCalibration,
+    page,
+    equalizerUpdates,
+  ]);
   const applyPlatformHealth = useCallback(
     (platformHealth: PlatformHealthResult) => {
       setHealthyProviderIds(platformHealth.healthy);
@@ -2613,7 +3394,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [],
   );
-
   // Source changes start a new probe generation. This refreshes the fixed
   // platform/backend bindings without replaying startup autoplay or rebuilding
   // the playback queue after the app is already visible.
@@ -2651,20 +3431,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [applyPlatformHealth, ready, sourceHealthRevision]);
-
   const startupHomeCommit = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (startup.visible || !startupHomeCommit.current) return;
     const commit = startupHomeCommit.current;
     const frame = requestAnimationFrame(() => {
       if (startupHomeCommit.current === commit) {
-        console.info('[startup-sequence]', JSON.stringify({ stage: 'home-committed' }));
+        console.info(
+          '[startup-sequence]',
+          JSON.stringify({ stage: 'home-committed' }),
+        );
         commit();
       }
     });
     return () => cancelAnimationFrame(frame);
   }, [startup.visible]);
-
   useEffect(() => {
     const runtime = startupRuntime.current;
     if (!ready || !runtime.state || startupHandled.current) return;
@@ -2688,8 +3469,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return timer;
     };
     const isTestRuntime =
-      (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process?.env
-        ?.NODE_ENV === 'test';
+      (
+        globalThis as {
+          process?: {
+            env?: {
+              NODE_ENV?: string;
+            };
+          };
+        }
+      ).process?.env?.NODE_ENV === 'test';
     // A user action may race the final splash crossfade (especially on a warm
     // restore). Preserve that explicit choice and do not let startup autoplay
     // replace it after the window becomes visible.
@@ -2712,18 +3500,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setStartup(value => ({ ...value, progress: 1, label: '准备完成' }));
       await keepStageVisible(STARTUP_READY_HOLD_MS);
       if (!sourceGenerationIsCurrent()) return;
-      const committed = forPlayback ? new Promise<void>(resolve => {
-        const finish = () => {
-          pendingWaits.delete(finish);
-          if (startupHomeCommit.current === finish) startupHomeCommit.current = null;
-          resolve();
-        };
-        pendingWaits.add(finish);
-        startupHomeCommit.current = finish;
-      }) : null;
+      const committed = forPlayback
+        ? new Promise<void>(resolve => {
+            const finish = () => {
+              pendingWaits.delete(finish);
+              if (startupHomeCommit.current === finish)
+                startupHomeCommit.current = null;
+              resolve();
+            };
+            pendingWaits.add(finish);
+            startupHomeCommit.current = finish;
+          })
+        : null;
       setStartup(value => ({ ...value, visible: false }));
       homeRevealed = true;
-      console.info('[startup-sequence]', JSON.stringify({ stage: 'home-revealed' }));
+      console.info(
+        '[startup-sequence]',
+        JSON.stringify({ stage: 'home-revealed' }),
+      );
       if (committed) await committed;
       else await keepStageVisible(STARTUP_CROSSFADE_SETTLE_MS);
     };
@@ -2736,9 +3530,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
         await keepStageVisible(280);
         if (!sourceGenerationIsCurrent()) return;
-        if (
-          !launchState.sources.some(isSourceEnabled)
-        ) {
+        if (!launchState.sources.some(isSourceEnabled)) {
           setHealthyProviderIds([]);
           setStartupHealth({
             healthy: [],
@@ -2754,13 +3546,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           await reveal();
           return;
         }
-        if (!homeRevealed) setStartup({
-          visible: true,
-          label: '正在检测可用平台',
-          progress: 0.48,
-        });
+        if (!homeRevealed)
+          setStartup({
+            visible: true,
+            label: '正在检测可用平台',
+            progress: 0.48,
+          });
         resetLaunchBackendPools();
-        if (homeRevealed) releaseStartupPrewarm = urlPrewarmScheduler.current!.hold();
+        if (homeRevealed)
+          releaseStartupPrewarm = urlPrewarmScheduler.current!.hold();
         const healthSession = startPlatformHealthDetection(
           launchState.platforms,
           launchState.sources,
@@ -2805,19 +3599,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           await reveal();
           return;
         }
-        if (!launchState.settings.startupAutoplay || startupAutoplayCancelled.current) {
+        if (
+          !launchState.settings.startupAutoplay ||
+          startupAutoplayCancelled.current
+        ) {
           // With startup autoplay disabled there is no startup playback
           // session. Keep the logical/native queues empty so Home has no mini
           // player until the user explicitly selects a song.
           await reveal();
           return;
         }
-        if (homeRevealed && queueGeneration.current !== startupGeneration) return;
-        if (!homeRevealed) setStartup({
-          visible: true,
-          label: '正在生成默认模式推荐',
-          progress: 0.66,
-        });
+        if (homeRevealed && queueGeneration.current !== startupGeneration)
+          return;
+        if (!homeRevealed)
+          setStartup({
+            visible: true,
+            label: '正在生成默认模式推荐',
+            progress: 0.66,
+          });
         console.info(
           '[startup-sequence]',
           JSON.stringify({
@@ -2826,11 +3625,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }),
         );
         const [mix] = await Promise.all([
-          loadHomeMenuFirstBatch('mode-default',
-            launchState.platforms.filter(platform => platform.id === provider).map(platform => ({ ...platform, enabled: true })),
-            { ...launchState.profile, favoriteStatistics: favoriteStatisticsFor(launchState) }, launchState.history,
-            { signal: catalogAbort.signal, progress: advanceExhaustedMenuRound(
-              menuProgressEntry(launchState.menuRecommendationProgress, 'mode-default', provider)) }),
+          loadHomeMenuFirstBatch(
+            'mode-default',
+            launchState.platforms
+              .filter(platform => platform.id === provider)
+              .map(platform => ({ ...platform, enabled: true })),
+            {
+              ...launchState.profile,
+              favoriteStatistics: favoriteStatisticsFor(launchState),
+            },
+            launchState.history,
+            {
+              signal: catalogAbort.signal,
+              progress: advanceExhaustedMenuRound(
+                menuProgressEntry(
+                  launchState.menuRecommendationProgress,
+                  'mode-default',
+                  provider,
+                ),
+              ),
+            },
+          ),
           keepStageVisible(520),
         ]);
         if (!sourceGenerationIsCurrent()) return;
@@ -2838,17 +3653,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           '[startup-sequence]',
           JSON.stringify({ stage: 'mix-ready', tracks: mix.tracks.length }),
         );
-        if (startupAutoplayCancelled.current) { await reveal(); return; }
+        if (startupAutoplayCancelled.current) {
+          await reveal();
+          return;
+        }
         if (!mix.tracks[0]) throw new Error('默认模式没有可用歌曲');
         rememberHomeMenuBatch(mix.cursor, mix.tracks);
         // Preserve the original URL-only choice before shared selected-song
         // preparation. The splash never creates a native queue or starts audio.
         releaseStartupPrewarm ??= urlPrewarmScheduler.current!.hold();
-        if (!homeRevealed) setStartup({
-          visible: true,
-          label: '正在为您准备歌曲',
-          progress: 0.82,
-        });
+        if (!homeRevealed)
+          setStartup({
+            visible: true,
+            label: '正在为您准备歌曲',
+            progress: 0.82,
+          });
         const resolvedFirst = await selectFirstResolvableTrack(
           mix.tracks.slice(0, QUEUE_BATCH_SIZE),
           async track => {
@@ -2868,16 +3687,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           },
         );
         if (!sourceGenerationIsCurrent()) return;
-        if (startupAutoplayCancelled.current) { await reveal(); return; }
+        if (startupAutoplayCancelled.current) {
+          await reveal();
+          return;
+        }
         let startupSource: QueueSource = {
           kind: 'home-menu',
           startup: true,
           cursor: mix.cursor,
           hasMore: mix.hasMore,
-          ...(mix.hasMore ? { initialMenuBatch: {
-            remaining: QUEUE_BATCH_SIZE - resolvedFirst.tracks.length,
-            artists: [...new Set(resolvedFirst.tracks.flatMap(item => constituentArtists(item.artist)))],
-          } } : {}),
+          ...(mix.hasMore
+            ? {
+                initialMenuBatch: {
+                  remaining: QUEUE_BATCH_SIZE - resolvedFirst.tracks.length,
+                  artists: [
+                    ...new Set(
+                      resolvedFirst.tracks.flatMap(item =>
+                        constituentArtists(item.artist),
+                      ),
+                    ),
+                  ],
+                },
+              }
+            : {}),
         };
         const startupTracks: Track[] = resolvedFirst.tracks.slice(
           0,
@@ -2943,10 +3775,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       preserveQueueOrder = false,
     ) => {
       const generation = ++queueGeneration.current;
-      const resumePosition = trackMediaKind(track) !== 'music' &&
-        typeof options?.resumePositionSeconds === 'number' &&
-        Number.isFinite(options.resumePositionSeconds)
-        ? Math.max(0, options.resumePositionSeconds) : undefined;
+      const resumePosition = undefined;
       expiredUrlRequest.current?.abort.abort();
       // A tap from the visible bottom-player queue may omit queueSource. Keep
       // that queue's continuation cursor when the supplied list is the current
@@ -2979,8 +3808,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setQueueReversed(false);
       }
       playerRequestAbort.current?.abort();
-      const startupPlayback =
-        isStartupQueueSource(source) ? options?.startupPlayback : undefined;
+      const startupPlayback = isStartupQueueSource(source)
+        ? options?.startupPlayback
+        : undefined;
       const requestAbort =
         onDemand || startupPlayback ? new AbortController() : null;
       playerRequestAbort.current = requestAbort;
@@ -3005,9 +3835,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const preserveHistoryOrigin =
         preserveQueueOrder &&
         (options?.navigationToken !== undefined ||
-          pageRef.current === 'player' || pageRef.current === 'queue' || queueListOpenRef.current);
-      const selectedOrigin = options?.historyOrigin !== undefined ? options.historyOrigin
-        : preserveHistoryOrigin ? musicEntityRecorder.current.getOrigin() : null;
+          pageRef.current === 'player' ||
+          pageRef.current === 'queue' ||
+          queueListOpenRef.current);
+      const selectedOrigin =
+        options?.historyOrigin !== undefined
+          ? options.historyOrigin
+          : preserveHistoryOrigin
+          ? musicEntityRecorder.current.getOrigin()
+          : null;
       const catalogGate = { generation, ready: false, key: selectedKey };
       catalogPlaybackGate.current = catalogGate;
       musicEntityRecorder.current.begin(
@@ -3067,8 +3903,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return items;
         const keys = new Set(items.map(trackQueueKey));
         const published = queuePublishedRef.current ?? logicalQueueRef.current;
-        const additional = published.filter(item => !keys.has(trackQueueKey(item)));
-        return queueReversedRef.current ? [...additional, ...items] : [...items, ...additional];
+        const additional = published.filter(
+          item => !keys.has(trackQueueKey(item)),
+        );
+        return queueReversedRef.current
+          ? [...additional, ...items]
+          : [...items, ...additional];
       };
       if (options?.navigationToken === undefined) {
         navigationVersion.current += 1;
@@ -3084,10 +3924,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         stage: string,
         detail: Record<string, unknown> = {},
       ) => {
-        console.info('[track-playback-timing]', JSON.stringify({
-          key: selectedKey, generation, stage,
-          totalMs: Date.now() - sceneAttemptStartedAt, ...detail,
-        }));
+        console.info(
+          '[track-playback-timing]',
+          JSON.stringify({
+            key: selectedKey,
+            generation,
+            stage,
+            totalMs: Date.now() - sceneAttemptStartedAt,
+            ...detail,
+          }),
+        );
         if (startupPlayback)
           console.info(
             '[startup-playback]',
@@ -3113,7 +3959,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }),
         );
       };
-      const sceneTiming: PlaybackTimingObserver = (stage, detail) => logSceneStage(stage, detail);
+      const sceneTiming: PlaybackTimingObserver = (stage, detail) =>
+        logSceneStage(stage, detail);
       logSceneStage('selected');
       const markSceneStarted = () => {
         if (catalogPlaybackGate.current === catalogGate && !catalogGate.ready) {
@@ -3129,8 +3976,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       };
       const releasePrewarm = urlPrewarmScheduler.current!.hold();
       urlPrewarmScheduler.current!.setPlaybackReady(false);
-      const backgroundReleased = urlPrewarmScheduler.current!.preemptExcept(prewarmIdentity(track));
-      if (!preserveQueueOrder) urlPrewarmScheduler.current!.setQueueOrder([prewarmIdentity(track)]);
+      const backgroundReleased = urlPrewarmScheduler.current!.preemptExcept(
+        prewarmIdentity(track),
+      );
+      if (!preserveQueueOrder)
+        urlPrewarmScheduler.current!.setQueueOrder([prewarmIdentity(track)]);
       let prewarmReleased = false;
       const releasePrewarmOnce = () => {
         if (prewarmReleased) return;
@@ -3171,7 +4021,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               ),
             )
           : [track, ...remainingTracks].slice(0, QUEUE_BATCH_SIZE);
-        const pendingIndex = preserveQueueOrder ? queueIndexForKey(pendingQueue, selectedKey, sourceIndex) : 0;
+        const pendingIndex = preserveQueueOrder
+          ? queueIndexForKey(pendingQueue, selectedKey, sourceIndex)
+          : 0;
         if (pageRef.current === 'player') {
           pendingDisplay.current = { key: selectedKey, index: pendingIndex };
           const sameLogicalQueue =
@@ -3184,7 +4036,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             logicalQueueRef.current = pendingQueue;
             queuePublishedRef.current = pendingQueue;
             setQueue(pendingQueue);
-            publishQueueOrigin(options?.queueOrigin ?? queueOriginRef.current, false);
+            publishQueueOrigin(
+              options?.queueOrigin ?? queueOriginRef.current,
+              false,
+            );
           }
           setPlayer(value => ({
             ...value,
@@ -3212,16 +4067,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               item.metadata._playerPreparationSource ===
                 sourceSelectionGeneration.current),
         );
-        if (
-          (pageRef.current === 'player' ||
-            pageRef.current === 'queue' ||
-            queueListOpenRef.current) &&
-          !options?.forceQualityRefresh &&
-          !(source?.kind === 'collection' && source.initialEpisodeBatch) &&
-          preparedIndex >= 0
-        ) {
+        if (preparedIndex >= 0) {
           playbackStage = 'load';
-          if (resumePosition === undefined) await nativePlayer.playIndex(preparedIndex);
+          if (resumePosition === undefined)
+            await nativePlayer.playIndex(preparedIndex);
           else await nativePlayer.playIndex(preparedIndex, resumePosition);
           if (!requestIsCurrent()) return;
           musicEntityRecorder.current.accept(generation, selectedKey);
@@ -3229,7 +4078,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           publishPlaybackSource(source);
           setPlayer(value => ({
             ...value,
-            index: queueIndexForKey(logicalQueueRef.current, selectedKey, sourceIndex),
+            index: queueIndexForKey(
+              logicalQueueRef.current,
+              selectedKey,
+              sourceIndex,
+            ),
             mediaId: selectedKey,
             playing: true,
             position: resumePosition ?? 0,
@@ -3242,7 +4095,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (options?.openPlayer !== false) setPage('player');
           playbackStage = 'start';
           const playing = nativePlayer.waitForPlaybackStart(
-            15_000,
+            15000,
             selectedKey,
             requestAbort?.signal,
           );
@@ -3278,8 +4131,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             playable.findIndex(item => trackQueueKey(item) === selectedKey),
           );
           playbackStage = 'load';
-          if (resumePosition === undefined) await nativePlayer.loadQueue(playable, playableIndex, true);
-          else await nativePlayer.loadQueue(playable, playableIndex, true, resumePosition);
+          if (resumePosition === undefined)
+            await nativePlayer.loadQueue(playable, playableIndex, true);
+          else
+            await nativePlayer.loadQueue(
+              playable,
+              playableIndex,
+              true,
+              resumePosition,
+            );
           musicEntityRecorder.current.accept(generation, selectedKey);
           playbackStage = 'start';
           await nativePlayer.waitForPlaybackStart();
@@ -3308,11 +4168,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         const mainPlayerSelection =
           onDemand && preserveQueueOrder && pageRef.current === 'player';
-        const prepareSelected = () => prepareTrack(track, requestedQuality, false, sceneTiming, options?.navigationToken === undefined);
+        const prepareSelected = () =>
+          prepareTrack(
+            track,
+            requestedQuality,
+            false,
+            sceneTiming,
+            options?.navigationToken === undefined,
+          );
         const selectedRequest = mainPlayerSelection
           ? playerQueuePreparation.current.select(
               track,
-              `${requestedQuality}:${sourceSelectionGeneration.current}:${sourceResolutionCacheToken()}`,
+              `${requestedQuality}:${
+                sourceSelectionGeneration.current
+              }:${sourceResolutionCacheToken()}`,
               prepareSelected,
             )
           : prepareSelected();
@@ -3327,7 +4196,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 ),
               )
             : [selected, ...remainingTracks].slice(0, QUEUE_BATCH_SIZE),
-          logicalSelectedIndex = keepCurrentOrder ? queueIndexForKey(logicalQueue, selectedKey, sourceIndex) : 0,
+          logicalSelectedIndex = keepCurrentOrder
+            ? queueIndexForKey(logicalQueue, selectedKey, sourceIndex)
+            : 0,
           queueSourceWithRemainder =
             !keepCurrentOrder && remainingTracks.length > QUEUE_BATCH_SIZE - 1
               ? withQueueRemainder(
@@ -3345,15 +4216,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           );
         if (!requestIsCurrent()) return;
         if (startupPlayback) {
-          if (AppState.currentState !== 'active' || requestAbort?.signal.aborted) return;
+          if (
+            AppState.currentState !== 'active' ||
+            requestAbort?.signal.aborted
+          )
+            return;
           const homeReady = startupPlayback.beforeNativeLoad();
-          if (requestAbort) await waitForPlayerRequest(homeReady, requestAbort.signal);
+          if (requestAbort)
+            await waitForPlayerRequest(homeReady, requestAbort.signal);
           else await homeReady;
-          if (!requestIsCurrent() || AppState.currentState !== 'active' || requestAbort?.signal.aborted) return;
+          if (
+            !requestIsCurrent() ||
+            AppState.currentState !== 'active' ||
+            requestAbort?.signal.aborted
+          )
+            return;
           releaseStartupPreparation();
         }
         playbackStage = 'load';
-        if (resumePosition === undefined) await nativePlayer.loadQueue([selected], 0, true);
+        if (resumePosition === undefined)
+          await nativePlayer.loadQueue([selected], 0, true);
         else await nativePlayer.loadQueue([selected], 0, true, resumePosition);
         if (!requestIsCurrent()) return;
         musicEntityRecorder.current.accept(generation, selectedKey);
@@ -3392,7 +4274,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setPlayer(value => ({
           ...value,
           index: logicalSelectedIndex,
-          mediaId: onDemand ? trackQueueKey(selected) : value.mediaId,
+          mediaId: trackQueueKey(selected),
           playing: true,
           position: resumePosition ?? 0,
           duration: selected.duration,
@@ -3405,12 +4287,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setBusy(false);
         rememberPlayback();
         if (options?.openPlayer !== false) setPage('player');
-
         playbackStage = 'start';
         if (onDemand && requestAbort) {
           await waitForPlayerRequest(
             nativePlayer.waitForPlaybackStart(
-              15_000,
+              15000,
               trackQueueKey(selected),
               requestAbort.signal,
             ),
@@ -3423,19 +4304,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setMessage('');
           actualPlayingKey.current = trackQueueKey(selected);
           setPlayerPreparationReadyKey(trackQueueKey(selected));
-          enqueueUrlPrewarm('queue', logicalQueueRef.current.filter(item => trackQueueKey(item) !== selectedKey));
+          enqueueUrlPrewarm(
+            'queue',
+            logicalQueueRef.current.filter(
+              item => trackQueueKey(item) !== selectedKey,
+            ),
+          );
           releasePrewarmOnce();
           void prefetchQueueAt(logicalSelectedIndex).catch(() => undefined);
           return;
         }
-
         // Native loadQueue resolves after issuing prepare/play. Wait until
         // Media3 reports real playback before background audio validation may
         // compete with the selected track's initial buffering.
         if (startupPlayback && requestAbort)
           await waitForPlayerRequest(
             nativePlayer.waitForPlaybackStart(
-              15_000,
+              15000,
               selectedKey,
               requestAbort.signal,
             ),
@@ -3450,19 +4335,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         onDemandPlayerQueue.current = true;
         actualPlayingKey.current = trackQueueKey(selected);
         setPlayerPreparationReadyKey(trackQueueKey(selected));
-        enqueueUrlPrewarm('queue', logicalQueueRef.current.filter(item => trackQueueKey(item) !== selectedKey));
+        enqueueUrlPrewarm(
+          'queue',
+          logicalQueueRef.current.filter(
+            item => trackQueueKey(item) !== selectedKey,
+          ),
+        );
         releasePrewarmOnce();
         void prefetchQueueAt(logicalSelectedIndex).catch(() => undefined);
       } catch (error) {
         if (error instanceof PlayerRequestCancelled || !requestIsCurrent())
           return;
         logSceneStage('failed', { failedStage: playbackStage });
-        if (!startupPlayback && !playbackStarted && isSourceBindingUnavailable(error)) {
+        if (
+          !startupPlayback &&
+          !playbackStarted &&
+          isSourceBindingUnavailable(error)
+        ) {
           pendingDisplay.current = null;
-          if (catalogPlaybackGate.current === catalogGate) catalogPlaybackGate.current = null;
-          if (scenePlayback.current?.generation === generation) scenePlayback.current.handled = true;
+          if (catalogPlaybackGate.current === catalogGate)
+            catalogPlaybackGate.current = null;
+          if (scenePlayback.current?.generation === generation)
+            scenePlayback.current.handled = true;
           setMessage(PLATFORM_UNBOUND_MESSAGE);
-          setPlayer(value => ({ ...value, playing: false, error: PLATFORM_UNBOUND_MESSAGE }));
+          setPlayer(value => ({
+            ...value,
+            playing: false,
+            error: PLATFORM_UNBOUND_MESSAGE,
+          }));
           // A platform failure must not reject every song, advance the bulk
           // list, or clear its metadata. The original stop already completed.
           if (options?.navigationToken !== undefined) throw error;
@@ -3488,7 +4388,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             }),
           );
         }
-        if (options?.bulkPlay && !playbackStarted) options.onUnavailableTrack?.(selectedKey);
+        if (options?.bulkPlay && !playbackStarted)
+          options.onUnavailableTrack?.(selectedKey);
         if (
           queueGeneration.current === generation &&
           !playbackStarted &&
@@ -3496,7 +4397,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             options?.bulkPlay === true ||
             options?.allowFailureFallback === true ||
             options?.navigationToken !== undefined) &&
-          (options?.bulkPlay ? tracks.length > 1 : fallbackDepth < PLAYER_FAILURE_FALLBACK_LIMIT)
+          (options?.bulkPlay
+            ? tracks.length > 1
+            : fallbackDepth < PLAYER_FAILURE_FALLBACK_LIMIT)
         ) {
           const direction = options?.failureDirection ?? 1;
           let nextIndex = sourceIndex + direction;
@@ -3514,23 +4417,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (nextIndex >= tracks.length) nextIndex = -1;
           if (nextIndex >= 0) {
             const nextTrack = tracks[nextIndex]!;
-            const nextTracks = options?.bulkPlay ? tracks.filter(item => trackQueueKey(item) !== selectedKey) : tracks;
+            const nextTracks = options?.bulkPlay
+              ? tracks.filter(item => trackQueueKey(item) !== selectedKey)
+              : tracks;
             const nextSource = options?.queueSource ?? source ?? undefined;
-            await startFeedRef.current(nextTrack, nextTracks, options?.bulkPlay ? nextTracks.findIndex(item => trackQueueKey(item) === trackQueueKey(nextTrack)) : nextIndex, {
-              ...options,
-              providerAlreadyStopped: false,
-              fallbackDepth: fallbackDepth + 1,
-              ...(sceneQueue ? { sceneFailedKeys: [...failedKeys] } : {}),
-              ...(startupPlayback
-                ? {
-                    startupPlayback: {
-                      ...startupPlayback,
-                      failedKeys: [...failedKeys],
-                    },
-                  }
-                : {}),
-              queueSource: options?.bulkPlay && nextSource ? sourceWithSeenKeys(nextSource, [selectedKey]) : nextSource,
-            });
+            await startFeedRef.current(
+              nextTrack,
+              nextTracks,
+              options?.bulkPlay
+                ? nextTracks.findIndex(
+                    item => trackQueueKey(item) === trackQueueKey(nextTrack),
+                  )
+                : nextIndex,
+              {
+                ...options,
+                providerAlreadyStopped: false,
+                fallbackDepth: fallbackDepth + 1,
+                ...(sceneQueue ? { sceneFailedKeys: [...failedKeys] } : {}),
+                ...(startupPlayback
+                  ? {
+                      startupPlayback: {
+                        ...startupPlayback,
+                        failedKeys: [...failedKeys],
+                      },
+                    }
+                  : {}),
+                queueSource:
+                  options?.bulkPlay && nextSource
+                    ? sourceWithSeenKeys(nextSource, [selectedKey])
+                    : nextSource,
+              },
+            );
             return;
           }
         }
@@ -3581,9 +4498,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   error,
                 )}）`
               : isTrackPlaybackRejected(error)
-              ? trackMediaKind(track) === 'music'
-                ? error instanceof Error ? error.message : '该歌曲无法播放，已从列表移除'
-                : '该歌曲为试听片段，已从列表移除'
+              ? error instanceof Error
+                ? error.message
+                : '该歌曲无法播放，已从列表移除'
               : libraryLocalPlaybackFailure(track, error) ??
                 '当前歌曲没有可播放的在线音源',
           );
@@ -3603,8 +4520,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             setQueue([]);
             setQueueSource(null);
             publishQueueOrigin(null);
-            setPlayer(value => ({ ...value, playing: false, index: 0, position: 0, mediaId: null,
-              error: '当前已加载歌曲均无法播放，请稍后重试' }));
+            setPlayer(value => ({
+              ...value,
+              playing: false,
+              index: 0,
+              position: 0,
+              mediaId: null,
+              error: '当前已加载歌曲均无法播放，请稍后重试',
+            }));
           } else if (localPlaybackReference(track)) {
             setPlayer(value => ({
               ...value,
@@ -3622,10 +4545,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (onDemand && options?.navigationToken !== undefined) throw error;
         }
       } finally {
-        if (selectedPreparationGeneration.current === generation) selectedPreparationGeneration.current = null;
+        if (selectedPreparationGeneration.current === generation)
+          selectedPreparationGeneration.current = null;
         releaseStartupPreparation();
-        if (startupPlayback && !playbackStarted && requestIsCurrent() &&
-            !queueRef.current.length && catalogPlaybackGate.current === catalogGate) {
+        if (
+          startupPlayback &&
+          !playbackStarted &&
+          requestIsCurrent() &&
+          !queueRef.current.length &&
+          catalogPlaybackGate.current === catalogGate
+        ) {
           catalogPlaybackGate.current = null;
           urlPrewarmScheduler.current!.setPlaybackReady(true);
         }
@@ -3648,284 +4577,559 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       state?.settings.repeat,
     ],
   );
-  const setPlaybackPlaying = useCallback(async (shouldPlay: boolean) => {
-    if (!shouldPlay) {
-      startupAutoplayCancelled.current = true;
-      expiredUrlRequest.current?.abort.abort();
-      playerRequestAbort.current?.abort();
-      playerQueuePreparation.current.pause();
-      if (selectedPreparationGeneration.current !== null) {
-        selectedPreparationGeneration.current = null;
-        queueGeneration.current += 1;
-        navigationVersion.current += 1;
-        navigationPending.current = false;
-        pendingDisplay.current = null;
-        setBusy(false);
-      }
-    }
-    if (scenePlayback.current) {
-      scenePlayback.current.paused = !shouldPlay;
+  const setPlaybackPlaying = useCallback(
+    async (shouldPlay: boolean) => {
       if (!shouldPlay) {
-        // Cancel a scene start/navigation too; pausing must not admit a later
-        // failed-start fallback after the user's explicit pause.
+        startupAutoplayCancelled.current = true;
+        expiredUrlRequest.current?.abort.abort();
         playerRequestAbort.current?.abort();
-        navigationVersion.current += 1;
-        navigationPending.current = false;
+        playerQueuePreparation.current.pause();
+        if (selectedPreparationGeneration.current !== null) {
+          selectedPreparationGeneration.current = null;
+          queueGeneration.current += 1;
+          navigationVersion.current += 1;
+          navigationPending.current = false;
+          pendingDisplay.current = null;
+          setBusy(false);
+        }
       }
-    }
-    if (shouldPlay) {
-      if (!current) return;
-      await nativePlayer.play();
-    } else await nativePlayer.pause();
-    // Do not invert a possibly newer polling/event value. The native action
-    // above has one explicit target state, so commit that same target.
-    setPlayer(value => ({ ...value, playing: shouldPlay }));
-  }, [current]);
-  const togglePlay = useCallback(() => setPlaybackPlaying(!player.playing), [setPlaybackPlaying, player.playing]);
+      if (scenePlayback.current) {
+        scenePlayback.current.paused = !shouldPlay;
+        if (!shouldPlay) {
+          // Cancel a scene start/navigation too; pausing must not admit a later
+          // failed-start fallback after the user's explicit pause.
+          playerRequestAbort.current?.abort();
+          navigationVersion.current += 1;
+          navigationPending.current = false;
+        }
+      }
+      if (shouldPlay) {
+        if (!current) return;
+        await nativePlayer.play();
+      } else await nativePlayer.pause();
+      // Do not invert a possibly newer polling/event value. The native action
+      // above has one explicit target state, so commit that same target.
+      setPlayer(value => ({ ...value, playing: shouldPlay }));
+    },
+    [current],
+  );
+  const togglePlay = useCallback(
+    () => setPlaybackPlaying(!player.playing),
+    [setPlaybackPlaying, player.playing],
+  );
   const notify = useCallback((value: string) => setMessage(value), []);
   // Keep the serialized controller current before React renders the next queued operation.
-  const patchEqualizerSettings = useCallback((update: (settings: AppSettings) => AppSettings) => {
-    const current = equalizerState.current;
-    if (current) equalizerState.current = { ...current, settings: update(current.settings) };
-    patchState(value => ({ ...value, settings: update(value.settings) }));
-  }, [patchState]);
+  const patchEqualizerSettings = useCallback(
+    (update: (settings: AppSettings) => AppSettings) => {
+      const current = equalizerState.current;
+      if (current)
+        equalizerState.current = {
+          ...current,
+          settings: update(current.settings),
+        };
+      patchState(value => ({ ...value, settings: update(value.settings) }));
+    },
+    [patchState],
+  );
   const applyEqualizer = useCallback(
     async (preset: EqualizerPreset) => {
       await equalizerUpdates.request(async () => {
-      try {
-        const currentSettings=equalizerState.current?.settings;
-        const tuning=presetTuning(preset);
-        if (!currentSettings) return false;
-        const general = readEffects(currentSettings);
-        const override=preset==='Custom'?undefined:currentSettings.effectUserOverrides?.[`preset:${preset}`];
-        const effectivePreset=override?'Custom':preset;
-        const gains=override?.gains??(preset==='Custom'?general.gains:undefined);
-        const configuration=AudioEffectStateManager.configuration(override?.advanced??(preset==='Custom'?general.advanced:tuning.advanced));
-        await nativePlayer.setEqualizer(effectivePreset, gains, configuration);
-        appliedEqualizerKey.current = JSON.stringify([effectivePreset, gains, configuration]);
-        patchEqualizerSettings(settings => commitEffects(settings, { equalizer: effectivePreset,
-          gains: override?.gains??(preset==='Custom'?general.gains:tuning.gains), advanced: configuration.advanced,
-          sceneId: override?`preset:${preset}`:undefined }, 'general'));
-        setMessage(`已启用${equalizerPresetLabels[preset]}`);
-        return true;
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : '音效应用失败');
-        return false;
-      }
+        try {
+          const currentSettings = equalizerState.current?.settings;
+          const tuning = presetTuning(preset);
+          if (!currentSettings) return false;
+          const general = readEffects(currentSettings);
+          const override =
+            preset === 'Custom'
+              ? undefined
+              : currentSettings.effectUserOverrides?.[`preset:${preset}`];
+          const effectivePreset = override ? 'Custom' : preset;
+          const gains =
+            override?.gains ??
+            (preset === 'Custom' ? general.gains : undefined);
+          const configuration = AudioEffectStateManager.configuration(
+            override?.advanced ??
+              (preset === 'Custom' ? general.advanced : tuning.advanced),
+          );
+          await nativePlayer.setEqualizer(
+            effectivePreset,
+            gains,
+            configuration,
+          );
+          appliedEqualizerKey.current = JSON.stringify([
+            effectivePreset,
+            gains,
+            configuration,
+          ]);
+          patchEqualizerSettings(settings =>
+            commitEffects(
+              settings,
+              {
+                equalizer: effectivePreset,
+                gains:
+                  override?.gains ??
+                  (preset === 'Custom' ? general.gains : tuning.gains),
+                advanced: configuration.advanced,
+                sceneId: override ? `preset:${preset}` : undefined,
+              },
+              'general',
+            ),
+          );
+          setMessage(`已启用${equalizerPresetLabels[preset]}`);
+          return true;
+        } catch (error) {
+          setMessage(error instanceof Error ? error.message : '音效应用失败');
+          return false;
+        }
       });
     },
     [patchEqualizerSettings, equalizerUpdates],
   );
-  const applyCustomEqualizer = useCallback(async (gains: number[], savedId?: string, options?: EffectApplyOptions) => {
-    if (!validEqualizerGains(gains)) {
-      setMessage('需要十段 -12 至 +12 dB 的有效参数');
-      return false;
-    }
-    const requestedGains = [...gains];
-    return equalizerUpdates.request(async () => {
-    try {
-      const currentSettings=equalizerState.current?.settings;
-      if (!currentSettings) return false;
-      const scope = effectScope(options);
-      if (options?.expectedTargetKey && effectEditingTarget(currentSettings, scope).key !== options.expectedTargetKey) {
-        setMessage('当前音效已改变或删除，请重新打开编辑器');
+  const applyCustomEqualizer = useCallback(
+    async (gains: number[], savedId?: string, options?: EffectApplyOptions) => {
+      if (!validEqualizerGains(gains)) {
+        setMessage('需要十段 -12 至 +12 dB 的有效参数');
         return false;
       }
-      const retained = readEffects(currentSettings, scope);
-      const savedPreset=savedId?currentSettings.customEqualizerPresets?.find(preset => preset.id===savedId && savedEffectHasScope(preset,scope)):undefined;
-      const override=options?.sceneId?currentSettings.effectUserOverrides?.[options.sceneId]:undefined;
-      const effectiveGains=override?.gains??requestedGains;
-      const configuration=AudioEffectStateManager.configuration(override?.advanced??options?.advanced??(savedPreset && savedPreset.advanced===undefined?undefined:retained.advanced),
-        scope === 'general' ? undefined : options && 'headphone' in options ? options.headphone??undefined : retained.headphone);
-      const sceneId=options?.sceneId??(options?.preserveIdentity
-        ? retained.sceneId??(retained.equalizer!=='Custom'?`preset:${retained.equalizer}`:undefined) : undefined);
-      await nativePlayer.setEqualizer('Custom', effectiveGains, configuration);
-      appliedEqualizerKey.current = JSON.stringify(['Custom', effectiveGains, configuration]);
-      patchEqualizerSettings(settings => commitEffects(settings, {
-        equalizer: 'Custom', gains: effectiveGains, savedId: savedId??(options?.preserveIdentity?retained.savedId:undefined),
-        advanced:configuration.advanced, headphone:configuration.headphone, sceneId,
-      }, scope));
-      if (!options?.live) setMessage('已启用自定义音效');
-      return true;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '音效应用失败');
-      return false;
-    }
-    }, !options?.live);
-  }, [patchEqualizerSettings, equalizerUpdates]);
-  const flushEqualizerUpdates = useCallback(() => equalizerUpdates.flush(), [equalizerUpdates]);
-  const persistEqualizerEdit = useCallback(async (
-    update: (settings: AppSettings) => AppSettings,
-    successMessage: string,
-    target?: EffectEditTarget,
-  ): Promise<boolean> => {
-    const current = equalizerState.current;
-    if (!current) return false;
-    if (target && !effectTargetMatches(current.settings, target)) {
-      setMessage('当前音效已改变或删除，请重新打开编辑器');
-      return false;
-    }
-    let applied = false;
-    try {
-      const settings = update(current.settings);
-      const configuration = AudioEffectStateManager.configuration(settings.customEqualizerAdvanced, settings.headphoneCalibration);
-      const gains = settings.equalizer === 'Custom' ? settings.customEqualizerGains : undefined;
-      await nativePlayer.setEqualizer(settings.equalizer, gains, configuration);
-      applied = true;
-      if (target && (!equalizerState.current || !effectTargetMatches(equalizerState.current.settings, target)))
-        throw new Error('当前音效已改变或删除，请重新打开编辑器');
-      if (persistTimer.current) clearTimeout(persistTimer.current);
-      await saveState({ ...current, settings });
-      const latest = equalizerState.current;
-      if (target && (!latest || !effectTargetMatches(latest.settings, target))) {
-        // Legacy deletion can finish while storage is awaiting its native bridge.
-        // Restore that newer persisted state before rejecting the stale edit.
-        await saveState(latest ?? current);
-        throw new Error('当前音效已改变或删除，请重新打开编辑器');
-      }
-      appliedEqualizerKey.current = JSON.stringify([settings.equalizer, gains, configuration]);
-      patchEqualizerSettings(update);
-      setMessage(successMessage);
-      return true;
-    } catch (error) {
-      if (applied) {
-        const old = equalizerState.current?.settings ?? current.settings;
-        const configuration = AudioEffectStateManager.configuration(old.customEqualizerAdvanced, old.headphoneCalibration);
-        const gains = old.equalizer === 'Custom' ? old.customEqualizerGains : undefined;
+      const requestedGains = [...gains];
+      return equalizerUpdates.request(async () => {
         try {
-          await nativePlayer.setEqualizer(old.equalizer, gains, configuration);
-          appliedEqualizerKey.current = JSON.stringify([old.equalizer, gains, configuration]);
-        } catch {
-          appliedEqualizerKey.current = null;
+          const currentSettings = equalizerState.current?.settings;
+          if (!currentSettings) return false;
+          const scope = effectScope(options);
+          if (
+            options?.expectedTargetKey &&
+            effectEditingTarget(currentSettings, scope).key !==
+              options.expectedTargetKey
+          ) {
+            setMessage('当前音效已改变或删除，请重新打开编辑器');
+            return false;
+          }
+          const retained = readEffects(currentSettings, scope);
+          const savedPreset = savedId
+            ? currentSettings.customEqualizerPresets?.find(
+                preset =>
+                  preset.id === savedId && savedEffectHasScope(preset, scope),
+              )
+            : undefined;
+          const override = options?.sceneId
+            ? currentSettings.effectUserOverrides?.[options.sceneId]
+            : undefined;
+          const effectiveGains = override?.gains ?? requestedGains;
+          const configuration = AudioEffectStateManager.configuration(
+            override?.advanced ??
+              options?.advanced ??
+              (savedPreset && savedPreset.advanced === undefined
+                ? undefined
+                : retained.advanced),
+            scope === 'general'
+              ? undefined
+              : options && 'headphone' in options
+              ? options.headphone ?? undefined
+              : retained.headphone,
+          );
+          const sceneId =
+            options?.sceneId ??
+            (options?.preserveIdentity
+              ? retained.sceneId ??
+                (retained.equalizer !== 'Custom'
+                  ? `preset:${retained.equalizer}`
+                  : undefined)
+              : undefined);
+          await nativePlayer.setEqualizer(
+            'Custom',
+            effectiveGains,
+            configuration,
+          );
+          appliedEqualizerKey.current = JSON.stringify([
+            'Custom',
+            effectiveGains,
+            configuration,
+          ]);
+          patchEqualizerSettings(settings =>
+            commitEffects(
+              settings,
+              {
+                equalizer: 'Custom',
+                gains: effectiveGains,
+                savedId:
+                  savedId ??
+                  (options?.preserveIdentity ? retained.savedId : undefined),
+                advanced: configuration.advanced,
+                headphone: configuration.headphone,
+                sceneId,
+              },
+              scope,
+            ),
+          );
+          if (!options?.live) setMessage('已启用自定义音效');
+          return true;
+        } catch (error) {
+          setMessage(error instanceof Error ? error.message : '音效应用失败');
+          return false;
         }
-      }
-      setMessage(error instanceof Error ? error.message : '音效保存失败');
-      return false;
-    }
-  }, [patchEqualizerSettings]);
-  const commitEqualizerEdit = useCallback(async (target: EffectEditTarget, gains: number[], advanced?: AdvancedEffects,
-    part: 'equalizer' | 'advanced' = 'equalizer') => {
-    if (!validEqualizerGains(gains)) {
-      setMessage('需要十段 -12 至 +12 dB 的有效参数');
-      return false;
-    }
-    const requestedGains = [...gains];
-    let requestedAdvanced: AdvancedEffects | undefined;
-    try { requestedAdvanced = advanced ? AudioEffectStateManager.configuration(advanced).advanced : undefined; }
-    catch (error) { setMessage(error instanceof Error ? error.message : '高级音效参数无效'); return false; }
-    const capturedTarget = { ...target, scope: target.scope === 'general' ? target.scope : { ...target.scope } };
-    return equalizerUpdates.request(async () => {
-      const current = equalizerState.current?.settings;
-      if (!current || !effectTargetMatches(current, capturedTarget)) {
+      }, !options?.live);
+    },
+    [patchEqualizerSettings, equalizerUpdates],
+  );
+  const flushEqualizerUpdates = useCallback(
+    () => equalizerUpdates.flush(),
+    [equalizerUpdates],
+  );
+  const persistEqualizerEdit = useCallback(
+    async (
+      update: (settings: AppSettings) => AppSettings,
+      successMessage: string,
+      target?: EffectEditTarget,
+    ): Promise<boolean> => {
+      const current = equalizerState.current;
+      if (!current) return false;
+      if (target && !effectTargetMatches(current.settings, target)) {
         setMessage('当前音效已改变或删除，请重新打开编辑器');
         return false;
       }
-      const retained = readEffects(current, capturedTarget.scope);
-      const configuration = AudioEffectStateManager.configuration(requestedAdvanced ?? retained.advanced, retained.headphone);
-      const snapshot = { ...retained, equalizer: 'Custom' as const, gains: requestedGains, advanced: configuration.advanced,
-        sceneId: capturedTarget.kind === 'preset' || capturedTarget.kind === 'scene' ? capturedTarget.id : retained.sceneId };
-      const update = (settings: AppSettings): AppSettings => {
-        let next = commitEffects(settings, snapshot, capturedTarget.scope);
-        if (capturedTarget.kind === 'saved') {
-          next = { ...next, customEqualizerPresets: settings.customEqualizerPresets?.map(preset => preset.id === capturedTarget.id
-            ? part === 'advanced' ? { ...preset, advanced: configuration.advanced } : { ...preset, gains: [...requestedGains] } : preset) };
-        } else if (capturedTarget.kind === 'scene' || capturedTarget.kind === 'preset') {
-          const id = capturedTarget.id!;
-          const original = settings.effectUserOverrides?.[id] ?? (capturedTarget.kind === 'scene'
-            ? [...zeusScenes, ...gtoScenes].find(scene => scene.id === id)! : presetTuning(id.slice(7)));
-          const override = part === 'advanced' ? { gains: original.gains, advanced: configuration.advanced }
-            : { gains: requestedGains, advanced: original.advanced };
-          next = { ...next, effectUserOverrides: normalizeEffectUserOverrides({ ...settings.effectUserOverrides, [id]: override }) };
-        }
-        return next;
-      };
-      return persistEqualizerEdit(update, `已更新${capturedTarget.name}`, capturedTarget);
-    });
-  }, [equalizerUpdates, persistEqualizerEdit]);
-  const saveEqualizerDraft = useCallback(async (name: string, gains: number[], category: EqualizerPresetCategory,
-    scope: EffectScope = 'general', advanced?: AdvancedEffects) => {
-    const requestedGains = [...gains];
-    let requestedAdvanced: AdvancedEffects | undefined;
-    try { requestedAdvanced = advanced ? AudioEffectStateManager.configuration(advanced).advanced : undefined; }
-    catch (error) { setMessage(error instanceof Error ? error.message : '高级音效参数无效'); return false; }
-    const capturedScope = scope === 'general' ? scope : { ...scope };
-    const initial = equalizerState.current?.settings;
-    if (!initial) return false;
-    const capturedTarget = effectEditingTarget(initial, capturedScope);
-    return equalizerUpdates.request(async () => {
+      let applied = false;
       try {
-        const current = equalizerState.current?.settings;
-        if (!current) return false;
-        if (!effectTargetMatches(current, capturedTarget))
+        const settings = update(current.settings);
+        const configuration = AudioEffectStateManager.configuration(
+          settings.customEqualizerAdvanced,
+          settings.headphoneCalibration,
+        );
+        const gains =
+          settings.equalizer === 'Custom'
+            ? settings.customEqualizerGains
+            : undefined;
+        await nativePlayer.setEqualizer(
+          settings.equalizer,
+          gains,
+          configuration,
+        );
+        applied = true;
+        if (
+          target &&
+          (!equalizerState.current ||
+            !effectTargetMatches(equalizerState.current.settings, target))
+        )
           throw new Error('当前音效已改变或删除，请重新打开编辑器');
-        const title = name.trim().slice(0, 32);
-        const existing = current.customEqualizerPresets ?? [];
-        if (existing.some(preset => preset.name === title && savedEffectHasScope(preset, capturedScope)))
-          throw new Error('同名音效已存在，请使用其他名称');
-        const selected = readEffects(current, capturedScope);
-        const configuration = AudioEffectStateManager.configuration(requestedAdvanced,
-          capturedScope === 'general' ? undefined : selected.headphone);
-        const created = storeEqualizerPreset(existing, name, requestedGains, category,
-          requestedAdvanced ? configuration : undefined, capturedScope).saved;
-        const saved = { ...created, ...(configuration.headphone ? { headphone: configuration.headphone } : {}) };
-        return persistEqualizerEdit(settings => ({ ...commitEffects(settings, {
-          equalizer: 'Custom', gains: requestedGains, advanced: configuration.advanced,
-          headphone: configuration.headphone, savedId: saved.id,
-        }, capturedScope), customEqualizerPresets: [...(settings.customEqualizerPresets ?? []), saved] }), `已保存${saved.name}`, capturedTarget);
+        if (persistTimer.current) clearTimeout(persistTimer.current);
+        await saveState({ ...current, settings });
+        const latest = equalizerState.current;
+        if (
+          target &&
+          (!latest || !effectTargetMatches(latest.settings, target))
+        ) {
+          // Legacy deletion can finish while storage is awaiting its native bridge.
+          // Restore that newer persisted state before rejecting the stale edit.
+          await saveState(latest ?? current);
+          throw new Error('当前音效已改变或删除，请重新打开编辑器');
+        }
+        appliedEqualizerKey.current = JSON.stringify([
+          settings.equalizer,
+          gains,
+          configuration,
+        ]);
+        patchEqualizerSettings(update);
+        setMessage(successMessage);
+        return true;
+      } catch (error) {
+        if (applied) {
+          const old = equalizerState.current?.settings ?? current.settings;
+          const configuration = AudioEffectStateManager.configuration(
+            old.customEqualizerAdvanced,
+            old.headphoneCalibration,
+          );
+          const gains =
+            old.equalizer === 'Custom' ? old.customEqualizerGains : undefined;
+          try {
+            await nativePlayer.setEqualizer(
+              old.equalizer,
+              gains,
+              configuration,
+            );
+            appliedEqualizerKey.current = JSON.stringify([
+              old.equalizer,
+              gains,
+              configuration,
+            ]);
+          } catch {
+            appliedEqualizerKey.current = null;
+          }
+        }
+        setMessage(error instanceof Error ? error.message : '音效保存失败');
+        return false;
+      }
+    },
+    [patchEqualizerSettings],
+  );
+  const commitEqualizerEdit = useCallback(
+    async (
+      target: EffectEditTarget,
+      gains: number[],
+      advanced?: AdvancedEffects,
+      part: 'equalizer' | 'advanced' = 'equalizer',
+    ) => {
+      if (!validEqualizerGains(gains)) {
+        setMessage('需要十段 -12 至 +12 dB 的有效参数');
+        return false;
+      }
+      const requestedGains = [...gains];
+      let requestedAdvanced: AdvancedEffects | undefined;
+      try {
+        requestedAdvanced = advanced
+          ? AudioEffectStateManager.configuration(advanced).advanced
+          : undefined;
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : '高级音效参数无效');
+        return false;
+      }
+      const capturedTarget = {
+        ...target,
+        scope: target.scope === 'general' ? target.scope : { ...target.scope },
+      };
+      return equalizerUpdates.request(async () => {
+        const current = equalizerState.current?.settings;
+        if (!current || !effectTargetMatches(current, capturedTarget)) {
+          setMessage('当前音效已改变或删除，请重新打开编辑器');
+          return false;
+        }
+        const retained = readEffects(current, capturedTarget.scope);
+        const configuration = AudioEffectStateManager.configuration(
+          requestedAdvanced ?? retained.advanced,
+          retained.headphone,
+        );
+        const snapshot = {
+          ...retained,
+          equalizer: 'Custom' as const,
+          gains: requestedGains,
+          advanced: configuration.advanced,
+          sceneId:
+            capturedTarget.kind === 'preset' || capturedTarget.kind === 'scene'
+              ? capturedTarget.id
+              : retained.sceneId,
+        };
+        const update = (settings: AppSettings): AppSettings => {
+          let next = commitEffects(settings, snapshot, capturedTarget.scope);
+          if (capturedTarget.kind === 'saved') {
+            next = {
+              ...next,
+              customEqualizerPresets: settings.customEqualizerPresets?.map(
+                preset =>
+                  preset.id === capturedTarget.id
+                    ? part === 'advanced'
+                      ? { ...preset, advanced: configuration.advanced }
+                      : { ...preset, gains: [...requestedGains] }
+                    : preset,
+              ),
+            };
+          } else if (
+            capturedTarget.kind === 'scene' ||
+            capturedTarget.kind === 'preset'
+          ) {
+            const id = capturedTarget.id!;
+            const original =
+              settings.effectUserOverrides?.[id] ??
+              (capturedTarget.kind === 'scene'
+                ? [...zeusScenes, ...gtoScenes].find(scene => scene.id === id)!
+                : presetTuning(id.slice(7)));
+            const override =
+              part === 'advanced'
+                ? { gains: original.gains, advanced: configuration.advanced }
+                : { gains: requestedGains, advanced: original.advanced };
+            next = {
+              ...next,
+              effectUserOverrides: normalizeEffectUserOverrides({
+                ...settings.effectUserOverrides,
+                [id]: override,
+              }),
+            };
+          }
+          return next;
+        };
+        return persistEqualizerEdit(
+          update,
+          `已更新${capturedTarget.name}`,
+          capturedTarget,
+        );
+      });
+    },
+    [equalizerUpdates, persistEqualizerEdit],
+  );
+  const saveEqualizerDraft = useCallback(
+    async (
+      name: string,
+      gains: number[],
+      category: EqualizerPresetCategory,
+      scope: EffectScope = 'general',
+      advanced?: AdvancedEffects,
+    ) => {
+      const requestedGains = [...gains];
+      let requestedAdvanced: AdvancedEffects | undefined;
+      try {
+        requestedAdvanced = advanced
+          ? AudioEffectStateManager.configuration(advanced).advanced
+          : undefined;
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : '高级音效参数无效');
+        return false;
+      }
+      const capturedScope = scope === 'general' ? scope : { ...scope };
+      const initial = equalizerState.current?.settings;
+      if (!initial) return false;
+      const capturedTarget = effectEditingTarget(initial, capturedScope);
+      return equalizerUpdates.request(async () => {
+        try {
+          const current = equalizerState.current?.settings;
+          if (!current) return false;
+          if (!effectTargetMatches(current, capturedTarget))
+            throw new Error('当前音效已改变或删除，请重新打开编辑器');
+          const title = name.trim().slice(0, 32);
+          const existing = current.customEqualizerPresets ?? [];
+          if (
+            existing.some(
+              preset =>
+                preset.name === title &&
+                savedEffectHasScope(preset, capturedScope),
+            )
+          )
+            throw new Error('同名音效已存在，请使用其他名称');
+          const selected = readEffects(current, capturedScope);
+          const configuration = AudioEffectStateManager.configuration(
+            requestedAdvanced,
+            capturedScope === 'general' ? undefined : selected.headphone,
+          );
+          const created = storeEqualizerPreset(
+            existing,
+            name,
+            requestedGains,
+            category,
+            requestedAdvanced ? configuration : undefined,
+            capturedScope,
+          ).saved;
+          const saved = {
+            ...created,
+            ...(configuration.headphone
+              ? { headphone: configuration.headphone }
+              : {}),
+          };
+          return persistEqualizerEdit(
+            settings => ({
+              ...commitEffects(
+                settings,
+                {
+                  equalizer: 'Custom',
+                  gains: requestedGains,
+                  advanced: configuration.advanced,
+                  headphone: configuration.headphone,
+                  savedId: saved.id,
+                },
+                capturedScope,
+              ),
+              customEqualizerPresets: [
+                ...(settings.customEqualizerPresets ?? []),
+                saved,
+              ],
+            }),
+            `已保存${saved.name}`,
+            capturedTarget,
+          );
+        } catch (error) {
+          setMessage(error instanceof Error ? error.message : '音效保存失败');
+          return false;
+        }
+      });
+    },
+    [equalizerUpdates, persistEqualizerEdit],
+  );
+  const saveCustomEqualizer = useCallback(
+    async (
+      name: string,
+      gains: number[],
+      category: EqualizerPresetCategory = '自定义',
+      scope: EffectScope = 'general',
+    ) => {
+      try {
+        const currentState = equalizerState.current;
+        if (!currentState) return false;
+        const selected = readEffects(currentState.settings, scope);
+        const { presets, saved } = storeEqualizerPreset(
+          currentState.settings.customEqualizerPresets ?? [],
+          name,
+          gains,
+          category,
+          AudioEffectStateManager.configuration(
+            selected.advanced,
+            scope === 'general' ? undefined : selected.headphone,
+          ),
+          scope,
+        );
+        const nextState = {
+          ...currentState,
+          settings: {
+            ...currentState.settings,
+            customEqualizerPresets: presets,
+          },
+        };
+        await saveState(nextState);
+        // Publish only after the existing storage service confirms persistence.
+        patchState(value => ({
+          ...value,
+          settings: { ...value.settings, customEqualizerPresets: presets },
+        }));
+        setMessage(`已保存${saved.name}`);
+        return true;
       } catch (error) {
         setMessage(error instanceof Error ? error.message : '音效保存失败');
         return false;
       }
-    });
-  }, [equalizerUpdates, persistEqualizerEdit]);
-  const saveCustomEqualizer = useCallback(async (name: string, gains: number[], category: EqualizerPresetCategory = '自定义', scope: EffectScope = 'general') => {
-    try {
-      const currentState = equalizerState.current;
-      if (!currentState) return false;
-      const selected = readEffects(currentState.settings, scope);
-      const { presets, saved } = storeEqualizerPreset(currentState.settings.customEqualizerPresets ?? [], name, gains, category,
-        AudioEffectStateManager.configuration(selected.advanced,scope === 'general' ? undefined : selected.headphone), scope);
-      const nextState = { ...currentState, settings: { ...currentState.settings,
-        customEqualizerPresets: presets,
-      } };
-      await saveState(nextState);
-      // Publish only after the existing storage service confirms persistence.
-      patchState(value => ({ ...value, settings: { ...value.settings,
-        customEqualizerPresets: presets,
-      } }));
-      setMessage(`已保存${saved.name}`);
-      return true;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '音效保存失败');
-      return false;
-    }
-  }, [patchState]);
-  const deleteCustomEqualizer = useCallback(async (id: string) => {
-    try {
-      const currentState = equalizerState.current;
-      if (!currentState) return false;
-      const presets = deleteEqualizerPreset(currentState.settings.customEqualizerPresets ?? [], id);
-      if (presets.length === (currentState.settings.customEqualizerPresets ?? []).length) return false;
-      const nextState = { ...currentState, settings: {
-        ...forgetSavedEffect(currentState.settings, id),
-        customEqualizerPresets: presets,
-        customEqualizerPresetId: currentState.settings.customEqualizerPresetId === id
-          ? undefined : currentState.settings.customEqualizerPresetId,
-      } };
-      await saveState(nextState);
-      patchState(value => ({ ...value, settings: {
-        ...forgetSavedEffect(value.settings, id),
-        customEqualizerPresets: presets,
-        customEqualizerPresetId: value.settings.customEqualizerPresetId === id
-          ? undefined : value.settings.customEqualizerPresetId,
-      } }));
-      setMessage('已删除自定义音效');
-      return true;
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : '音效删除失败');
-      return false;
-    }
-  }, [patchState]);
+    },
+    [patchState],
+  );
+  const deleteCustomEqualizer = useCallback(
+    async (id: string) => {
+      try {
+        const currentState = equalizerState.current;
+        if (!currentState) return false;
+        const presets = deleteEqualizerPreset(
+          currentState.settings.customEqualizerPresets ?? [],
+          id,
+        );
+        if (
+          presets.length ===
+          (currentState.settings.customEqualizerPresets ?? []).length
+        )
+          return false;
+        const nextState = {
+          ...currentState,
+          settings: {
+            ...forgetSavedEffect(currentState.settings, id),
+            customEqualizerPresets: presets,
+            customEqualizerPresetId:
+              currentState.settings.customEqualizerPresetId === id
+                ? undefined
+                : currentState.settings.customEqualizerPresetId,
+          },
+        };
+        await saveState(nextState);
+        patchState(value => ({
+          ...value,
+          settings: {
+            ...forgetSavedEffect(value.settings, id),
+            customEqualizerPresets: presets,
+            customEqualizerPresetId:
+              value.settings.customEqualizerPresetId === id
+                ? undefined
+                : value.settings.customEqualizerPresetId,
+          },
+        }));
+        setMessage('已删除自定义音效');
+        return true;
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : '音效删除失败');
+        return false;
+      }
+    },
+    [patchState],
+  );
   const setPlaybackMode = useCallback(
     async (mode: PlaybackMode) => {
       const next = playbackModeSettings(mode);
@@ -3965,10 +5169,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ? selectedLogicalIndex
         : player.index;
       const requestVersion = ++navigationVersion.current;
-      const requestedTarget = automaticTarget ?? manualPlayerTarget(
-        base, logicalQueueRef.current.length, direction,
-        playbackSettings.current ?? { shuffle: false, repeat: 'off' },
-      );
+      const requestedTarget =
+        automaticTarget ??
+        manualPlayerTarget(
+          base,
+          logicalQueueRef.current.length,
+          direction,
+          playbackSettings.current ?? { shuffle: false, repeat: 'off' },
+        );
       const playerNavigation =
         pageRef.current === 'player' ||
         pageRef.current === 'queue' ||
@@ -3983,7 +5191,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const releasePriority = urlPrewarmScheduler.current!.hold();
       urlPrewarmScheduler.current!.setPlaybackReady(false);
       const requestedTrack = logicalQueueRef.current[requestedTarget];
-      const backgroundReleased = urlPrewarmScheduler.current!.preemptExcept(requestedTrack ? prewarmIdentity(requestedTrack) : undefined);
+      const backgroundReleased = urlPrewarmScheduler.current!.preemptExcept(
+        requestedTrack ? prewarmIdentity(requestedTrack) : undefined,
+      );
       const run = async () => {
         if (navigationVersion.current !== requestVersion) return;
         queueGeneration.current += 1;
@@ -4013,14 +5223,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         let skipped = 0;
         while (skipped < 8) {
           if (target < 0) {
-            if (!queueReversedRef.current || direction !== -1 || !queuePaging.current?.source.hasMore) break;
+            if (
+              !queueReversedRef.current ||
+              direction !== -1 ||
+              !queuePaging.current?.source.hasMore
+            )
+              break;
             const anchor = logicalQueueRef.current[0];
             if (!anchor) break;
             const anchorKey = trackQueueKey(anchor);
             void loadMoreQueue().catch(() => undefined);
             await queuePageReadyRequest.current?.catch(() => undefined);
             if (navigationVersion.current !== requestVersion) return;
-            const shifted = logicalQueueRef.current.findIndex(item => trackQueueKey(item) === anchorKey);
+            const shifted = logicalQueueRef.current.findIndex(
+              item => trackQueueKey(item) === anchorKey,
+            );
             if (shifted <= 0) break;
             target = shifted - 1;
           }
@@ -4044,7 +5261,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             }));
           }
           const hasMore = Boolean(
-            !queueReversedRef.current && (queuePage.hasMore || queuePaging.current?.source.hasMore),
+            !queueReversedRef.current &&
+              (queuePage.hasMore || queuePaging.current?.source.hasMore),
           );
           if (target >= logical.length) {
             // React state may still be committing the metadata publication while
@@ -4076,7 +5294,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 return;
               }
               try {
-                const preparedGate = { generation: queueGeneration.current, ready: false, key: trackQueueKey(targetNativeTrack!), preparedAccepted: false };
+                const preparedGate = {
+                  generation: queueGeneration.current,
+                  ready: false,
+                  key: trackQueueKey(targetNativeTrack!),
+                  preparedAccepted: false,
+                };
                 catalogPlaybackGate.current = preparedGate;
                 if (isMenuSceneQueue(queuePaging.current?.source)) {
                   scenePlayback.current = {
@@ -4096,7 +5319,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   );
                 if (isMenuSceneQueue(queuePaging.current?.source)) {
                   await nativePlayer.waitForPlaybackStart(
-                    15_000,
+                    15000,
                     trackQueueKey(targetNativeTrack!),
                   );
                   if (navigationVersion.current !== requestVersion) return;
@@ -4190,7 +5413,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             return;
           }
           try {
-            const preparedGate = { generation: queueGeneration.current, ready: false, key: targetKey, preparedAccepted: false };
+            const preparedGate = {
+              generation: queueGeneration.current,
+              ready: false,
+              key: targetKey,
+              preparedAccepted: false,
+            };
             catalogPlaybackGate.current = preparedGate;
             if (isMenuSceneQueue(queuePaging.current?.source)) {
               scenePlayback.current = {
@@ -4227,7 +5455,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               playerRequestAbort.current = gateAbort;
               await waitForPlayerRequest(
                 nativePlayer.waitForPlaybackStart(
-                  15_000,
+                  15000,
                   targetKey,
                   gateAbort.signal,
                 ),
@@ -4268,7 +5496,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const reachedQueueEnd =
           direction === 1 &&
           skipped === 0 &&
-          target >= (queuePublishedRef.current ?? logicalQueueRef.current).length &&
+          target >=
+            (queuePublishedRef.current ?? logicalQueueRef.current).length &&
           target >= queueRef.current.length &&
           !(queuePaging.current?.error ?? queuePage.error) &&
           (queueReversedRef.current ||
@@ -4307,7 +5536,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           releasePriority();
           if (navigationVersion.current === requestVersion) {
             navigationPending.current = false;
-            void prefetchQueueRuntime.current(navigationCursor.current).catch(() => undefined);
+            void prefetchQueueRuntime
+              .current(navigationCursor.current)
+              .catch(() => undefined);
           }
         },
         () => {
@@ -4383,7 +5614,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         queueRef.current[0] &&
         actualPlayingKey.current === trackQueueKey(queueRef.current[0]),
     );
-
   // Partial native coverage still needs the existing logical-tail continuation.
   useEffect(() => {
     if (
@@ -4392,8 +5622,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       onDemandPlayerQueue.current &&
       queueRef.current.length > 1 &&
       logicalQueueRef.current.length >= 2 &&
-      !shuffle && autoNext !== false &&
-      logicalQueueRef.current.every(track => queueRef.current.some(item => trackQueueKey(item) === trackQueueKey(track)))
+      !shuffle &&
+      autoNext !== false &&
+      logicalQueueRef.current.every(track =>
+        queueRef.current.some(
+          item => trackQueueKey(item) === trackQueueKey(track),
+        ),
+      )
     ) {
       onDemandPlayerQueue.current = false;
       nativePlayer
@@ -4410,40 +5645,54 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     shuffle,
     autoNext,
   ]);
-
   const preparationCacheToken = sourceResolutionCacheToken();
   const currentPreparationKey = current ? trackQueueKey(current) : '';
   useEffect(() => {
     const key = currentPreparationKey;
     const preparationOwner = playerQueuePreparation.current;
-    if (!key || !queueRef.current.some(item => trackQueueKey(item) === key)) return;
+    if (!key || !queueRef.current.some(item => trackQueueKey(item) === key))
+      return;
     const generation = queueGeneration.current;
     const navigation = navigationVersion.current;
     const sourceGeneration = sourceSelectionGeneration.current;
     const preferred = qualityPreferenceRef.current;
     const cacheToken = sourceResolutionCacheToken();
     const orderVersion = queuePreparationVersion.current;
-    const nativeForwardEnabled = !state?.settings.shuffle && state?.settings.autoNext !== false;
+    const nativeForwardEnabled =
+      !state?.settings.shuffle && state?.settings.autoNext !== false;
     const context = `${preferred}:${sourceGeneration}:${cacheToken}`;
     let cancelled = false;
-    const isCurrent = () => !cancelled && generation === queueGeneration.current &&
-      navigation === navigationVersion.current && sourceGeneration === sourceSelectionGeneration.current &&
-      preferred === qualityPreferenceRef.current && cacheToken === sourceResolutionCacheToken() &&
-      orderVersion === queuePreparationVersion.current && !navigationPending.current &&
+    const isCurrent = () =>
+      !cancelled &&
+      generation === queueGeneration.current &&
+      navigation === navigationVersion.current &&
+      sourceGeneration === sourceSelectionGeneration.current &&
+      preferred === qualityPreferenceRef.current &&
+      cacheToken === sourceResolutionCacheToken() &&
+      orderVersion === queuePreparationVersion.current &&
+      !navigationPending.current &&
       (!actualPlayingKey.current || actualPlayingKey.current === key);
-    const matches = (track: Track) => Boolean(track.playUrl) &&
+    const matches = (track: Track) =>
+      Boolean(track.playUrl) &&
       track.metadata?._playbackPreference === preferred &&
       track.metadata?._playerPreparationSource === sourceGeneration &&
       preparedNeighbourContexts.current.get(trackQueueKey(track)) === context;
     const serialCommit = (work: () => Promise<boolean>) => {
-      const request = playerPreparationCommit.current.catch(() => undefined).then(work);
-      playerPreparationCommit.current = request.then(() => undefined, () => undefined);
+      const request = playerPreparationCommit.current
+        .catch(() => undefined)
+        .then(work);
+      playerPreparationCommit.current = request.then(
+        () => undefined,
+        () => undefined,
+      );
       return request;
     };
     const synchronize = (track: Track) => {
-      const replace = (item: Track) => trackQueueKey(item) === trackQueueKey(track) ? track : item;
+      const replace = (item: Track) =>
+        trackQueueKey(item) === trackQueueKey(track) ? track : item;
       logicalQueueRef.current = logicalQueueRef.current.map(replace);
-      if (queuePublishedRef.current) queuePublishedRef.current = queuePublishedRef.current.map(replace);
+      if (queuePublishedRef.current)
+        queuePublishedRef.current = queuePublishedRef.current.map(replace);
       setQueue(items => items.map(replace));
     };
     const run = async () => {
@@ -4452,101 +5701,254 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const pruned = await serialCommit(async () => {
         if (!isCurrent()) return false;
         const native = await nativePlayer.getState();
-        if (!isCurrent() || (native.mediaId && native.mediaId !== key)) return false;
-        const nativeIndex = queueRef.current.findIndex(item => trackQueueKey(item) === key);
-        const logicalIndex = logicalQueueRef.current.findIndex(item => trackQueueKey(item) === key);
+        if (!isCurrent() || (native.mediaId && native.mediaId !== key))
+          return false;
+        const nativeIndex = queueRef.current.findIndex(
+          item => trackQueueKey(item) === key,
+        );
+        const logicalIndex = logicalQueueRef.current.findIndex(
+          item => trackQueueKey(item) === key,
+        );
         if (nativeIndex < 0 || logicalIndex < 0) return false;
         if (!nativeForwardEnabled) {
           await restoreLogicalTailContinuation();
-          for (let index = queueRef.current.length - 1; index >= 0; index -= 1) {
-            if (index === nativeIndex || (!state?.settings.shuffle && index < nativeIndex)) continue;
+          for (
+            let index = queueRef.current.length - 1;
+            index >= 0;
+            index -= 1
+          ) {
+            if (
+              index === nativeIndex ||
+              (!state?.settings.shuffle && index < nativeIndex)
+            )
+              continue;
             if (!isCurrent()) return false;
             const active = await nativePlayer.getState();
-            if (!isCurrent() || (active.mediaId && active.mediaId !== key)) return false;
-            const removed = await nativePlayer.removePreparedQueueItem(key, trackQueueKey(queueRef.current[index]!), index);
+            if (!isCurrent() || (active.mediaId && active.mediaId !== key))
+              return false;
+            const removed = await nativePlayer.removePreparedQueueItem(
+              key,
+              trackQueueKey(queueRef.current[index]!),
+              index,
+            );
             if (!removed) return false;
-            queueRef.current = queueRef.current.filter((_, itemIndex) => itemIndex !== index);
+            queueRef.current = queueRef.current.filter(
+              (_, itemIndex) => itemIndex !== index,
+            );
           }
           return true;
         }
-        const firstInvalid = queueRef.current.findIndex((item, index) => index > nativeIndex &&
-          (!matches(item) || trackQueueKey(item) !== (logicalQueueRef.current[logicalIndex + index - nativeIndex]
-            ? trackQueueKey(logicalQueueRef.current[logicalIndex + index - nativeIndex]!) : '')));
+        const firstInvalid = queueRef.current.findIndex(
+          (item, index) =>
+            index > nativeIndex &&
+            (!matches(item) ||
+              trackQueueKey(item) !==
+                (logicalQueueRef.current[logicalIndex + index - nativeIndex]
+                  ? trackQueueKey(
+                      logicalQueueRef.current[
+                        logicalIndex + index - nativeIndex
+                      ]!,
+                    )
+                  : '')),
+        );
         if (firstInvalid < 0) return true;
         await restoreLogicalTailContinuation();
         if (!isCurrent()) return false;
-        for (let index = queueRef.current.length - 1; index >= firstInvalid; index -= 1) {
+        for (
+          let index = queueRef.current.length - 1;
+          index >= firstInvalid;
+          index -= 1
+        ) {
           if (!isCurrent()) return false;
           const active = await nativePlayer.getState();
-          if (!isCurrent() || (active.mediaId && active.mediaId !== key)) return false;
-          const removed = await nativePlayer.removePreparedQueueItem(key, trackQueueKey(queueRef.current[index]!), index);
+          if (!isCurrent() || (active.mediaId && active.mediaId !== key))
+            return false;
+          const removed = await nativePlayer.removePreparedQueueItem(
+            key,
+            trackQueueKey(queueRef.current[index]!),
+            index,
+          );
           if (!removed) return false;
           // Native success must always update the mirror before a waiting navigation.
-          queueRef.current = queueRef.current.filter((_, itemIndex) => itemIndex !== index);
+          queueRef.current = queueRef.current.filter(
+            (_, itemIndex) => itemIndex !== index,
+          );
         }
         return true;
       });
-      if (!nativeForwardEnabled || !pruned || !isCurrent() || !player.playing || playerPreparationReadyKey !== key ||
-        actualPlayingKey.current !== key || !catalogPlaybackGate.current?.ready) return;
-      const logicalIndex = logicalQueueRef.current.findIndex(item => trackQueueKey(item) === key);
-      const neighbours = logicalQueueRef.current.slice(logicalIndex + 1, logicalIndex + 3);
+      if (
+        !nativeForwardEnabled ||
+        !pruned ||
+        !isCurrent() ||
+        !player.playing ||
+        playerPreparationReadyKey !== key ||
+        actualPlayingKey.current !== key ||
+        !catalogPlaybackGate.current?.ready
+      )
+        return;
+      const logicalIndex = logicalQueueRef.current.findIndex(
+        item => trackQueueKey(item) === key,
+      );
+      const neighbours = logicalQueueRef.current.slice(
+        logicalIndex + 1,
+        logicalIndex + 3,
+      );
       await preparationOwner.prepareNext(
         neighbours,
         context,
-        track => queueRef.current.some(item => trackQueueKey(item) === trackQueueKey(track) && matches(item)) ||
-          (typeof hasValidatedPlaybackPrewarm === 'function' && hasValidatedPlaybackPrewarm(track, playbackSourcesFor(track), preferred)),
+        track =>
+          queueRef.current.some(
+            item =>
+              trackQueueKey(item) === trackQueueKey(track) && matches(item),
+          ) ||
+          (typeof hasValidatedPlaybackPrewarm === 'function' &&
+            hasValidatedPlaybackPrewarm(
+              track,
+              playbackSourcesFor(track),
+              preferred,
+            )),
         track => {
-          const existing = queueRef.current.find(item => trackQueueKey(item) === trackQueueKey(track) && matches(item));
-          if (existing) return Promise.resolve(existing as Track & { playUrl: string });
-          if (!isCurrent() || !hasValidatedPlaybackPrewarm(track, playbackSourcesFor(track), preferred))
+          const existing = queueRef.current.find(
+            item =>
+              trackQueueKey(item) === trackQueueKey(track) && matches(item),
+          );
+          if (existing)
+            return Promise.resolve(
+              existing as Track & {
+                playUrl: string;
+              },
+            );
+          if (
+            !isCurrent() ||
+            !hasValidatedPlaybackPrewarm(
+              track,
+              playbackSourcesFor(track),
+              preferred,
+            )
+          )
             return Promise.reject(new Error('Playback preparation superseded'));
-          return prepareTrack({ ...track, playUrl: undefined }, preferred, false, undefined, false, true);
+          return prepareTrack(
+            { ...track, playUrl: undefined },
+            preferred,
+            false,
+            undefined,
+            false,
+            true,
+          );
         },
-        (prepared, active) => serialCommit(async () => {
-          if (!isCurrent() || !active()) return false;
-          const native = await nativePlayer.getState();
-          if (!isCurrent() || !active() || !native.playing || (native.mediaId && native.mediaId !== key)) return false;
-          const logical = logicalQueueRef.current;
-          const currentIndex = logical.findIndex(item => trackQueueKey(item) === key);
-          const targetIndex = logical.findIndex(item => trackQueueKey(item) === trackQueueKey(prepared));
-          const nativeCurrentIndex = queueRef.current.findIndex(item => trackQueueKey(item) === key);
-          const offset = targetIndex - currentIndex;
-          if (currentIndex < 0 || nativeCurrentIndex < 0 || offset < 1 || offset > 2) return false;
-          for (let step = 1; step < offset; step += 1) {
-            const preceding = queueRef.current[nativeCurrentIndex + step];
-            if (!preceding || !matches(preceding) || trackQueueKey(preceding) !== trackQueueKey(logical[currentIndex + step]!)) return false;
-          }
-          const nativeIndex = queueRef.current.findIndex(item => trackQueueKey(item) === trackQueueKey(prepared));
-          if (nativeIndex >= 0 && matches(queueRef.current[nativeIndex]!)) return true;
-          if (!hasValidatedPlaybackPrewarm(prepared, playbackSourcesFor(prepared), preferred)) return false;
-          const accepted = prepared;
-          const insertionIndex = nativeCurrentIndex + offset;
-          if (nativeIndex >= 0) {
-            if (nativeIndex !== insertionIndex) return false;
-            await nativePlayer.replaceQueueItem(nativeIndex, accepted);
-            queueRef.current = queueRef.current.map(item => trackQueueKey(item) === trackQueueKey(accepted) ? accepted : item);
-          } else {
-            await nativePlayer.insertQueueItems(key, insertionIndex, [accepted]);
-            const next = [...queueRef.current];
-            next.splice(insertionIndex, 0, accepted);
-            queueRef.current = next;
-          }
-          preparedNeighbourContexts.current.set(trackQueueKey(accepted), context);
-          synchronize(accepted);
-          console.info('[player-next-two]', JSON.stringify({ current: key, target: trackQueueKey(accepted),
-            offset, actualQuality: accepted.metadata?._playbackQuality, preference: preferred,
-            nativeCount: queueRef.current.length }));
-          return isCurrent() && active();
-        }),
+        (prepared, active) =>
+          serialCommit(async () => {
+            if (!isCurrent() || !active()) return false;
+            const native = await nativePlayer.getState();
+            if (
+              !isCurrent() ||
+              !active() ||
+              !native.playing ||
+              (native.mediaId && native.mediaId !== key)
+            )
+              return false;
+            const logical = logicalQueueRef.current;
+            const currentIndex = logical.findIndex(
+              item => trackQueueKey(item) === key,
+            );
+            const targetIndex = logical.findIndex(
+              item => trackQueueKey(item) === trackQueueKey(prepared),
+            );
+            const nativeCurrentIndex = queueRef.current.findIndex(
+              item => trackQueueKey(item) === key,
+            );
+            const offset = targetIndex - currentIndex;
+            if (
+              currentIndex < 0 ||
+              nativeCurrentIndex < 0 ||
+              offset < 1 ||
+              offset > 2
+            )
+              return false;
+            for (let step = 1; step < offset; step += 1) {
+              const preceding = queueRef.current[nativeCurrentIndex + step];
+              if (
+                !preceding ||
+                !matches(preceding) ||
+                trackQueueKey(preceding) !==
+                  trackQueueKey(logical[currentIndex + step]!)
+              )
+                return false;
+            }
+            const nativeIndex = queueRef.current.findIndex(
+              item => trackQueueKey(item) === trackQueueKey(prepared),
+            );
+            if (nativeIndex >= 0 && matches(queueRef.current[nativeIndex]!))
+              return true;
+            if (
+              !hasValidatedPlaybackPrewarm(
+                prepared,
+                playbackSourcesFor(prepared),
+                preferred,
+              )
+            )
+              return false;
+            const accepted = prepared;
+            const insertionIndex = nativeCurrentIndex + offset;
+            if (nativeIndex >= 0) {
+              if (nativeIndex !== insertionIndex) return false;
+              await nativePlayer.replaceQueueItem(nativeIndex, accepted);
+              queueRef.current = queueRef.current.map(item =>
+                trackQueueKey(item) === trackQueueKey(accepted)
+                  ? accepted
+                  : item,
+              );
+            } else {
+              await nativePlayer.insertQueueItems(key, insertionIndex, [
+                accepted,
+              ]);
+              const next = [...queueRef.current];
+              next.splice(insertionIndex, 0, accepted);
+              queueRef.current = next;
+            }
+            preparedNeighbourContexts.current.set(
+              trackQueueKey(accepted),
+              context,
+            );
+            synchronize(accepted);
+            console.info(
+              '[player-next-two]',
+              JSON.stringify({
+                current: key,
+                target: trackQueueKey(accepted),
+                offset,
+                actualQuality: accepted.metadata?._playbackQuality,
+                preference: preferred,
+                nativeCount: queueRef.current.length,
+              }),
+            );
+            return isCurrent() && active();
+          }),
         isCurrent,
       );
     };
     void run().catch(() => undefined);
-    return () => { cancelled = true; preparationOwner.pause(); };
-  }, [currentPreparationKey, player.playing, playerPreparationReadyKey, queue, queueOrderVersion,
-    state?.settings.quality, state?.settings.wifiQuality, state?.settings.shuffle, state?.settings.autoNext,
-    wifiConnected, sourceHealthRevision, preparationCacheToken,
-    prepareTrack, playbackSourcesFor, restoreLogicalTailContinuation]);
+    return () => {
+      cancelled = true;
+      preparationOwner.pause();
+    };
+  }, [
+    currentPreparationKey,
+    player.playing,
+    playerPreparationReadyKey,
+    queue,
+    queueOrderVersion,
+    state?.settings.quality,
+    state?.settings.wifiQuality,
+    state?.settings.shuffle,
+    state?.settings.autoNext,
+    wifiConnected,
+    sourceHealthRevision,
+    preparationCacheToken,
+    prepareTrack,
+    playbackSourcesFor,
+    restoreLogicalTailContinuation,
+  ]);
   const dislikeTrack = useCallback(
     async (track: Track) => {
       patchState(value => ({
@@ -4659,7 +6061,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (active.playUrl) {
             await nativePlayer
               .replaceCurrent(
-                active as Track & { playUrl: string },
+                active as Track & {
+                  playUrl: string;
+                },
                 position,
                 wasPlaying,
               )
@@ -4699,7 +6103,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       state,
     ],
   );
-
   useEffect(() => {
     if (
       (queuePaging.current?.source.kind === 'home-menu' &&
@@ -4721,7 +6124,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     queueReversed,
     queuePage,
   ]);
-
   // Other queue entries remain logical metadata until the user selects one.
   // Full native validation is owned exclusively by playTrack for the target.
   const toggleFavorite = useCallback(
@@ -4730,21 +6132,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const kind = trackMediaKind(track);
         const chooseFavorites = (favorites: string[]) => {
           const wasFavorite = favorites.includes(track.id);
-          const targetFavorite = typeof favorite === 'boolean' ? favorite : !wasFavorite;
-          return targetFavorite === wasFavorite ? favorites : targetFavorite
-            ? [...favorites, track.id] : favorites.filter(id => id !== track.id);
+          const targetFavorite =
+            typeof favorite === 'boolean' ? favorite : !wasFavorite;
+          return targetFavorite === wasFavorite
+            ? favorites
+            : targetFavorite
+            ? [...favorites, track.id]
+            : favorites.filter(id => id !== track.id);
         };
-        if (kind === 'music')
-          return {
-            ...value,
-            savedTracks: rememberTrack(value.savedTracks, track),
-            favorites: chooseFavorites(value.favorites),
-          };
-        return patchMediaBucket(value, kind, bucket => ({
-          ...bucket,
-          savedTracks: rememberTrack(bucket.savedTracks, track),
-          favorites: chooseFavorites(bucket.favorites),
-        }));
+        return {
+          ...value,
+          savedTracks: rememberTrack(value.savedTracks, track),
+          favorites: chooseFavorites(value.favorites),
+        };
       }),
     [patchState],
   );
@@ -4752,9 +6152,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     (track: Track) => {
       if (!state) return false;
       const kind = trackMediaKind(track);
-      return (
-        kind === 'music' ? state.favorites : mediaBucket(state, kind).favorites
-      ).includes(track.id);
+      return state.favorites.includes(track.id);
     },
     [state],
   );
@@ -4763,7 +6161,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       patchState(value => {
         const key = collectionFavoriteKey(item);
         const kind = collectionMediaKind(item);
-        if (kind === 'music') {
+        {
           const removing = value.favoriteCollections.includes(key);
           return {
             ...value,
@@ -4782,25 +6180,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               : [...value.favoriteCollections, key],
           };
         }
-        return patchMediaBucket(value, kind, bucket => {
-          const removing = bucket.favoriteCollections.includes(key);
-          return {
-            ...bucket,
-            savedCollections: removing
-              ? bucket.savedCollections.filter(
-                  entry => collectionFavoriteKey(entry) !== key,
-                )
-              : [
-                  item,
-                  ...bucket.savedCollections.filter(
-                    entry => collectionFavoriteKey(entry) !== key,
-                  ),
-                ],
-            favoriteCollections: removing
-              ? bucket.favoriteCollections.filter(entry => entry !== key)
-              : [...bucket.favoriteCollections, key],
-          };
-        });
       }),
     [patchState],
   );
@@ -4809,11 +6188,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!state) return false;
       const key = collectionFavoriteKey(item);
       const kind = collectionMediaKind(item);
-      return (
-        kind === 'music'
-          ? state.favoriteCollections
-          : mediaBucket(state, kind).favoriteCollections
-      ).includes(key);
+      return state.favoriteCollections.includes(key);
     },
     [state],
   );
@@ -4888,12 +6263,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const searchesTracks = ['song', 'artist', 'album'].includes(
           searchCategory,
         );
-        const mediaType =
-          searchCategory === 'radio'
-            ? ('podcast' as const)
-            : searchCategory === 'audiobook'
-            ? ('audiobook' as const)
-            : ('music' as const);
+        const mediaType = 'music' as const;
         const result = searchesTracks
           ? await searchOnline(
               term,
@@ -4902,7 +6272,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               provider,
               recommendationPlatforms,
               'music',
-              12_000,
+              12000,
               undefined,
               undefined,
               { recheckKugouEmpty: true },
@@ -4913,15 +6283,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               rawCount: 0,
               providerRawCounts: undefined,
             };
-        const supportedIds =
-          mediaType === 'music'
-            ? null
-            : mediaProviders(recommendationPlatforms, mediaType, true);
-        const searchPlatforms = supportedIds
-          ? recommendationPlatforms.filter(platform =>
-              supportedIds.includes(platform.id),
-            )
-          : recommendationPlatforms;
+        const searchPlatforms = recommendationPlatforms;
         const playlistResult = searchesTracks
           ? { items: [], errors: [] as string[] }
           : await searchOnlinePlaylists(
@@ -5003,23 +6365,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const clearHistory = useCallback(
     (kind?: LibraryMediaKind) => {
-      mediaProgressRecorder.current.clear(kind);
       patchState(value => {
         if (!kind)
           return {
             ...value,
             history: [],
             musicEntityHistory: [],
-            podcastLibrary: { ...value.podcastLibrary, history: [], collectionPlayback: {} },
-            audiobookLibrary: { ...value.audiobookLibrary, history: [], collectionPlayback: {} },
           };
-        if (kind === 'music')
-          return { ...value, history: [], musicEntityHistory: [] };
-        return patchMediaBucket(value, kind, bucket => ({
-          ...bucket,
-          history: [],
-          collectionPlayback: {},
-        }));
+        return { ...value, history: [], musicEntityHistory: [] };
       });
       setMessage(
         kind && kind !== 'music' ? '播放记录已清空' : '听歌历史已清空',
@@ -5027,31 +6380,42 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [patchState],
   );
-  const clearCache = useCallback(async (parts = allCacheCleanupParts) => {
-    const nativeParts = parts.filter(
-      (part): part is Exclude<CacheCleanupPart, 'runtime'> => part !== 'runtime',
-    );
-    const result = await clearNativeCache(nativeParts);
-    if (parts.includes('local-artwork')) {
-      patchState(value => forgetClearedLocalArtwork(value, result.deletedArtworkUris));
-    }
-    if (parts.includes('runtime')) clearSafeRuntimeCaches();
-    if (result.failedFiles) throw new Error(`部分缓存未能清理（${result.failedFiles} 项），请重试`);
-    const labels = [
-      parts.includes('network') ? '网络/网页/图片临时缓存' : '',
-      parts.includes('runtime') ? '运行时解析/歌词/封面/取色缓存' : '',
-      parts.includes('local-artwork') ? '本地封面文件' : '',
-    ].filter(Boolean);
-    const details = [
-      result.networkEntries ? `临时文件 ${result.networkEntries} 个` : '',
-      result.localArtworkFiles ? `本地封面 ${result.localArtworkFiles} 个` : '',
-    ].filter(Boolean);
-    setMessage(
-      labels.length
-        ? `已清理：${labels.join('、')}${details.length ? `（${details.join('，')}）` : ''}`
-        : '未选择清理项',
-    );
-  }, [patchState]);
+  const clearCache = useCallback(
+    async (parts = allCacheCleanupParts) => {
+      const nativeParts = parts.filter(
+        (part): part is Exclude<CacheCleanupPart, 'runtime'> =>
+          part !== 'runtime',
+      );
+      const result = await clearNativeCache(nativeParts);
+      if (parts.includes('local-artwork')) {
+        patchState(value =>
+          forgetClearedLocalArtwork(value, result.deletedArtworkUris),
+        );
+      }
+      if (parts.includes('runtime')) clearSafeRuntimeCaches();
+      if (result.failedFiles)
+        throw new Error(`部分缓存未能清理（${result.failedFiles} 项），请重试`);
+      const labels = [
+        parts.includes('network') ? '网络/网页/图片临时缓存' : '',
+        parts.includes('runtime') ? '运行时解析/歌词/封面/取色缓存' : '',
+        parts.includes('local-artwork') ? '本地封面文件' : '',
+      ].filter(Boolean);
+      const details = [
+        result.networkEntries ? `临时文件 ${result.networkEntries} 个` : '',
+        result.localArtworkFiles
+          ? `本地封面 ${result.localArtworkFiles} 个`
+          : '',
+      ].filter(Boolean);
+      setMessage(
+        labels.length
+          ? `已清理：${labels.join('、')}${
+              details.length ? `（${details.join('，')}）` : ''
+            }`
+          : '未选择清理项',
+      );
+    },
+    [patchState],
+  );
   const selectDownloadDirectory = useCallback(async () => {
     const uri = await chooseDownloadDirectory();
     setMessage(uri ? '下载目录已更新' : '未更改下载目录');
@@ -5089,160 +6453,75 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
     setMessage(`已添加 ${tracks.length} 首本地音乐`);
   }, [patchState]);
-  const scanLocalMedia = useCallback(
-    async (kind: Exclude<LibraryMediaKind, 'music'>) => {
-      if (Platform.OS === 'android') {
-        const permission =
-          Number(Platform.Version) >= 33
-            ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_AUDIO
-            : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
-        const granted = await PermissionsAndroid.request(permission, {
-          title: `允许扫描本地${kind === 'podcast' ? '播客' : '听书'}`,
-          message: '需要读取设备音频文件，才能选择要加入的本地媒体。',
-          buttonPositive: '允许',
-          buttonNegative: '取消',
-        });
-        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-          setMessage('未获得读取本地音频的权限');
-          return [];
-        }
-      }
-      const tracks = await scanAllLocalMusic();
-      return tracks.filter(track => track.duration >= 60);
-    },
-    [],
-  );
-  const addLocalMediaTracks = useCallback(
-    (kind: Exclude<LibraryMediaKind, 'music'>, tracks: Track[]) => {
-      const selected = localMediaTracks(tracks, kind);
-      if (!selected.length) {
-        setMessage(`未选择有效的本地${kind === 'podcast' ? '播客' : '听书'}`);
-        return;
-      }
-      patchState(value =>
-        patchMediaBucket(value, kind, bucket => {
-          const existing = bucket.localTracks ?? [];
-          const keys = new Set(existing.map(trackQueueKey));
-          const references = new Set(existing.map(localMediaFileIdentity));
-          const additions = selected.filter(track => {
-            const key = trackQueueKey(track);
-            const reference = localMediaFileIdentity(track);
-            if (keys.has(key) || references.has(reference)) return false;
-            keys.add(key);
-            references.add(reference);
-            return true;
-          });
-          return { ...bucket, localTracks: [...existing, ...additions] };
-        }),
-      );
-      setMessage(
-        `已添加 ${selected.length} ${kind === 'podcast' ? '集本地播客' : '章本地听书'}`,
-      );
-    },
-    [patchState],
-  );
-  const addLocalMediaDirectory = useCallback(
-    async (kind: Exclude<LibraryMediaKind, 'music'>) => {
-      const tracks = await scanLocalMediaDirectory(kind);
-      if (!tracks.length) return;
-      addLocalMediaTracks(kind, tracks);
-    },
-    [addLocalMediaTracks],
-  );
   const localArtworkRequests = useRef(
     new Map<string, Promise<string | null>>(),
   );
-  const refreshLocalMusicArtwork = useCallback(async (incoming?: Track[]) => {
-    const candidates = (incoming ?? state?.localTracks ?? []).filter(
-      track => !track.cover && localPlaybackReference(track),
-    );
-    if (!candidates.length) return;
-    const downloads = state?.downloads ?? [];
-    const identities = await queryLocalFileIdentities([
-      ...candidates.flatMap(localMusicFileReferences),
-      ...downloads.flatMap(entry => [entry.id, ...localMusicFileReferences(entry.track)]),
-    ]).catch(() => ({}));
-    for (let offset = 0; offset < candidates.length; offset += 2) {
-      const results = await Promise.all(
-        candidates.slice(offset, offset + 2).map(async track => {
-          const reference = localPlaybackReference(track)!;
-          const cover = await resolveLocalMusicArtwork(track, downloads, identities, {
-            read: selected => {
-              let request = localArtworkRequests.current.get(selected);
-              if (!request) {
-                request = resolveLocalPlaybackReference(selected, queryDownloadStatus)
-                  .then(readLocalAudioArtwork)
-                  .catch(() => null)
-                  .finally(() => localArtworkRequests.current.delete(selected));
-                localArtworkRequests.current.set(selected, request);
-              }
-              return request;
-            },
-            supplement: selected => recommendationPlatforms.length
-              ? getLibraryTrackArtwork(selected, recommendationPlatforms)
-              : Promise.resolve([]),
-          });
-          return { key: trackQueueKey(track), reference, cover };
-        }),
-      );
-      if (!results.some(result => result.cover)) continue;
-      patchState(value => {
-        let changed = false;
-        const localTracks = value.localTracks.map(track => {
-          const result = results.find(
-            item =>
-              item.key === trackQueueKey(track) &&
-              item.reference === localPlaybackReference(track),
-          );
-          if (track.cover || !result?.cover) return track;
-          changed = true;
-          return { ...track, cover: result.cover };
-        });
-        return changed ? { ...value, localTracks } : value;
-      });
-    }
-  }, [patchState, recommendationPlatforms, state?.downloads, state?.localTracks]);
-  const podcastLocalTracks = state?.podcastLibrary.localTracks;
-  const audiobookLocalTracks = state?.audiobookLibrary.localTracks;
-  const refreshLocalMediaArtwork = useCallback(
-    async (kind: Exclude<LibraryMediaKind, 'music'>) => {
-      const candidates = ((kind === 'podcast' ? podcastLocalTracks : audiobookLocalTracks) ?? []).filter(
+  const refreshLocalMusicArtwork = useCallback(
+    async (incoming?: Track[]) => {
+      const candidates = (incoming ?? state?.localTracks ?? []).filter(
         track => !track.cover && localPlaybackReference(track),
       );
+      if (!candidates.length) return;
+      const downloads = state?.downloads ?? [];
+      const identities = await queryLocalFileIdentities([
+        ...candidates.flatMap(localMusicFileReferences),
+        ...downloads.flatMap(entry => [
+          entry.id,
+          ...localMusicFileReferences(entry.track),
+        ]),
+      ]).catch(() => ({}));
       for (let offset = 0; offset < candidates.length; offset += 2) {
         const results = await Promise.all(
           candidates.slice(offset, offset + 2).map(async track => {
             const reference = localPlaybackReference(track)!;
-            let request = localArtworkRequests.current.get(reference);
-            if (!request) {
-              request = resolveLocalPlaybackReference(reference, queryDownloadStatus)
-                .then(readLocalAudioArtwork)
-                .catch(() => null)
-                .finally(() => localArtworkRequests.current.delete(reference));
-              localArtworkRequests.current.set(reference, request);
-            }
-            return { key: trackQueueKey(track), reference, cover: await request };
+            const cover = await resolveLocalMusicArtwork(
+              track,
+              downloads,
+              identities,
+              {
+                read: selected => {
+                  let request = localArtworkRequests.current.get(selected);
+                  if (!request) {
+                    request = resolveLocalPlaybackReference(
+                      selected,
+                      queryDownloadStatus,
+                    )
+                      .then(readLocalAudioArtwork)
+                      .catch(() => null)
+                      .finally(() =>
+                        localArtworkRequests.current.delete(selected),
+                      );
+                    localArtworkRequests.current.set(selected, request);
+                  }
+                  return request;
+                },
+                supplement: selected =>
+                  recommendationPlatforms.length
+                    ? getLibraryTrackArtwork(selected, recommendationPlatforms)
+                    : Promise.resolve([]),
+              },
+            );
+            return { key: trackQueueKey(track), reference, cover };
           }),
         );
         if (!results.some(result => result.cover)) continue;
-        patchState(value =>
-          patchMediaBucket(value, kind, bucket => ({
-            ...bucket,
-            localTracks: (bucket.localTracks ?? []).map(track => {
-              const result = results.find(
-                item =>
-                  item.key === trackQueueKey(track) &&
-                  item.reference === localPlaybackReference(track),
-              );
-              return track.cover || !result?.cover
-                ? track
-                : { ...track, cover: result.cover };
-            }),
-          })),
-        );
+        patchState(value => {
+          let changed = false;
+          const localTracks = value.localTracks.map(track => {
+            const result = results.find(
+              item =>
+                item.key === trackQueueKey(track) &&
+                item.reference === localPlaybackReference(track),
+            );
+            if (track.cover || !result?.cover) return track;
+            changed = true;
+            return { ...track, cover: result.cover };
+          });
+          return changed ? { ...value, localTracks } : value;
+        });
       }
     },
-    [patchState, podcastLocalTracks, audiobookLocalTracks],
+    [patchState, recommendationPlatforms, state?.downloads, state?.localTracks],
   );
   const scanLocalMusic = useCallback(async () => {
     if (Platform.OS === 'android') {
@@ -5267,10 +6546,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ...value,
       localTracks: [
         ...new Map(
-          [
-            ...value.localTracks,
-            ...eligible,
-          ].map(track => [track.id, track]),
+          [...value.localTracks, ...eligible].map(track => [track.id, track]),
         ).values(),
       ],
     }));
@@ -5307,26 +6583,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       deleteFile = false,
       kind: LibraryMediaKind = 'music',
     ) => {
-      const localTracks = kind === 'music'
-        ? state?.localTracks ?? []
-        : state?.[kind === 'podcast' ? 'podcastLibrary' : 'audiobookLibrary']?.localTracks ?? [];
+      const localTracks = state?.localTracks ?? [];
       const track = localTracks.find(item => item.id === trackId);
       if (deleteFile) {
-        const reference = kind === 'music'
-          ? track?.playUrl
-          : track && localPlaybackReference(track);
+        const reference = track?.playUrl;
         if (!reference) throw new Error('未找到设备文件，记录仍保留');
         const deleted = await deleteLocalFile(reference);
         if (!deleted) throw new Error('未能删除设备文件，记录仍保留');
       }
       patchState(value => {
-        if (kind !== 'music')
-          return patchMediaBucket(value, kind, bucket => ({
-            ...bucket,
-            localTracks: (bucket.localTracks ?? []).filter(
-              item => item.id !== trackId,
-            ),
-          }));
         return {
           ...value,
           localTracks: value.localTracks.filter(track => track.id !== trackId),
@@ -5352,7 +6617,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         mediaDownloads(state, kind).find(item => item.track.id === trackId);
       if (!entry) {
         for (const [key, task] of downloadActivityRef.current) {
-          if (task.track.id === trackId && trackMediaKind(task.track) === kind && task.phase === 'failed') downloadActivityRef.current.delete(key);
+          if (
+            task.track.id === trackId &&
+            trackMediaKind(task.track) === kind &&
+            task.phase === 'failed'
+          )
+            downloadActivityRef.current.delete(key);
         }
         setDownloadActivities([...downloadActivityRef.current.values()]);
         return;
@@ -5360,107 +6630,129 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const target = entry.id.startsWith('download:')
         ? entry.id
         : entry.track.playUrl ?? entry.id;
-      const identities = deleteFile && kind === 'music'
-        ? await queryLocalFileIdentities([
-            target, ...(state?.localTracks ?? []).flatMap(localMusicFileReferences),
-          ]).catch(() => ({}))
-        : {};
+      const identities =
+        deleteFile && kind === 'music'
+          ? await queryLocalFileIdentities([
+              target,
+              ...(state?.localTracks ?? []).flatMap(localMusicFileReferences),
+            ]).catch(() => ({}))
+          : {};
       if (deleteFile) {
         const deleted = await deleteLocalFile(target);
         if (!deleted) throw new Error('未能删除设备文件，记录仍保留');
       }
-      patchState(value =>
-        kind === 'music'
-          ? {
-              ...value,
-              ...removeDownloadedMusic(value.localTracks, value.downloads, entry,
-                deleteFile ? target : undefined, identities),
-            }
-          : patchMediaBucket(value, kind, bucket => ({
-              ...bucket,
-              downloads: bucket.downloads.filter(
-                item => item.track.id !== trackId,
-              ),
-            })),
-      );
+      patchState(value => ({
+        ...value,
+        ...removeDownloadedMusic(
+          value.localTracks,
+          value.downloads,
+          entry,
+          deleteFile ? target : undefined,
+          identities,
+        ),
+      }));
       downloadActivityRef.current.delete(downloadTrackKey(entry.track));
       setDownloadActivities([...downloadActivityRef.current.values()]);
     },
     [patchState, state],
   );
   const downloadTrack = useCallback(
-    async (track: Track, options?: { useLaunchBinding?: boolean; usePlaybackUrl?: boolean; resolved?: DownloadPreview }) => {
+    async (
+      track: Track,
+      options?: {
+        useLaunchBinding?: boolean;
+        usePlaybackUrl?: boolean;
+        resolved?: DownloadPreview;
+      },
+    ) => {
       if (!state) return;
       try {
-      const sources = options?.useLaunchBinding
-        ? playbackSourcesFor(track)
-        : state.sources;
-      if (
-        options?.useLaunchBinding && !options?.resolved &&
-        (track.provider === 'custom' ||
-          !verifiedSourceIdsByProvider.current?.[track.provider]?.length ||
-          !sources.some(
-            source =>
-              source.enabled &&
-              source.healthy === true &&
-              Boolean(source.script),
-          ))
-      )
-        throw new Error('该平台本次检测没有可用的绑定音源，无法下载');
-      // A confirmation dialog may have already validated one exact URL. Reuse
-      // that URL and its evidence instead of resolving a second stream.
-      const activity = downloadActivityRef.current.get(downloadTrackKey(track));
-      const userTask = activity && !['downloaded', 'failed'].includes(activity.phase) ? activity : undefined;
-      const input =
-        track.playUrl &&
-        track.provider !== 'custom' &&
-        (!localPlaybackReference(track) || userTask)
-          ? { ...track, playUrl: undefined }
-          : track;
-      const captured = options?.resolved;
-      if (captured && captured.trackKey !== downloadTrackKey(track))
-        throw new Error('下载预览与歌曲不匹配，已取消下载');
-      if (captured && !captured.url)
-        throw new Error('下载预览缺少已验证的播放地址，已取消下载');
-      if (captured?.url && !/^https?:\/\//i.test(captured.url))
-        throw new Error('下载预览未返回有效播放地址');
-      if (captured?.audio?.resolvedUrl && captured.audio.resolvedUrl !== captured.url)
-        throw new Error('下载预览的音频证据与地址不匹配');
-      const resolved = captured?.url
-        ? {
-            url: captured.url,
-            reportedQuality: captured.reportedQuality,
-            audio: captured.audio,
-          }
-        : options?.usePlaybackUrl
-        ? playbackDownloadSource(track)
-        : await resolvePlaybackWithQuality(
-            input,
-            sources,
-            downloadNetworkQuality(state.settings),
-          );
-      const url = resolved.url;
-      const quality = audioQuality(resolved.audio, resolved.reportedQuality);
-      if (userTask) publishDownloadActivity({ ...userTask, quality });
-      const id = userTask
-        ? await downloadAudioWithProgress(url, track.title, track.artist, userTask.id)
-        : await downloadAudio(url, track.title, track.artist);
-      const fileSize = id.startsWith('content:')
-        ? positiveBytes(await queryLocalFileSize(id).catch(() => null)) ?? positiveBytes(downloadActivityRef.current.get(downloadTrackKey(track))?.fileSize)
-        : undefined;
-      patchState(value => {
-        const kind = trackMediaKind(track);
-        const entry = {
-          id,
-          track: { ...track, playUrl: id.startsWith('content:') ? id : url },
-          status: id.startsWith('content:')
-            ? ('downloaded' as const)
-            : ('queued' as const),
-          createdAt: Date.now(),
-          fileSize,
-          quality,
-        };
-        if (kind === 'music')
+        const sources = options?.useLaunchBinding
+          ? playbackSourcesFor(track)
+          : state.sources;
+        if (
+          options?.useLaunchBinding &&
+          !options?.resolved &&
+          (track.provider === 'custom' ||
+            !verifiedSourceIdsByProvider.current?.[track.provider]?.length ||
+            !sources.some(
+              source =>
+                source.enabled &&
+                source.healthy === true &&
+                Boolean(source.script),
+            ))
+        )
+          throw new Error('该平台本次检测没有可用的绑定音源，无法下载');
+        // A confirmation dialog may have already validated one exact URL. Reuse
+        // that URL and its evidence instead of resolving a second stream.
+        const activity = downloadActivityRef.current.get(
+          downloadTrackKey(track),
+        );
+        const userTask =
+          activity && !['downloaded', 'failed'].includes(activity.phase)
+            ? activity
+            : undefined;
+        const input =
+          track.playUrl &&
+          track.provider !== 'custom' &&
+          (!localPlaybackReference(track) || userTask)
+            ? { ...track, playUrl: undefined }
+            : track;
+        const captured = options?.resolved;
+        if (captured && captured.trackKey !== downloadTrackKey(track))
+          throw new Error('下载预览与歌曲不匹配，已取消下载');
+        if (captured && !captured.url)
+          throw new Error('下载预览缺少已验证的播放地址，已取消下载');
+        if (captured?.url && !/^https?:\/\//i.test(captured.url))
+          throw new Error('下载预览未返回有效播放地址');
+        if (
+          captured?.audio?.resolvedUrl &&
+          captured.audio.resolvedUrl !== captured.url
+        )
+          throw new Error('下载预览的音频证据与地址不匹配');
+        const resolved = captured?.url
+          ? {
+              url: captured.url,
+              reportedQuality: captured.reportedQuality,
+              audio: captured.audio,
+            }
+          : options?.usePlaybackUrl
+          ? playbackDownloadSource(track)
+          : await resolvePlaybackWithQuality(
+              input,
+              sources,
+              downloadNetworkQuality(state.settings),
+            );
+        const url = resolved.url;
+        const quality = audioQuality(resolved.audio, resolved.reportedQuality);
+        if (userTask) publishDownloadActivity({ ...userTask, quality });
+        const id = userTask
+          ? await downloadAudioWithProgress(
+              url,
+              track.title,
+              track.artist,
+              userTask.id,
+            )
+          : await downloadAudio(url, track.title, track.artist);
+        const fileSize = id.startsWith('content:')
+          ? positiveBytes(await queryLocalFileSize(id).catch(() => null)) ??
+            positiveBytes(
+              downloadActivityRef.current.get(downloadTrackKey(track))
+                ?.fileSize,
+            )
+          : undefined;
+        patchState(value => {
+          const kind = trackMediaKind(track);
+          const entry = {
+            id,
+            track: { ...track, playUrl: id.startsWith('content:') ? id : url },
+            status: id.startsWith('content:')
+              ? ('downloaded' as const)
+              : ('queued' as const),
+            createdAt: Date.now(),
+            fileSize,
+            quality,
+          };
           return {
             ...value,
             savedTracks: rememberTrack(value.savedTracks, track),
@@ -5469,22 +6761,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               ...value.downloads.filter(item => item.track.id !== track.id),
             ]),
           };
-        return patchMediaBucket(value, kind, bucket => ({
-          ...bucket,
-          savedTracks: rememberTrack(bucket.savedTracks, track),
-          ...syncDownloadedMedia(
-            bucket.localTracks ?? [],
-            [entry, ...bucket.downloads.filter(item => item.track.id !== track.id)],
-            kind,
-          ),
-        }));
-      });
-      if (userTask) publishDownloadActivity({ ...downloadActivityRef.current.get(downloadTrackKey(track))!,
-        token: id, fileSize, phase: id.startsWith('content:') ? 'downloaded' : 'queued' });
+        });
+        if (userTask)
+          publishDownloadActivity({
+            ...downloadActivityRef.current.get(downloadTrackKey(track))!,
+            token: id,
+            fileSize,
+            phase: id.startsWith('content:') ? 'downloaded' : 'queued',
+          });
       } catch (error) {
         const task = downloadActivityRef.current.get(downloadTrackKey(track));
-        if (task && !['downloaded', 'failed'].includes(task.phase)) publishDownloadActivity({ ...task,
-          phase: 'failed', reason: error instanceof Error ? error.message : '下载失败，请重试' });
+        if (task && !['downloaded', 'failed'].includes(task.phase))
+          publishDownloadActivity({
+            ...task,
+            phase: 'failed',
+            reason: error instanceof Error ? error.message : '下载失败，请重试',
+          });
         throw error;
       }
     },
@@ -5494,102 +6786,241 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     (kind: LibraryMediaKind) => (state ? mediaDownloads(state, kind) : []),
     [state],
   );
-  const prepareDownloadPreview = useCallback(async (track: Track, signal: AbortSignal, options?: { useLaunchBinding?: boolean; usePlaybackUrl?: boolean }): Promise<DownloadPreview> => {
-    if (!state) throw new Error('下载设置尚未就绪');
-    const preferredQuality = downloadNetworkQuality(state.settings);
-    if (options?.usePlaybackUrl) {
-      const resolved = playbackDownloadSource(track);
-      const header = await queryDownloadHeaders(resolved.url, signal).catch(error => {
+  const prepareDownloadPreview = useCallback(
+    async (
+      track: Track,
+      signal: AbortSignal,
+      options?: {
+        useLaunchBinding?: boolean;
+        usePlaybackUrl?: boolean;
+      },
+    ): Promise<DownloadPreview> => {
+      if (!state) throw new Error('下载设置尚未就绪');
+      const preferredQuality = downloadNetworkQuality(state.settings);
+      if (options?.usePlaybackUrl) {
+        const resolved = playbackDownloadSource(track);
+        const header = await queryDownloadHeaders(resolved.url, signal).catch(
+          error => {
+            if (signal.aborted) throw error;
+            return {} as {
+              sizeBytes?: number;
+            };
+          },
+        );
+        return {
+          trackKey: downloadTrackKey(track),
+          preferredQuality,
+          ...resolved,
+          sizeBytes: positiveBytes(header.sizeBytes),
+        };
+      }
+      // The user-authorized download metadata query mirrors the existing caller's
+      // download source path; it does not change Home/startup/playback prewarming.
+      const sources = options?.useLaunchBinding
+        ? playbackSourcesFor(track)
+        : state.sources;
+      if (
+        track.provider === 'custom' ||
+        !sources.some(
+          source => source.enabled && source.healthy !== false && source.script,
+        )
+      )
+        throw new Error('该平台本次检测没有可用的绑定音源，无法读取下载信息');
+      const resolved = await resolveWithImportedSourcePrewarm(
+        { ...track, playUrl: undefined },
+        sources,
+        preferredQuality,
+        signal,
+      );
+      const header: {
+        sizeBytes?: number;
+      } = await queryDownloadHeaders(resolved.url, signal).catch(error => {
         if (signal.aborted) throw error;
-        return {} as { sizeBytes?: number };
+        return {};
       });
-      return { trackKey: downloadTrackKey(track), preferredQuality, ...resolved,
-        sizeBytes: positiveBytes(header.sizeBytes) };
-    }
-    // The user-authorized download metadata query mirrors the existing caller's
-    // download source path; it does not change Home/startup/playback prewarming.
-    const sources = options?.useLaunchBinding ? playbackSourcesFor(track) : state.sources;
-    if (track.provider === 'custom' || !sources.some(source => source.enabled && source.healthy !== false && source.script))
-      throw new Error('该平台本次检测没有可用的绑定音源，无法读取下载信息');
-    const resolved = await resolveWithImportedSourcePrewarm({ ...track, playUrl: undefined }, sources, preferredQuality, signal);
-    const header: { sizeBytes?: number } = await queryDownloadHeaders(resolved.url, signal).catch(error => {
-      if (signal.aborted) throw error;
-      return {};
-    });
-    return { trackKey: downloadTrackKey(track), preferredQuality, url: resolved.url, quality: resolved.quality, reportedQuality: resolved.reportedQuality, audio: resolved.audio?.resolvedUrl === resolved.url ? resolved.audio : undefined, sizeBytes: positiveBytes(header.sizeBytes) };
-  }, [state, playbackSourcesFor]);
-  const downloadTrackRef = useRef(downloadTrack); downloadTrackRef.current = downloadTrack;
-  const beginUserDownloads = useCallback((tracks: Track[], options?: { onDownload?: (track: Track, resolved?: DownloadPreview) => Promise<void>; preferredQuality?: AppSettings['quality']; usePlaybackUrl?: boolean; resolved?: Record<string, DownloadPreview> }) => {
-    const unique = [...new Map(tracks.map(track => [downloadTrackKey(track), track])).values()];
-    const pending = unique.filter(track => {
-      const task = downloadActivityRef.current.get(downloadTrackKey(track));
-      const queued = state && mediaDownloads(state, trackMediaKind(track)).some(entry => entry.status === 'queued' && downloadTrackKey(entry.track) === downloadTrackKey(track));
-      return !queued && (!task || task.phase === 'failed' || task.phase === 'downloaded');
-    });
-    const now = Date.now();
-    pending.forEach((track, index) => publishDownloadActivity({ id: `user_download_${now}_${index}`, track,
-      createdAt: now - unique.indexOf(track), phase: 'preparing', preferredQuality: options?.preferredQuality }));
-    unique.filter(track => !pending.includes(track)).forEach(track => {
-      const task = downloadActivityRef.current.get(downloadTrackKey(track));
-      const queued = state && mediaDownloads(state, trackMediaKind(track)).find(entry => entry.status === 'queued' && downloadTrackKey(entry.track) === downloadTrackKey(track));
-      if (task) publishDownloadActivity({ ...task, createdAt: now - unique.indexOf(track) });
-      else if (queued) publishDownloadActivity({ id: queued.id, token: queued.id, track: queued.track, phase: 'queued', createdAt: now - unique.indexOf(track) });
-    });
-    if (unique.length) {
-      const kind = trackMediaKind(unique[0]);
-      setQueueListOpen(false);
-      setTab('library');
-      setDownloadDestination({ kind, version: ++downloadNavigationVersion.current });
-      open('downloads');
-    }
-    // This loop belongs to the provider, and survives the source row/picker unmount.
-    void (async () => {
-      for (const track of pending) {
-        try {
-          if (options?.resolved && !options.resolved[downloadTrackKey(track)])
-            throw new Error('本次歌曲未取得可用下载地址，请重试');
-          await (options?.usePlaybackUrl
-          ? downloadTrackRef.current(track, { usePlaybackUrl: true, resolved: options?.resolved?.[downloadTrackKey(track)] })
-          : options?.onDownload
-          ? options.onDownload(track, options?.resolved?.[downloadTrackKey(track)])
-          : downloadTrackRef.current(track, { resolved: options?.resolved?.[downloadTrackKey(track)] })); }
-        catch (error) {
+      return {
+        trackKey: downloadTrackKey(track),
+        preferredQuality,
+        url: resolved.url,
+        quality: resolved.quality,
+        reportedQuality: resolved.reportedQuality,
+        audio:
+          resolved.audio?.resolvedUrl === resolved.url
+            ? resolved.audio
+            : undefined,
+        sizeBytes: positiveBytes(header.sizeBytes),
+      };
+    },
+    [state, playbackSourcesFor],
+  );
+  const downloadTrackRef = useRef(downloadTrack);
+  downloadTrackRef.current = downloadTrack;
+  const beginUserDownloads = useCallback(
+    (
+      tracks: Track[],
+      options?: {
+        onDownload?: (
+          track: Track,
+          resolved?: DownloadPreview,
+        ) => Promise<void>;
+        preferredQuality?: AppSettings['quality'];
+        usePlaybackUrl?: boolean;
+        resolved?: Record<string, DownloadPreview>;
+      },
+    ) => {
+      const unique = [
+        ...new Map(
+          tracks.map(track => [downloadTrackKey(track), track]),
+        ).values(),
+      ];
+      const pending = unique.filter(track => {
+        const task = downloadActivityRef.current.get(downloadTrackKey(track));
+        const queued =
+          state &&
+          mediaDownloads(state, trackMediaKind(track)).some(
+            entry =>
+              entry.status === 'queued' &&
+              downloadTrackKey(entry.track) === downloadTrackKey(track),
+          );
+        return (
+          !queued &&
+          (!task || task.phase === 'failed' || task.phase === 'downloaded')
+        );
+      });
+      const now = Date.now();
+      pending.forEach((track, index) =>
+        publishDownloadActivity({
+          id: `user_download_${now}_${index}`,
+          track,
+          createdAt: now - unique.indexOf(track),
+          phase: 'preparing',
+          preferredQuality: options?.preferredQuality,
+        }),
+      );
+      unique
+        .filter(track => !pending.includes(track))
+        .forEach(track => {
           const task = downloadActivityRef.current.get(downloadTrackKey(track));
-          if (task) publishDownloadActivity({ ...task, phase: 'failed', reason: error instanceof Error ? error.message : '下载失败，请重试' });
-        }
-      }
-    })();
-  }, [open, setTab, setQueueListOpen, publishDownloadActivity, state]);
-  const downloadSizeReads = useRef(new Set<string>());
-  const downloadSizeQueue = useRef(new Map<string, ReturnType<typeof mediaDownloads>[number]>());
-  const downloadSizeFlight = useRef<Promise<void> | null>(null);
-  const refreshDownloadFileSizes = useCallback((entries: ReturnType<typeof mediaDownloads>): Promise<void> => {
-    for (const entry of entries) {
-      if (entry.status !== 'downloaded' || positiveBytes(entry.fileSize) || downloadSizeReads.current.has(entry.id)) continue;
-      downloadSizeReads.current.add(entry.id);
-      downloadSizeQueue.current.set(entry.id, entry);
-    }
-    if (downloadSizeFlight.current) return downloadSizeFlight.current;
-    const worker = async () => {
-      while (downloadSizeQueue.current.size) {
-        const entry = downloadSizeQueue.current.values().next().value!;
-        downloadSizeQueue.current.delete(entry.id);
-        const reference = /^download:\d+$/.test(entry.id) ? entry.id : localPlaybackReference(entry.track) ?? entry.id;
-        const fileSize = positiveBytes(await queryLocalFileSize(reference).catch(() => null));
-        if (!fileSize) continue;
-        patchState(value => {
-          const kind = trackMediaKind(entry.track);
-          const update = (items: typeof entries) => items.map(item => item.id === entry.id && downloadTrackKey(item.track) === downloadTrackKey(entry.track) ? { ...item, fileSize } : item);
-          return kind === 'music' ? { ...value, downloads: update(value.downloads) } : patchMediaBucket(value, kind, bucket => ({ ...bucket, downloads: update(bucket.downloads) }));
+          const queued =
+            state &&
+            mediaDownloads(state, trackMediaKind(track)).find(
+              entry =>
+                entry.status === 'queued' &&
+                downloadTrackKey(entry.track) === downloadTrackKey(track),
+            );
+          if (task)
+            publishDownloadActivity({
+              ...task,
+              createdAt: now - unique.indexOf(track),
+            });
+          else if (queued)
+            publishDownloadActivity({
+              id: queued.id,
+              token: queued.id,
+              track: queued.track,
+              phase: 'queued',
+              createdAt: now - unique.indexOf(track),
+            });
         });
+      if (unique.length) {
+        const kind = trackMediaKind(unique[0]);
+        setQueueListOpen(false);
+        setTab('library');
+        setDownloadDestination({
+          kind,
+          version: ++downloadNavigationVersion.current,
+        });
+        open('downloads');
       }
-    };
-    const request = Promise.all([worker(), worker()]).then(() => undefined).finally(() => {
-      if (downloadSizeFlight.current === request) downloadSizeFlight.current = null;
-    });
-    downloadSizeFlight.current = request;
-    return request;
-  }, [patchState]);
+      // This loop belongs to the provider, and survives the source row/picker unmount.
+      void (async () => {
+        for (const track of pending) {
+          try {
+            if (options?.resolved && !options.resolved[downloadTrackKey(track)])
+              throw new Error('本次歌曲未取得可用下载地址，请重试');
+            await (options?.usePlaybackUrl
+              ? downloadTrackRef.current(track, {
+                  usePlaybackUrl: true,
+                  resolved: options?.resolved?.[downloadTrackKey(track)],
+                })
+              : options?.onDownload
+              ? options.onDownload(
+                  track,
+                  options?.resolved?.[downloadTrackKey(track)],
+                )
+              : downloadTrackRef.current(track, {
+                  resolved: options?.resolved?.[downloadTrackKey(track)],
+                }));
+          } catch (error) {
+            const task = downloadActivityRef.current.get(
+              downloadTrackKey(track),
+            );
+            if (task)
+              publishDownloadActivity({
+                ...task,
+                phase: 'failed',
+                reason:
+                  error instanceof Error ? error.message : '下载失败，请重试',
+              });
+          }
+        }
+      })();
+    },
+    [open, setTab, setQueueListOpen, publishDownloadActivity, state],
+  );
+  const downloadSizeReads = useRef(new Set<string>());
+  const downloadSizeQueue = useRef(
+    new Map<string, ReturnType<typeof mediaDownloads>[number]>(),
+  );
+  const downloadSizeFlight = useRef<Promise<void> | null>(null);
+  const refreshDownloadFileSizes = useCallback(
+    (entries: ReturnType<typeof mediaDownloads>): Promise<void> => {
+      for (const entry of entries) {
+        if (
+          entry.status !== 'downloaded' ||
+          positiveBytes(entry.fileSize) ||
+          downloadSizeReads.current.has(entry.id)
+        )
+          continue;
+        downloadSizeReads.current.add(entry.id);
+        downloadSizeQueue.current.set(entry.id, entry);
+      }
+      if (downloadSizeFlight.current) return downloadSizeFlight.current;
+      const worker = async () => {
+        while (downloadSizeQueue.current.size) {
+          const entry = downloadSizeQueue.current.values().next().value!;
+          downloadSizeQueue.current.delete(entry.id);
+          const reference = /^download:\d+$/.test(entry.id)
+            ? entry.id
+            : localPlaybackReference(entry.track) ?? entry.id;
+          const fileSize = positiveBytes(
+            await queryLocalFileSize(reference).catch(() => null),
+          );
+          if (!fileSize) continue;
+          patchState(value => {
+            const kind = trackMediaKind(entry.track);
+            const update = (items: typeof entries) =>
+              items.map(item =>
+                item.id === entry.id &&
+                downloadTrackKey(item.track) === downloadTrackKey(entry.track)
+                  ? { ...item, fileSize }
+                  : item,
+              );
+            return { ...value, downloads: update(value.downloads) };
+          });
+        }
+      };
+      const request = Promise.all([worker(), worker()])
+        .then(() => undefined)
+        .finally(() => {
+          if (downloadSizeFlight.current === request)
+            downloadSizeFlight.current = null;
+        });
+      downloadSizeFlight.current = request;
+      return request;
+    },
+    [patchState],
+  );
   const addTrackToPlaylist = useCallback(
     (track: Track, playlistId?: string) =>
       patchState(value => {
@@ -5613,42 +7044,66 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }),
     [patchState],
   );
-  const removeTrackFromPlaylist = useCallback((track: Track, playlistId: string) =>
-    patchState(value => removeTrackPlaylistMembership(value, track, playlistId)), [patchState]);
-  const openPersonalPlaylist = useCallback((id: string) => {
-    if (!state?.playlists.some(item => item.id === id)) {
-      setMessage('该歌单已不存在');
-      return;
-    }
-    const navigation: [string, unknown][] = [
-      ['library-mode', 'music'], ['library-playlist-tab', 'mine'],
-      ['library-playlist-opened', id],
-    ];
-    setQueueListOpen(false);
-    setPlayerOverlayOpen(false);
-    setTab('library');
-    for (const [key, value] of navigation) catalogViewState.set(key, value);
-    open('personal-playlist');
-    setCatalogRestore(value => ({ version: value.version + 1, keys: navigation.map(([key]) => key) }));
-  }, [state?.playlists, catalogViewState, open, setTab, setQueueListOpen]);
-  const openLinkedPlaylist = useCallback((item: CatalogItem) => {
-    const navigation: [string, unknown][] = [
-      ['library-mode', 'music'], ['library-playlist-tab', 'mine'],
-      ['library-detail', item], ['library-detail-home-reference', true],
-      ['library-detail-resume-key', ''],
-    ];
-    setQueueListOpen(false);
-    setPlayerOverlayOpen(false);
-    setTab('library');
-    for (const [key, value] of navigation) catalogViewState.set(key, value);
-    open('search-playlist');
-    setCatalogRestore(value => ({ version: value.version + 1, keys: navigation.map(([key]) => key) }));
-  }, [catalogViewState, open, setTab, setQueueListOpen]);
+  const removeTrackFromPlaylist = useCallback(
+    (track: Track, playlistId: string) =>
+      patchState(value =>
+        removeTrackPlaylistMembership(value, track, playlistId),
+      ),
+    [patchState],
+  );
+  const openPersonalPlaylist = useCallback(
+    (id: string) => {
+      if (!state?.playlists.some(item => item.id === id)) {
+        setMessage('该歌单已不存在');
+        return;
+      }
+      const navigation: [string, unknown][] = [
+        ['library-mode', 'music'],
+        ['library-playlist-tab', 'mine'],
+        ['library-playlist-opened', id],
+      ];
+      setQueueListOpen(false);
+      setPlayerOverlayOpen(false);
+      setTab('library');
+      for (const [key, value] of navigation) catalogViewState.set(key, value);
+      open('personal-playlist');
+      setCatalogRestore(value => ({
+        version: value.version + 1,
+        keys: navigation.map(([key]) => key),
+      }));
+    },
+    [state?.playlists, catalogViewState, open, setTab, setQueueListOpen],
+  );
+  const openLinkedPlaylist = useCallback(
+    (item: CatalogItem) => {
+      const navigation: [string, unknown][] = [
+        ['library-mode', 'music'],
+        ['library-playlist-tab', 'mine'],
+        ['library-detail', item],
+        ['library-detail-home-reference', true],
+      ];
+      setQueueListOpen(false);
+      setPlayerOverlayOpen(false);
+      setTab('library');
+      for (const [key, value] of navigation) catalogViewState.set(key, value);
+      open('search-playlist');
+      setCatalogRestore(value => ({
+        version: value.version + 1,
+        keys: navigation.map(([key]) => key),
+      }));
+    },
+    [catalogViewState, open, setTab, setQueueListOpen],
+  );
   useEffect(() => {
     const destination = importedPlaylistDestination.current;
     if (!destination || !state) return;
     if ('personalPlaylistId' in destination) {
-      if (!state.playlists.some(value => value.id === destination.personalPlaylistId)) return;
+      if (
+        !state.playlists.some(
+          value => value.id === destination.personalPlaylistId,
+        )
+      )
+        return;
       importedPlaylistDestination.current = null;
       openPersonalPlaylist(destination.personalPlaylistId);
       return;
@@ -5658,34 +7113,69 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     importedPlaylistDestination.current = null;
     openLinkedPlaylist(item);
   }, [state, openLinkedPlaylist, openPersonalPlaylist]);
-  const isPlaylistSaved = useCallback((preview: PlaylistImportPreview) => Boolean(state && (preview.kind === 'personal'
-    ? state.playlists.some(value => value.id === preview.id || Boolean(preview.shareOrigin && value.shareOrigin === preview.shareOrigin))
-    : savedPlaylistReference(state, preview))), [state]);
-  const importPlaylist = useCallback(async (preview: PlaylistImportPreview, options?: PlaylistImportOptions) => {
-    if (!state) throw new Error('应用尚未就绪');
-    if (getStateStorageStatus().readError)
-      throw new Error('本地数据读取失败，已阻止保存以保护原始数据');
-    if (playlistImportInFlight.current) throw new Error('歌单正在保存，请稍候');
-    playlistImportInFlight.current = true;
-    try {
-      const commit = (value: PersistedState) => preview.kind === 'personal'
-        ? commitPersonalPlaylistImport(value, preview, options?.overwrite) : commitPlaylistImport(value, preview, options?.overwrite);
-      const committed = commit(state);
-      if (persistTimer.current) {
-        clearTimeout(persistTimer.current);
-        persistTimer.current = null;
+  const isPlaylistSaved = useCallback(
+    (preview: PlaylistImportPreview) =>
+      Boolean(
+        state &&
+          (preview.kind === 'personal'
+            ? state.playlists.some(
+                value =>
+                  value.id === preview.id ||
+                  Boolean(
+                    preview.shareOrigin &&
+                      value.shareOrigin === preview.shareOrigin,
+                  ),
+              )
+            : savedPlaylistReference(state, preview)),
+      ),
+    [state],
+  );
+  const importPlaylist = useCallback(
+    async (preview: PlaylistImportPreview, options?: PlaylistImportOptions) => {
+      if (!state) throw new Error('应用尚未就绪');
+      if (getStateStorageStatus().readError)
+        throw new Error('本地数据读取失败，已阻止保存以保护原始数据');
+      if (playlistImportInFlight.current)
+        throw new Error('歌单正在保存，请稍候');
+      playlistImportInFlight.current = true;
+      try {
+        const commit = (value: PersistedState) =>
+          preview.kind === 'personal'
+            ? commitPersonalPlaylistImport(value, preview, options?.overwrite)
+            : commitPlaylistImport(value, preview, options?.overwrite);
+        const committed = commit(state);
+        if (persistTimer.current) {
+          clearTimeout(persistTimer.current);
+          persistTimer.current = null;
+        }
+        await saveState(committed, { durable: true });
+        try {
+          await clearSystemPlaylistClipboard();
+        } catch {
+          setMessage('歌单已保存，但剪贴板未清空');
+        }
+        importedPlaylistDestination.current =
+          preview.kind === 'personal'
+            ? {
+                personalPlaylistId: committed.playlists.find(
+                  value =>
+                    value.id === preview.id ||
+                    Boolean(
+                      preview.shareOrigin &&
+                        value.shareOrigin === preview.shareOrigin,
+                    ),
+                )!.id,
+              }
+            : { provider: preview.provider, id: preview.id };
+        setState(latestState =>
+          latestState ? commit(latestState) : latestState,
+        );
+      } finally {
+        playlistImportInFlight.current = false;
       }
-      await saveState(committed, { durable: true });
-      try { await clearSystemPlaylistClipboard(); }
-      catch { setMessage('歌单已保存，但剪贴板未清空'); }
-      importedPlaylistDestination.current = preview.kind === 'personal'
-        ? { personalPlaylistId: committed.playlists.find(value => value.id === preview.id || Boolean(preview.shareOrigin && value.shareOrigin === preview.shareOrigin))!.id }
-        : { provider: preview.provider, id: preview.id };
-      setState(latestState => latestState ? commit(latestState) : latestState);
-    } finally {
-      playlistImportInFlight.current = false;
-    }
-  }, [state, clearSystemPlaylistClipboard]);
+    },
+    [state, clearSystemPlaylistClipboard],
+  );
   const createPlaylist = useCallback(
     (title?: string) =>
       patchState(value => ({
@@ -5720,11 +7210,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [patchState],
   );
   const renameImportedPlaylist = useCallback(
-    (item: CatalogItem, title: string) => patchState(value => renameLinkedPlaylist(value, item, title)),
+    (item: CatalogItem, title: string) =>
+      patchState(value => renameLinkedPlaylist(value, item, title)),
     [patchState],
   );
   const deleteImportedPlaylist = useCallback(
-    (item: CatalogItem) => patchState(value => deleteLinkedPlaylist(value, item)),
+    (item: CatalogItem) =>
+      patchState(value => deleteLinkedPlaylist(value, item)),
     [patchState],
   );
   const deletePlaylist = useCallback(
@@ -5750,20 +7242,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [patchState],
   );
-  const invalidateSourceSelection = useCallback((message: string) => {
-    sourceSelectionGeneration.current += 1;
-    playerQueuePreparation.current.reset();
-    void discardFuturePreparation().catch(() => undefined);
-    urlPrewarmScheduler.current!.reset();
-    resetLaunchBackendPools();
-    clearResolvedSourceCache();
-    verifiedSourceIdsByProvider.current = {};
-    verifiedBackendByProvider.current = {};
-    setHealthyProviderIds([]);
-    setStartupHealth(null);
-    setSourceHealthRevision(value => value + 1);
-    setMessage(message);
-  }, [discardFuturePreparation]);
+  const invalidateSourceSelection = useCallback(
+    (message: string) => {
+      sourceSelectionGeneration.current += 1;
+      playerQueuePreparation.current.reset();
+      void discardFuturePreparation().catch(() => undefined);
+      urlPrewarmScheduler.current!.reset();
+      resetLaunchBackendPools();
+      clearResolvedSourceCache();
+      verifiedSourceIdsByProvider.current = {};
+      verifiedBackendByProvider.current = {};
+      setHealthyProviderIds([]);
+      setStartupHealth(null);
+      setSourceHealthRevision(value => value + 1);
+      setMessage(message);
+    },
+    [discardFuturePreparation],
+  );
   const runSourcePlaybackHealth = useCallback(
     async (
       source: SourceSetting,
@@ -5782,11 +7277,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         let passed = false;
         try {
           const sample = await loadDesktopHealthSample(platform.id);
-          await probeManualSource(sample, {
-            ...source,
-            sourceCapabilities,
-            healthy: true,
-          }, false);
+          await probeManualSource(
+            sample,
+            {
+              ...source,
+              sourceCapabilities,
+              healthy: true,
+            },
+            false,
+          );
           passed = true;
         } catch {
           passed = false;
@@ -5946,7 +7445,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (id: string) => {
       const source = state?.sources.find(item => item.id === id);
       if (!source) throw new Error('音源不存在');
-      if (!isSourceAuthorized(source)) throw new Error('请先导入有效的音源脚本');
+      if (!isSourceAuthorized(source))
+        throw new Error('请先导入有效的音源脚本');
       if (!source.script) throw new Error('该条目不是自定义音源');
       try {
         const result = await testImportedSourceScript(source.script);
@@ -6005,7 +7505,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setPlayer(value => ({
         ...value,
         sleepMode: mode,
-        sleepDeadline: mode === 'minutes' ? Date.now() + minutes * 60_000 : 0,
+        sleepDeadline: mode === 'minutes' ? Date.now() + minutes * 60000 : 0,
       }));
       setMessage(
         mode === 'track' ? '将在本曲结束后暂停' : `将在 ${minutes} 分钟后暂停`,
@@ -6048,29 +7548,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           : isCurrentFeed
           ? { kind: 'feed' as const, category, page: feedPage, hasMore: true }
           : null);
-      const previousSource = queuePaging.current?.source;
-      const newFirstEpisodeSource = options?.queueSource?.kind === 'collection' &&
-        options.queueSource.metadata?.collectionEpisodeOrder === 'oldest' &&
-        (previousSource?.kind !== 'collection' ||
-          previousSource.provider !== options.queueSource.provider ||
-          previousSource.id !== options.queueSource.id ||
-          previousSource.collectionKind !== options.queueSource.collectionKind ||
-          previousSource.metadata?.collectionEpisodeOrder !== 'oldest');
       await playTrack(
         track,
         tracks,
         index,
         {
           ...options,
-          queueOrigin: options?.queueOrigin ?? (isCurrentQueue ? queueOriginRef.current ?? undefined :
-            isStartupQueueSource(source)
-              ? captureQueueOrigin('默认模式', { tab: 'discovery', page: 'root', menuChoiceId: 'mode-default' })
+          queueOrigin:
+            options?.queueOrigin ??
+            (isCurrentQueue
+              ? queueOriginRef.current ?? undefined
+              : isStartupQueueSource(source)
+              ? captureQueueOrigin('默认模式', {
+                  tab: 'discovery',
+                  page: 'root',
+                  menuChoiceId: 'mode-default',
+                })
               : captureQueueOrigin()),
         },
         source,
         isCurrentQueue &&
-          !(isStartupQueueSource(source) && options?.startupPlayback) &&
-          !newFirstEpisodeSource,
+          !(isStartupQueueSource(source) && options?.startupPlayback),
       );
     },
     [captureQueueOrigin, category, feed, feedPage, playTrack],
@@ -6112,15 +7610,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     startFeed,
     togglePlay,
   ]);
-
   const storageDiagnostic =
     stateStorageStatus.readError ?? stateStorageStatus.writeError;
   const stateStorageError =
     !storageDiagnostic || stateStorageErrorDismissed
       ? ''
       : stateStorageStatus.readError
-        ? `本地数据读取失败，旧数据已保护，本次不写入（${storageDiagnostic.code}）`
-        : `本地数据保存失败，请稍后重试（${storageDiagnostic.code}）`;
+      ? `本地数据读取失败，旧数据已保护，本次不写入（${storageDiagnostic.code}）`
+      : `本地数据保存失败，请稍后重试（${storageDiagnostic.code}）`;
   if (!state) return <InitialStartupSplash startup={startup} />;
   const value: Controller = {
     navigationDepth: stack.length,
@@ -6183,7 +7680,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     playTrack: startFeed,
     playDefaultTrack,
     prewarmHomeTracks,
-    prewarmContextKey: `${sourceSelectionGeneration.current}:${sourceResolutionCacheToken()}:${qualityPreferenceRef.current}`,
+    prewarmContextKey: `${
+      sourceSelectionGeneration.current
+    }:${sourceResolutionCacheToken()}:${qualityPreferenceRef.current}`,
     prewarmDetailTracks,
     releaseDetailPrewarm,
     waitForQueuePrewarm,
@@ -6219,10 +7718,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     backupData,
     restoreData,
     importLocalMusic,
-    scanLocalMedia,
-    addLocalMediaTracks,
-    addLocalMediaDirectory,
-    refreshLocalMediaArtwork,
     addLocalMusicDirectory,
     scanLocalMusic,
     refreshLocalMusicArtwork,
@@ -6261,32 +7756,68 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setSleepTimer,
     cancelSleepTimer,
   };
-  return <Context.Provider value={value}>
-    <DesktopLyricsBridge settings={ready && !startup.visible ? state?.settings : undefined} current={current} player={player}
-      favorite={Boolean(current && state?.favorites.includes(current.id))} actions={{
-        toggle: togglePlay, jump, seek, favorite: () => { if (current) toggleFavorite(current); },
-        close: () => setSetting('desktopLyricsEnabled', false),
-        denied: () => { if (state?.settings.desktopLyricsEnabled) {
-          setSetting('desktopLyricsEnabled', false); setMessage('请在桌面歌词中授予悬浮权限');
-        } },
-      }} />
-    {children}
-  </Context.Provider>;
+  return (
+    <Context.Provider value={value}>
+      <DesktopLyricsBridge
+        settings={ready && !startup.visible ? state?.settings : undefined}
+        current={current}
+        player={player}
+        favorite={Boolean(current && state?.favorites.includes(current.id))}
+        actions={{
+          toggle: togglePlay,
+          jump,
+          seek,
+          favorite: () => {
+            if (current) toggleFavorite(current);
+          },
+          close: () => setSetting('desktopLyricsEnabled', false),
+          denied: () => {
+            if (state?.settings.desktopLyricsEnabled) {
+              setSetting('desktopLyricsEnabled', false);
+              setMessage('请在桌面歌词中授予悬浮权限');
+            }
+          },
+        }}
+      />
+      {children}
+    </Context.Provider>
+  );
 }
-
 export function useApp() {
   const value = useContext(Context);
   if (!value) throw new Error('App state is not ready');
   return value;
 }
-
 const initialStartupContainer = { flex: 1 };
-function InitialStartupSplash({ startup }: { startup: { visible: boolean; label: string; progress: number } }) {
+function InitialStartupSplash({
+  startup,
+}: {
+  startup: {
+    visible: boolean;
+    label: string;
+    progress: number;
+  };
+}) {
   const appearance = useMemo(readStartupAppearance, []);
-  return <View style={[initialStartupContainer, { backgroundColor: STARTUP_PALETTES[appearance.theme].background }]}>
-    <StatusBar translucent backgroundColor="transparent" barStyle={STARTUP_PALETTES[appearance.theme].dark ? 'light-content' : 'dark-content'} />
-    <StartupSplashView startup={startup} {...appearance} />
-  </View>;
+  return (
+    <View
+      style={[
+        initialStartupContainer,
+        { backgroundColor: STARTUP_PALETTES[appearance.theme].background },
+      ]}
+    >
+      <StatusBar
+        translucent
+        backgroundColor="transparent"
+        barStyle={
+          STARTUP_PALETTES[appearance.theme].dark
+            ? 'light-content'
+            : 'dark-content'
+        }
+      />
+      <StartupSplashView startup={startup} {...appearance} />
+    </View>
+  );
 }
 // Keep catalog navigation context when the existing shell temporarily mounts the player.
 export function useCatalogViewState<T>(key: string, initial: T) {

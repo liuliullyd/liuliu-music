@@ -1,15 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CatalogItem, PlatformSetting, Track } from '../domain/types';
 import {
   loadCollectionTrackBatch,
   type CollectionKind,
 } from '../services/collectionPaging';
-import {
-  collectionOrderMetadata,
-  type CollectionEpisodeOrder,
-} from '../services/collectionOrder';
-
-const empty = (order: CollectionEpisodeOrder = 'default') => ({
+const empty = (order: 'default' = 'default') => ({
   tracks: [] as Track[],
   buffered: [] as Track[],
   offset: 0,
@@ -20,14 +15,18 @@ const empty = (order: CollectionEpisodeOrder = 'default') => ({
   order,
 });
 const COLLECTION_PAGE_SIZE = 20;
-export type CollectionPageSnapshot = ReturnType<typeof empty> & { identity: string };
+export type CollectionPageSnapshot = ReturnType<typeof empty> & {
+  identity: string;
+};
 export interface CollectionPageReturn {
   version: number;
   state?: CollectionPageSnapshot;
   onChange?: (snapshot: CollectionPageSnapshot) => void;
   requested?: boolean;
 }
-const copySnapshot = (state: CollectionPageSnapshot): CollectionPageSnapshot => ({
+const copySnapshot = (
+  state: CollectionPageSnapshot,
+): CollectionPageSnapshot => ({
   ...state,
   tracks: state.tracks.map(({ playUrl: _url, ...track }) => track),
   buffered: state.buffered.map(({ playUrl: _url, ...track }) => track),
@@ -36,7 +35,6 @@ const copySnapshot = (state: CollectionPageSnapshot): CollectionPageSnapshot => 
 export function useCollectionPages(
   item: CatalogItem | null,
   platforms?: PlatformSetting[],
-  requestedOrder: CollectionEpisodeOrder = 'default',
   originReturn?: CollectionPageReturn,
 ) {
   const cursor = useRef(empty());
@@ -51,33 +49,30 @@ export function useCollectionPages(
     requestedKind === 'charts' ||
     requestedKind === 'playlists' ||
     requestedKind === 'new-albums' ||
-    requestedKind === 'artist' ||
-    requestedKind === 'podcast' ||
-    requestedKind === 'audiobook'
+    requestedKind === 'artist'
       ? requestedKind
-      : item?.metadata?.mediaType === 'podcast'
-      ? 'podcast'
-      : item?.metadata?.mediaType === 'long-audio'
-      ? 'audiobook'
       : item?.kind === 'charts'
       ? 'charts'
       : item?.kind === 'new-albums'
       ? 'new-albums'
       : 'playlists';
-  const order =
-    kind === 'podcast' || kind === 'audiobook' ? requestedOrder : 'default';
-  const requestMetadata = useMemo(
-    () => collectionOrderMetadata(item?.metadata, order),
-    [item?.metadata, order],
-  );
+  const order = 'default' as const;
+  const requestMetadata = item?.metadata;
   const identity = JSON.stringify([provider, kind, id, order, requestMetadata]);
   const cursorIdentity = useRef('');
   const restoredVersion = useRef(-1);
   const onChange = useRef(originReturn?.onChange);
   onChange.current = originReturn?.onChange;
-  let visible = (!(originReturn?.state || originReturn?.requested) || cursorIdentity.current === identity) && snapshot.order === order
-    ? snapshot : { ...empty(order), loading: true };
-  if (originReturn?.state?.identity === identity && restoredVersion.current !== originReturn.version) {
+  let visible =
+    (!(originReturn?.state || originReturn?.requested) ||
+      cursorIdentity.current === identity) &&
+    snapshot.order === order
+      ? snapshot
+      : { ...empty(order), loading: true };
+  if (
+    originReturn?.state?.identity === identity &&
+    restoredVersion.current !== originReturn.version
+  ) {
     restoredVersion.current = originReturn.version;
     generation.current += 1;
     queuedRequest.current = false;
@@ -88,7 +83,13 @@ export function useCollectionPages(
     setSnapshot(cursor.current);
   }
   const loadMore = useCallback(() => {
-    if (!provider || !id || !cursor.current.hasMore || cursor.current.order !== order) return Promise.resolve();
+    if (
+      !provider ||
+      !id ||
+      !cursor.current.hasMore ||
+      cursor.current.order !== order
+    )
+      return Promise.resolve();
     if (activeRequest.current) return activeRequest.current;
     queuedRequest.current = true;
     const version = generation.current;
@@ -208,8 +209,13 @@ export function useCollectionPages(
     generation.current += 1;
     queuedRequest.current = false;
     activeRequest.current = null;
-    if (originReturn?.state?.identity === identity && restoredVersion.current === originReturn.version) {
-      return () => { generation.current += 1; };
+    if (
+      originReturn?.state?.identity === identity &&
+      restoredVersion.current === originReturn.version
+    ) {
+      return () => {
+        generation.current += 1;
+      };
     }
     cursorIdentity.current = identity;
     cursor.current = empty(order);
@@ -218,12 +224,24 @@ export function useCollectionPages(
     return () => {
       generation.current += 1;
     };
-  }, [identity, loadMore, order, originReturn?.state?.identity, originReturn?.version]);
+  }, [
+    identity,
+    loadMore,
+    order,
+    originReturn?.state?.identity,
+    originReturn?.version,
+  ]);
   // A changed direction must not render the preceding direction's rows even
   // during the render before the effect resets its cursor and request generation.
   useEffect(() => {
     if (cursorIdentity.current === identity)
       onChange.current?.(copySnapshot({ ...cursor.current, identity }));
   }, [identity, snapshot]);
-  return { ...visible, loadMore, kind, requestMetadata, snapshot: () => copySnapshot({ ...cursor.current, identity }) };
+  return {
+    ...visible,
+    loadMore,
+    kind,
+    requestMetadata,
+    snapshot: () => copySnapshot({ ...cursor.current, identity }),
+  };
 }

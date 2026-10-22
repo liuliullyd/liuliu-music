@@ -59,8 +59,6 @@ class LiuliuStorageModule(private val context: ReactApplicationContext) :
   private var directoryPromise: Promise? = null
   private var audioImportPromise: Promise? = null
   private var musicScanPromise: Promise? = null
-  private data class MediaDirectoryScan(val preferenceKey: String, val promise: Promise, var awaitingResult: Boolean = false)
-  @Volatile private var mediaDirectoryScan: MediaDirectoryScan? = null
   private var fileDeletePromise: Promise? = null
   private var fileDeleteUri: Uri? = null
   private val backgroundAudioProbes = ConcurrentHashMap<String, BackgroundAudioProbe>()
@@ -495,7 +493,7 @@ class LiuliuStorageModule(private val context: ReactApplicationContext) :
 
   @ReactMethod
   fun scanMusicDirectory(promise: Promise) {
-    if (musicScanPromise != null || mediaDirectoryScan != null) return promise.reject("MUSIC_SCAN_BUSY", "本地音乐扫描正在进行")
+    if (musicScanPromise != null) return promise.reject("MUSIC_SCAN_BUSY", "本地音乐扫描正在进行")
     musicScanPromise = promise
     val saved = preferences.getString("music_scan_tree", null)
     val activity = context.currentActivity ?: run {
@@ -510,34 +508,6 @@ class LiuliuStorageModule(private val context: ReactApplicationContext) :
     } catch (error: Exception) {
       musicScanPromise = null
       promise.reject("MUSIC_SCAN_DIRECTORY_FAILED", "无法打开本地音乐目录选择器", error)
-    }
-  }
-
-  @ReactMethod
-  fun scanMediaDirectory(kind: String, promise: Promise) {
-    val preferenceKey = when (kind) {
-      "podcast" -> "podcast_scan_tree"
-      "audiobook" -> "audiobook_scan_tree"
-      else -> return promise.reject("MEDIA_SCAN_KIND", "不支持的本地媒体类型")
-    }
-    if (musicScanPromise != null || mediaDirectoryScan != null)
-      return promise.reject("MEDIA_SCAN_BUSY", "本地音频扫描正在进行")
-    val scan = MediaDirectoryScan(preferenceKey, promise)
-    mediaDirectoryScan = scan
-    val saved = preferences.getString(preferenceKey, null)
-    val activity = context.currentActivity ?: run {
-      mediaDirectoryScan = null
-      return promise.reject("MEDIA_SCAN_NO_ACTIVITY", "当前页面无法打开目录选择器")
-    }
-    scan.awaitingResult = true
-    try {
-      activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        if (Build.VERSION.SDK_INT >= 26) initialScanDirectory(saved)?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
-      }, MEDIA_DIRECTORY_REQUEST)
-    } catch (error: Exception) {
-      mediaDirectoryScan = null
-      promise.reject("MEDIA_SCAN_DIRECTORY_FAILED", "无法打开本地音频目录选择器", error)
     }
   }
 
@@ -1081,31 +1051,6 @@ class LiuliuStorageModule(private val context: ReactApplicationContext) :
       } catch (error: Exception) { promise.reject("DELETE_FILE_FAILED", "删除本地文件失败", error) }
       return
     }
-    if (requestCode == MEDIA_DIRECTORY_REQUEST) {
-      val scan = mediaDirectoryScan ?: return
-      if (!scan.awaitingResult) return
-      scan.awaitingResult = false
-      val promise = scan.promise
-      val uri = data?.data
-      if (resultCode != Activity.RESULT_OK || uri == null) {
-        mediaDirectoryScan = null
-        return promise.resolve(Arguments.createArray())
-      }
-      try {
-        val grants = data!!.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-        context.contentResolver.takePersistableUriPermission(uri, grants)
-        preferences.edit().putString(scan.preferenceKey, uri.toString()).apply()
-        ioExecutor.execute {
-          try { promise.resolve(scanMediaTree(uri)) }
-          catch (error: Exception) { promise.reject("MEDIA_SCAN_FAILED", "扫描本地音频失败", error) }
-          finally { if (mediaDirectoryScan === scan) mediaDirectoryScan = null }
-        }
-      } catch (error: Exception) {
-        mediaDirectoryScan = null
-        promise.reject("MEDIA_SCAN_DIRECTORY_FAILED", "无法保存本地音频目录", error)
-      }
-      return
-    }
     if (requestCode == MUSIC_DIRECTORY_REQUEST) {
       val promise = musicScanPromise ?: return
       val uri = data?.data
@@ -1497,7 +1442,6 @@ class LiuliuStorageModule(private val context: ReactApplicationContext) :
     private const val AUDIO_IMPORT_REQUEST = 6111
     private const val MUSIC_DIRECTORY_REQUEST = 6112
     private const val FILE_DELETE_REQUEST = 6113
-    private const val MEDIA_DIRECTORY_REQUEST = 6114
     private const val MAX_SOURCE_BYTES = 2 * 1024 * 1024
     private val stateIoExecutor = Executors.newSingleThreadExecutor()
     private val ioExecutor = Executors.newCachedThreadPool()

@@ -102,7 +102,7 @@ export function HomeNewReleases({
   catalogIdentity?: string;
   /** New passing providers reopen continuation without resetting loaded data. */
   catalogProviderKey?: string;
-  /** Home podcast continues after filtered rows only on a real paging gesture. */
+  /** The music rail continues after filtered rows only on a real paging gesture. */
   replenishBlockedTracks?: boolean;
   /** Preserve committed media while a refreshed Home waits for this rail. */
   loadEnabled?: boolean;
@@ -227,8 +227,12 @@ export function HomeNewReleases({
             seen.add(track.id);
             return true;
           });
-          const providersGrew = Boolean(catalogIdentity && catalogProvidersRef.current
-            ?.split('|').some(provider => !requestedProviders.includes(provider)));
+          const providersGrew = Boolean(
+            catalogIdentity &&
+              catalogProvidersRef.current
+                ?.split('|')
+                .some(provider => !requestedProviders.includes(provider)),
+          );
           hasMore = (result.hasMore && additions.length > 0) || providersGrew;
           remoteHasMore = result.hasMore || providersGrew;
         } else {
@@ -492,7 +496,9 @@ export function HomeNewReleases({
           hideActionLabel
           onPress={viewAll ? () => viewAll(visibleTracks) : undefined}
           actionTestID={
-            isChart || hasCustomRail ? `${testPrefix}-all` : 'home-new-songs-all'
+            isChart || hasCustomRail
+              ? `${testPrefix}-all`
+              : 'home-new-songs-all'
           }
           darkMode={false}
         />

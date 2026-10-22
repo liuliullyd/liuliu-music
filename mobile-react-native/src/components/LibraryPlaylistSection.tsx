@@ -3,10 +3,8 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { covers } from '../assets/covers';
 import type { CatalogItem, Playlist, Track } from '../domain/types';
 import { trackCoverCandidates } from '../services/onlineCatalog';
-import { collectionMediaKind } from '../services/mediaLibrary';
 import { useTheme } from '../theme';
 import { ResilientHomeCover } from './ResilientHomeCover';
-
 export type LibraryPlaylistTab = 'curated' | 'mine';
 // Consume long holds so release cannot become an ordinary open tap.
 const ignoreLongPress = () => {};
@@ -25,12 +23,7 @@ export function LibraryPlaylistCard({
 }) {
   const c = useTheme();
   const online = 'provider' in item;
-  const unit =
-    online && collectionMediaKind(item) !== 'music'
-      ? collectionMediaKind(item) === 'podcast'
-        ? '集'
-        : '章'
-      : '首';
+  const unit = '首';
   return (
     <Pressable
       accessibilityRole="button"
@@ -48,7 +41,9 @@ export function LibraryPlaylistCard({
         uris={
           online
             ? item.coverCandidates
-            : item.cover ? [item.cover] : coverTrack
+            : item.cover
+            ? [item.cover]
+            : coverTrack
             ? trackCoverCandidates(coverTrack)
             : undefined
         }
@@ -201,10 +196,13 @@ export function LibraryPlaylistSection({
             </Pressable>
             {mine.map(item => (
               <LibraryPlaylistCard
-                key={'provider' in item ? `${item.provider}:${item.id}` : item.id}
+                key={
+                  'provider' in item ? `${item.provider}:${item.id}` : item.id
+                }
                 item={item}
                 coverTrack={mineTracks.find(
-                  track => !('provider' in item) && track.id === item.trackIds[0],
+                  track =>
+                    !('provider' in item) && track.id === item.trackIds[0],
                 )}
                 suppressLongPress
                 onPress={() => onOpenMine(item)}

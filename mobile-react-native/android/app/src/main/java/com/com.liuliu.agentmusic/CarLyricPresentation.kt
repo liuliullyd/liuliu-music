@@ -1,6 +1,6 @@
 package com.liuliu.agentmusic
 
-/** Bluetooth title compatibility is separate from UCAR whole lyrics and the original song facts. */
+/** Bluetooth title compatibility is separate from app whole lyrics and the original song facts. */
 internal object CarLyricPresentation {
   data class Display(val title: String, val artist: String, val line: String, val delayMs: Long?)
   fun project(lyrics: MediaNotificationLyricsState, mediaId: String?, title: String, artist: String,

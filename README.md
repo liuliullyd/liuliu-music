@@ -40,7 +40,9 @@ cd mobile-react-native/android
 
 调试签名由本机 Android 工具生成，不分发任何现有应用的签名密钥。公开版应用 ID 是 `com.liuliu.music.opensource`，可以与原开发版并存，数据目录彼此独立。
 
-Release 启用 R8 和 Hermes。未提供正式签名时生成未签名产物；正式分发必须使用维护者自行保管的密钥。配置方式见 [构建与签名](docs/BUILDING.md)。
+公开版只提供音乐功能，已移除播客、听书的入口、目录请求、分类存储及章节播放逻辑。车载使用应用自有界面、Android MediaSession/MediaBrowser 与可选的 `liuliu-car-v1` 蓝牙外设协议，详见 [车载接口](docs/CAR_INTEGRATION.md)。
+
+Release 关闭 R8/ProGuard 混淆、资源压缩和 Metro JavaScript 压缩，不加壳；保留正常 Hermes 运行时编译及正式签名。未提供正式签名时生成未签名产物；正式分发必须使用维护者自行保管的密钥。配置方式见 [构建与签名](docs/BUILDING.md)。
 
 ## 文档与许可
 

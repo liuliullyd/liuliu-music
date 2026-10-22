@@ -18,46 +18,54 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { covers } from '../assets/covers';
-import { Cover, Glyph, TrackPlatformDuration } from '../components/UI';
-import { platformLabel, platformCaption } from '../components/platformLabels';
+import { platformCaption, platformLabel } from '../components/platformLabels';
 import { QueueTrackActions } from '../components/QueueTrackActions';
-import { TrackActionIcon } from '../components/TrackActionIcon';
 import { ResilientHomeCover } from '../components/ResilientHomeCover';
-import { StickyPressable } from '../components/StickyPressable';
 import { StickyBackgroundExtension } from '../components/StickyBackgroundExtension';
-import { useVisibleTrackPrewarm } from '../components/useVisibleTrackPrewarm';
+import { StickyPressable } from '../components/StickyPressable';
+import { TrackActionIcon } from '../components/TrackActionIcon';
+import { Cover, Glyph, TrackPlatformDuration } from '../components/UI';
 import { useStableNativeScrollEvent } from '../components/useStableNativeScrollEvent';
-import { trackQueueKey, type CatalogItem, type PlatformSetting, type Track } from '../domain/types';
-import { useLayout } from '../state/LayoutContext';
+import { useVisibleTrackPrewarm } from '../components/useVisibleTrackPrewarm';
 import {
-  useApp,
-  useCatalogViewState,
-  type SearchCategory,
-} from '../state/AppContext';
-import { CollectionDetail } from './HomeScreen';
-import {
-  collectSearchAlbums,
-  collectSearchArtists,
-} from '../services/searchEntities';
+  trackQueueKey,
+  type CatalogItem,
+  type PlatformSetting,
+  type Track,
+} from '../domain/types';
 import {
   getCatalog,
   getCollection,
   trackCoverCandidates,
 } from '../services/onlineCatalog';
-import { mediaProviders } from '../services/mediaDiscoveryPaging';
+import {
+  collectSearchAlbums,
+  collectSearchArtists,
+} from '../services/searchEntities';
 import { byStartupPassOrder } from '../services/startupPlatformOrder';
+import {
+  useApp,
+  useCatalogViewState,
+  type SearchCategory,
+} from '../state/AppContext';
+import { useLayout } from '../state/LayoutContext';
 import { serif, useTheme, type ThemePalette } from '../theme';
-
-const categories: Array<{ id: SearchCategory; label: string; unit: string }> = [
+import { CollectionDetail } from './HomeScreen';
+const categories: Array<{
+  id: SearchCategory;
+  label: string;
+  unit: string;
+}> = [
   { id: 'song', label: '单曲', unit: '首单曲' },
   { id: 'artist', label: '歌手', unit: '位歌手' },
   { id: 'album', label: '专辑', unit: '张专辑' },
   { id: 'playlist', label: '歌单', unit: '个歌单' },
-  { id: 'radio', label: '电台', unit: '个节目' },
-  { id: 'audiobook', label: '听书', unit: '个有声内容' },
 ];
-type SearchRankItem = { title: string; artist: string; cover?: string };
-
+type SearchRankItem = {
+  title: string;
+  artist: string;
+  cover?: string;
+};
 const musicProviderIds: PlatformSetting['id'][] = [
   'netease',
   'qq',
@@ -66,7 +74,6 @@ const musicProviderIds: PlatformSetting['id'][] = [
   'migu',
   'qishui',
 ];
-
 export function SearchScreen({
   backgroundScrollY,
 }: {
@@ -79,7 +86,9 @@ export function SearchScreen({
   const searchScrollY = backgroundScrollY ?? localScrollY;
   const searchRoot = app.tab === 'search' && app.page === 'root';
   const [queryState, setQuery] = useState(app.search.query);
-  const [categoryState, setCategory] = useState<SearchCategory>(app.search.category);
+  const [categoryState, setCategory] = useState<SearchCategory>(
+    app.search.category,
+  );
   const [providerState, setProvider] = useState<'all' | PlatformSetting['id']>(
     app.search.provider,
   );
@@ -93,52 +102,42 @@ export function SearchScreen({
   );
   const searchAppendInFlight = useRef(false);
   const restoredControlsVersion = useRef(app.catalogRestore?.version);
-  let query = queryState, category = categoryState, provider = providerState;
+  let query = queryState,
+    category = categoryState,
+    provider = providerState;
   if (restoredControlsVersion.current !== app.catalogRestore?.version) {
     restoredControlsVersion.current = app.catalogRestore?.version;
     if (app.catalogRestore?.keys.includes('search-detail')) {
-    query = app.search.query;
-    category = app.search.category;
-    provider = app.search.provider;
-    setQuery(app.search.query);
-    setCategory(app.search.category);
-    setProvider(app.search.provider);
+      query = app.search.query;
+      category = app.search.category;
+      provider = app.search.provider;
+      setQuery(app.search.query);
+      setCategory(app.search.category);
+      setProvider(app.search.provider);
     }
   }
-
   useLayoutEffect(() => {
     if (!searchRoot) return;
     searchScrollY.setValue(0);
     setControlsPinned(false);
   }, [searchRoot, searchScrollY]);
-
   const availableProviders = useMemo(() => {
-    const healthy = byStartupPassOrder(app.recommendationPlatforms
-      .map(item => item.id)
-      .filter(id => musicProviderIds.includes(id)), app.startupHealth);
-    if (category === 'radio' || category === 'audiobook') {
-      const typed = new Set(
-        mediaProviders(
-          app.recommendationPlatforms,
-          category === 'radio' ? 'podcast' : 'audiobook',
-          true,
-        ),
-      );
-      return healthy.filter(id => typed.has(id));
-    }
+    const healthy = byStartupPassOrder(
+      app.recommendationPlatforms
+        .map(item => item.id)
+        .filter(id => musicProviderIds.includes(id)),
+      app.startupHealth,
+    );
+
     return healthy;
   }, [app.recommendationPlatforms, app.startupHealth, category]);
-
   // Keep the platform row present while the once-per-launch health probe is
   // settling.  Unhealthy or not-yet-tested platforms are rendered disabled;
   // only `availableProviders` can submit a request or contribute results.
   const visibleProviders = useMemo(() => {
-    const visible: PlatformSetting['id'][] = category === 'radio'
-      ? ['netease', 'qq']
-      : category === 'audiobook' ? ['netease', 'qq', 'kugou', 'migu'] : musicProviderIds;
+    const visible: PlatformSetting['id'][] = musicProviderIds;
     return byStartupPassOrder(visible, app.startupHealth, availableProviders);
   }, [availableProviders, app.startupHealth, category]);
-
   useEffect(() => {
     if (app.search.provider !== 'all') {
       setProvider(app.search.provider);
@@ -147,7 +146,6 @@ export function SearchScreen({
     if (!availableProviders.includes(provider as PlatformSetting['id']))
       setProvider(availableProviders[0] ?? 'all');
   }, [app.search.provider, availableProviders, provider]);
-
   useEffect(() => {
     let cancelled = false;
     setRankReady(false);
@@ -206,16 +204,19 @@ export function SearchScreen({
       cancelled = true;
     };
   }, [app.recommendationPlatforms]);
-
   const visiblePrewarm = useVisibleTrackPrewarm({
-    identity: `${app.search.query}:${app.search.provider}:${app.search.category}:${app.prewarmContextKey ?? app.state?.settings.quality}:${app.pageRefreshToken ?? 0}`,
-    enabled: searchRoot && app.search.category === 'song' && Boolean(app.search.query),
+    identity: `${app.search.query}:${app.search.provider}:${
+      app.search.category
+    }:${app.prewarmContextKey ?? app.state?.settings.quality}:${
+      app.pageRefreshToken ?? 0
+    }`,
+    enabled:
+      searchRoot && app.search.category === 'song' && Boolean(app.search.query),
     nestedList: true,
     tracks: app.search.tracks,
     prewarm: app.prewarmDetailTracks,
     release: app.releaseDetailPrewarm,
   });
-
   const submit = (
     value = query,
     nextCategory: SearchCategory = category,
@@ -257,24 +258,10 @@ export function SearchScreen({
   };
   const selectCategory = (next: SearchCategory) => {
     setCategory(next);
-    const nextProviders =
-      next === 'radio' || next === 'audiobook'
-        ? new Set(
-            mediaProviders(
-              app.recommendationPlatforms,
-              next === 'radio' ? 'podcast' : 'audiobook',
-              true,
-            ),
-          )
-        : null;
     const nextProvider =
-      provider !== 'all' &&
-      availableProviders.includes(provider) &&
-      (!nextProviders || nextProviders.has(provider))
+      provider !== 'all' && availableProviders.includes(provider)
         ? provider
-        : (nextProviders
-            ? availableProviders.find(id => nextProviders.has(id))
-            : availableProviders[0]) ?? 'all';
+        : availableProviders[0] ?? 'all';
     setProvider(nextProvider);
     if (query.trim()) submit(query, next, 1, nextProvider);
   };
@@ -302,14 +289,14 @@ export function SearchScreen({
     ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
       visiblePrewarm.onScroll(nativeEvent);
       setControlsPinned(nativeEvent.contentOffset.y >= layout.pageTopPadding);
-      const distanceToBottom = nativeEvent.contentSize.height -
+      const distanceToBottom =
+        nativeEvent.contentSize.height -
         (nativeEvent.contentOffset.y + nativeEvent.layoutMeasurement.height);
       if (distanceToBottom <= 600) loadNextSearchPage();
     },
   );
   if (app.page === 'search-playlist')
     return <CollectionDetail item={detailItem} searchAppearance />;
-
   const hasResults = Boolean(app.search.query);
   return (
     <Animated.ScrollView
@@ -352,7 +339,10 @@ export function SearchScreen({
           controlsPinned && s.stickyControlsPinned,
         ]}
       >
-        <StickyBackgroundExtension active={controlsPinned} color={s.stickyControlsPinned.backgroundColor} />
+        <StickyBackgroundExtension
+          active={controlsPinned}
+          color={s.stickyControlsPinned.backgroundColor}
+        />
         <SearchHeader
           query={query}
           setQuery={updateQuery}
@@ -393,7 +383,6 @@ export function SearchScreen({
     </Animated.ScrollView>
   );
 }
-
 function SearchPlaybackStatus() {
   const { s } = useSearchStyles();
   const app = useApp();
@@ -406,7 +395,6 @@ function SearchPlaybackStatus() {
     </View>
   );
 }
-
 function SearchHeader({
   query,
   setQuery,
@@ -470,7 +458,6 @@ function SearchHeader({
     </View>
   );
 }
-
 function CategoryTabs({
   selected,
   onSelect,
@@ -498,7 +485,6 @@ function CategoryTabs({
     </View>
   );
 }
-
 function ProviderTabs({
   selected,
   providers,
@@ -549,7 +535,6 @@ function ProviderTabs({
     </ScrollView>
   );
 }
-
 function SearchLanding({
   hasResults,
   category,
@@ -603,7 +588,10 @@ function SearchLanding({
         ))}
       </View>
       {hasResults ? (
-        <View testID="search-inline-results" onLayout={visiblePrewarm.onListContainerLayout}>
+        <View
+          testID="search-inline-results"
+          onLayout={visiblePrewarm.onListContainerLayout}
+        >
           <SearchResults
             category={category}
             onArtist={onArtist}
@@ -622,7 +610,6 @@ function SearchLanding({
     </>
   );
 }
-
 function SearchRank({
   title,
   items,
@@ -660,7 +647,6 @@ function SearchRank({
     </View>
   );
 }
-
 function SearchResults({
   category,
   onArtist,
@@ -701,9 +687,7 @@ function SearchResults({
       ? '专辑'
       : category === 'playlist'
       ? '歌单'
-      : category === 'radio'
-      ? '电台'
-      : '听书';
+      : '歌单';
   return (
     <>
       {app.search.loading ? <Text style={s.resultCount}>正在搜索…</Text> : null}
@@ -716,13 +700,19 @@ function SearchResults({
           {app.search.errors.slice(0, 5).join(' · ')}
         </Text>
       ) : null}
-      <View testID="search-result-list" style={s.resultList} onLayout={visiblePrewarm.onListLayout}>
+      <View
+        testID="search-result-list"
+        style={s.resultList}
+        onLayout={visiblePrewarm.onListLayout}
+      >
         {category === 'song'
           ? app.search.tracks.map((track, index) => (
               <SongResultRow
                 key={track.id}
                 track={track}
-                onLayout={event => visiblePrewarm.onRowLayout(trackQueueKey(track), event)}
+                onLayout={event =>
+                  visiblePrewarm.onRowLayout(trackQueueKey(track), event)
+                }
                 onPlay={() =>
                   app
                     .playTrack(track, app.search.tracks, index, {
@@ -824,7 +814,6 @@ function SearchResults({
     </>
   );
 }
-
 function SongResultRow({
   track,
   onPlay,
@@ -870,7 +859,6 @@ function SongResultRow({
     </View>
   );
 }
-
 function EntityResultRow({
   item,
   favoriteType,
@@ -901,11 +889,6 @@ function EntityResultRow({
       ? 'artist'
       : item.metadata?.collectionKind === 'new-albums'
       ? 'album'
-      : item.metadata?.mediaType === 'podcast'
-      ? 'podcast'
-      : item.metadata?.mediaType === 'audiobook' ||
-        item.metadata?.mediaType === 'long-audio'
-      ? 'audiobook'
       : 'playlist'
   }:${item.id}`;
   return (
@@ -943,13 +926,16 @@ function EntityResultRow({
         style={s.entityFavorite}
         hitSlop={8}
       >
-        <TrackActionIcon kind="favorite" active={favorite} size={23}
-          color={favorite ? theme.accent : theme.muted} />
+        <TrackActionIcon
+          kind="favorite"
+          active={favorite}
+          size={23}
+          color={favorite ? theme.accent : theme.muted}
+        />
       </Pressable>
     </View>
   );
 }
-
 function canonicalCollectionItem(item: CatalogItem): CatalogItem {
   return {
     ...item,
@@ -960,13 +946,11 @@ function canonicalCollectionItem(item: CatalogItem): CatalogItem {
     },
   };
 }
-
 function useSearchStyles() {
   const theme = useTheme();
   const s = useMemo(() => searchStyles(theme), [theme]);
   return { s, theme };
 }
-
 const searchStyles = (theme: ThemePalette) =>
   StyleSheet.create({
     root: { flex: 1, backgroundColor: theme.bg },

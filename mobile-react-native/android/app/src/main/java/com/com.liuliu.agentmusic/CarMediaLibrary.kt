@@ -41,22 +41,15 @@ internal class CarMediaLibrary(private val controls: MediaSession.Callback,
   private fun item(id: String, title: String, browsable: Boolean) = MediaItem.Builder().setMediaId(id)
     .setMediaMetadata(MediaMetadata.Builder().setTitle(title).setIsBrowsable(browsable).setIsPlayable(false).build()).build()
   private fun effectivePage(page: Int, options: MediaLibraryService.LibraryParams?): Int? {
-    val extras = options?.extras
-    val actual = if (extras?.containsKey("ucar.media.bundle.PAGE_INDEX") == true) {
-      // CarWith uses this vendor key, while Media3's legacy adapter only maps the
-      // standard EXTRA_PAGE key. A wrong vendor field type must not silently become 0.
-      extras.get("ucar.media.bundle.PAGE_INDEX") as? Int ?: return null
-    } else page
+    val actual = page
     return actual.takeIf { it in 0..100_000 }
   }
   private fun pagedItems(items: List<MediaItem>, hasMore: Boolean, nextPage: Int): List<MediaItem> {
     if (items.isEmpty()) return items
-    // CarWith p9.a.W reads pagination from the last MediaDescription's extras.
-    // LibraryResult.params alone is not carried to legacy onChildrenLoaded items.
     val last = items.last()
     val extras = Bundle(last.mediaMetadata.extras ?: Bundle.EMPTY).apply {
-      putBoolean("ucar.media.bundle.HAS_MORE", hasMore)
-      putInt("ucar.media.bundle.NEXT_PAGE_INDEX", if (hasMore) nextPage else 0)
+      putBoolean("com.liuliu.music.opensource.car.HAS_MORE", hasMore)
+      putInt("com.liuliu.music.opensource.car.NEXT_PAGE", if (hasMore) nextPage else 0)
     }
     val result = items.dropLast(1) + last.buildUpon().setMediaMetadata(last.mediaMetadata.buildUpon().setExtras(extras).build()).build()
     CarLibraryState.remember(result)
@@ -67,12 +60,11 @@ internal class CarMediaLibrary(private val controls: MediaSession.Callback,
     .setOffline(original?.isOffline == true).setRecent(original?.isRecent == true).setSuggested(original?.isSuggested == true)
     .setExtras(Bundle().apply {
       original?.extras?.let { putAll(it) }
-      putBoolean("UCAR", true)
       if (hasMore != null) {
-        putBoolean("ucar.media.bundle.HAS_MORE", hasMore)
-        putInt("ucar.media.bundle.NEXT_PAGE_INDEX", if (hasMore) nextPage else 0)
+        putBoolean("com.liuliu.music.opensource.car.HAS_MORE", hasMore)
+        putInt("com.liuliu.music.opensource.car.NEXT_PAGE", if (hasMore) nextPage else 0)
       }
-      if (scope != null) putString("com.liuliu.agentmusic.SEARCH_SCOPE", scope)
+      if (scope != null) putString("com.liuliu.music.opensource.car.SEARCH_SCOPE", scope)
     }).build()
   override fun onGetLibraryRoot(session: MediaLibraryService.MediaLibrarySession, browser: MediaSession.ControllerInfo,
     params: MediaLibraryService.LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> =
@@ -125,9 +117,7 @@ internal class CarMediaLibrary(private val controls: MediaSession.Callback,
     build: (CarLibrarySearch.Window) -> LibraryResult<T>): ListenableFuture<LibraryResult<T>> =
     Futures.catching(Futures.transform(future, { result -> build(requireNotNull(result)) }, MoreExecutors.directExecutor()),
       Exception::class.java, { LibraryResult.ofError<T>(LibraryResult.RESULT_ERROR_INVALID_STATE) }, MoreExecutors.directExecutor())
-  private fun voiceSearch(item: MediaItem): Boolean = item.requestMetadata.searchQuery != null ||
-    item.requestMetadata.extras?.let { extras -> extras.getBoolean("UCAR") &&
-      listOf("song", "singer", "album", "presetList", "genre").any { extras.containsKey(it) } } == true
+  private fun voiceSearch(item: MediaItem): Boolean = item.requestMetadata.searchQuery != null
   override fun onAddMediaItems(session: MediaSession, controller: MediaSession.ControllerInfo,
     mediaItems: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> {
     if (mediaItems.any(::voiceSearch)) {

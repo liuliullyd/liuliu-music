@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import type { Track } from '../domain/types';
 import { trackMediaKind } from './mediaLibrary';
+import { isRecommendationMusicTrack } from './recommendationContentPolicy';
 
 export const MIN_PLAYABLE_DURATION_SECONDS = 35;
 export const MIN_ACTUAL_TO_CATALOG_RATIO = 0.5;
@@ -20,6 +21,7 @@ export interface AudioProbeResult {
 }
 
 export type DeterministicTrackFailure =
+  | 'unsupported-content'
   | 'catalog-short'
   | 'actual-short'
   | 'duration-mismatch'
@@ -51,15 +53,24 @@ export class QishuiIncompleteAudioError extends Error {
 }
 
 export const requiresQishuiCompleteness = (track: Track) =>
-  Platform.OS === 'android' && track.provider === 'qishui' && trackMediaKind(track) === 'music';
+  Platform.OS === 'android' &&
+  track.provider === 'qishui' &&
+  trackMediaKind(track) === 'music';
 
 /** Same-song native duration only; catalog labels and resolver tier names are not audio evidence. */
-export function validateQishuiAudioCompleteness(track: Track, probe: AudioProbeResult) {
+export function validateQishuiAudioCompleteness(
+  track: Track,
+  probe: AudioProbeResult,
+) {
   if (!requiresQishuiCompleteness(track)) return;
-  const catalog = Number(track.duration), actual = Number(probe.durationSeconds);
+  const catalog = Number(track.duration),
+    actual = Number(probe.durationSeconds);
   const tolerance = Math.max(2, catalog * 0.01);
-  if (Number.isFinite(catalog) && catalog > 0 &&
-      (!Number.isFinite(actual) || actual <= 0 || actual + tolerance < catalog))
+  if (
+    Number.isFinite(catalog) &&
+    catalog > 0 &&
+    (!Number.isFinite(actual) || actual <= 0 || actual + tolerance < catalog)
+  )
     throw new QishuiIncompleteAudioError(catalog, actual);
 }
 
@@ -71,9 +82,10 @@ export const runtimeTrackKey = (track: Track) =>
 
 export function isCatalogTrackEligible(track: Track) {
   return (
-    track.provider === 'custom' ||
-    (Number.isFinite(track.duration) &&
-      track.duration >= MIN_PLAYABLE_DURATION_SECONDS)
+    isRecommendationMusicTrack(track) &&
+    (track.provider === 'custom' ||
+      (Number.isFinite(track.duration) &&
+        track.duration >= MIN_PLAYABLE_DURATION_SECONDS))
   );
 }
 
@@ -82,15 +94,20 @@ export function isRuntimeTrackBlocked(track: Track) {
 }
 
 export function throwIfRuntimeTrackBlocked(track: Track) {
+  if (!isRecommendationMusicTrack(track))
+    return rejectTrack(track, 'unsupported-content', '当前版本仅支持音乐');
   const key = runtimeTrackKey(track);
   const reason = blockedTracks.get(key);
   if (!reason) return;
-  throw new TrackPlaybackRejectedError(key, reason,
+  throw new TrackPlaybackRejectedError(
+    key,
+    reason,
     trackMediaKind(track) === 'music'
       ? reason === 'catalog-short'
         ? '该歌曲目录时长不足 35 秒，已从列表移除'
         : '该歌曲已确认没有可播放的音频，已从列表移除'
-      : undefined);
+      : undefined,
+  );
 }
 
 export function filterPlayableCandidates(tracks: Track[]) {
@@ -100,11 +117,20 @@ export function filterPlayableCandidates(tracks: Track[]) {
 }
 
 export function rejectCatalogShortTrack(track: Track): never {
-  return rejectTrack(track, 'catalog-short', trackMediaKind(track) === 'music'
-    ? '该歌曲目录时长不足 35 秒，已从列表移除' : undefined);
+  if (!isRecommendationMusicTrack(track))
+    return rejectTrack(track, 'unsupported-content', '当前版本仅支持音乐');
+  return rejectTrack(
+    track,
+    'catalog-short',
+    trackMediaKind(track) === 'music'
+      ? '该歌曲目录时长不足 35 秒，已从列表移除'
+      : undefined,
+  );
 }
 
 export function validateResolvedAudio(track: Track, probe: AudioProbeResult) {
+  if (!isRecommendationMusicTrack(track))
+    return rejectTrack(track, 'unsupported-content', '当前版本仅支持音乐');
   const actual = Number(probe.durationSeconds);
   if (!Number.isFinite(actual) || actual <= 0)
     return rejectTrack(

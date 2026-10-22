@@ -6,24 +6,21 @@ import type {
 } from '../domain/types';
 import { trackQueueKey } from '../domain/types';
 import {
-  loadChartTrackBatch,
-  loadMixedChartTrackBatch,
-  type HomeChartSource,
-} from './homeNewReleases';
-import {
-  constituentArtists,
-  loadCategoryFeedPage,
-} from './liveDiscovery';
-import { loadLiveTracks } from './mediaDiscovery';
-import type { OnlineProvider } from './onlineCatalog';
-import {
   loadCollectionTrackBatch,
   type CollectionKind,
 } from './collectionPaging';
 import { loadHomeMenuPage, type HomeMenuCursor } from './homeMenuDiscovery';
-import { searchOnline } from './onlineMusic';
 import { shuffleHomeMenuSceneValues } from './homeMenuSceneOrder';
+import {
+  loadChartTrackBatch,
+  loadMixedChartTrackBatch,
+  type HomeChartSource,
+} from './homeNewReleases';
+import { constituentArtists, loadCategoryFeedPage } from './liveDiscovery';
+import { loadLiveTracks } from './mediaDiscovery';
 import { copyMediaCursor, type MediaCursor } from './mediaDiscoveryPaging';
+import type { OnlineProvider } from './onlineCatalog';
+import { searchOnline } from './onlineMusic';
 
 export const QUEUE_BATCH_SIZE = 20;
 export const QUEUE_PAGE_TIMEOUT_MS = 20_000;
@@ -58,7 +55,10 @@ type QueueSourceCatalogPage = {
   page: number;
   hasMore: boolean;
   /** Process-only continuation captured from a mounted typed catalog. */
-  loadPage: (page: number, signal?: AbortSignal) => Promise<{ tracks: Track[]; hasMore: boolean }>;
+  loadPage: (
+    page: number,
+    signal?: AbortSignal,
+  ) => Promise<{ tracks: Track[]; hasMore: boolean }>;
 } & QueueContinuation;
 type QueueSourceChart = {
   kind: 'chart';
@@ -81,9 +81,6 @@ type QueueSourceCollection = {
   metadata?: CatalogItem['metadata'];
   offset: number;
   hasMore: boolean;
-  /** History entry anchor; discard earlier directory rows until it is found. */
-  resumeEpisode?: { key: string; hint: number; checkedHint: boolean };
-  initialEpisodeBatch?: { remaining: number };
 } & QueueContinuation;
 type QueueSourceFeed = {
   kind: 'feed';
@@ -120,16 +117,22 @@ export function isStartupQueueSource(source: QueueSource | null | undefined) {
 /** Queue paging owns a copy and never advances the mounted typed catalog. */
 export function catalogSnapshotQueueSource(
   snapshot: { page: number; hasMore: boolean; cursor: MediaCursor<Track> },
-  loader: (page: number, cursor: MediaCursor<Track>) => Promise<{ items: Track[]; hasMore: boolean; errors?: string[] }>,
+  loader: (
+    page: number,
+    cursor: MediaCursor<Track>,
+  ) => Promise<{ items: Track[]; hasMore: boolean; errors?: string[] }>,
 ): QueueSource {
   let cursor = copyMediaCursor(snapshot.cursor);
   return {
-    kind: 'catalog-page', page: snapshot.page, hasMore: snapshot.hasMore,
+    kind: 'catalog-page',
+    page: snapshot.page,
+    hasMore: snapshot.hasMore,
     loadPage: async (page, signal) => {
       const next = copyMediaCursor(cursor);
       const result = await loader(page, next);
       if (signal?.aborted) throw new Error('播放列表请求已取消');
-      if (!result.items.length && result.errors?.length) throw new Error(result.errors.join('；'));
+      if (!result.items.length && result.errors?.length)
+        throw new Error(result.errors.join('；'));
       cursor = next;
       return { tracks: result.items, hasMore: result.hasMore };
     },
@@ -155,7 +158,10 @@ export function withQueueRemainder(
   };
 }
 
-export function sourceWithSeenKeys(source: QueueSource, keys: Iterable<string>) {
+export function sourceWithSeenKeys(
+  source: QueueSource,
+  keys: Iterable<string>,
+) {
   const seen = new Set(source.seenKeys ?? []);
   for (const key of keys) seen.add(key);
   return { ...source, seenKeys: [...seen] } as QueueSource;
@@ -169,21 +175,30 @@ export function queueSourceProgressKey(source: QueueSource) {
     remaining?: Track[];
     buffered?: Track[];
   };
-  const cursor = source.kind === 'home-menu' &&
-    (source.cursor.choiceId === 'scene-80s' || source.cursor.choiceId === 'scene-90s')
-    ? { ...source.cursor, providers: source.cursor.providers.map(provider => ({
-        ...provider,
-        // Rotating a recall direction or re-shuffling the same rejected pool
-        // is not catalog progress. Keep the live cursor/order untouched and
-        // let the existing queue stall guard stop an empty continuation.
-        recallRouteIndex: undefined,
-        candidates: [...provider.candidates].sort((left, right) => {
-          const key = (item: typeof left) => `${trackQueueKey(item.track)}\0${item.query}\0${item.collection?.provider ?? ''}\0${item.collection?.id ?? ''}`;
-          const a = key(left), b = key(right);
-          return a < b ? -1 : a > b ? 1 : 0;
-        }),
-      })) }
-    : value.cursor;
+  const cursor =
+    source.kind === 'home-menu' &&
+    (source.cursor.choiceId === 'scene-80s' ||
+      source.cursor.choiceId === 'scene-90s')
+      ? {
+          ...source.cursor,
+          providers: source.cursor.providers.map(provider => ({
+            ...provider,
+            // Rotating a recall direction or re-shuffling the same rejected pool
+            // is not catalog progress. Keep the live cursor/order untouched and
+            // let the existing queue stall guard stop an empty continuation.
+            recallRouteIndex: undefined,
+            candidates: [...provider.candidates].sort((left, right) => {
+              const key = (item: typeof left) =>
+                `${trackQueueKey(item.track)}\0${item.query}\0${
+                  item.collection?.provider ?? ''
+                }\0${item.collection?.id ?? ''}`;
+              const a = key(left),
+                b = key(right);
+              return a < b ? -1 : a > b ? 1 : 0;
+            }),
+          })),
+        }
+      : value.cursor;
   return JSON.stringify({
     kind: source.kind,
     offset: value.offset,
@@ -192,7 +207,12 @@ export function queueSourceProgressKey(source: QueueSource) {
     remaining: value.remaining?.map(trackQueueKey),
     buffered: value.buffered?.map(trackQueueKey),
     hasMore: source.hasMore,
-    ...(source.kind === 'search' ? { providerPages: source.providerPages, exhaustedProviders: source.exhaustedProviders } : {}),
+    ...(source.kind === 'search'
+      ? {
+          providerPages: source.providerPages,
+          exhaustedProviders: source.exhaustedProviders,
+        }
+      : {}),
   });
 }
 
@@ -207,7 +227,12 @@ function uniquePage(source: QueueSource, tracks: Track[]) {
   return { tracks: unique, seenKeys: [...seen] };
 }
 
-function queuePageResult(source: QueueSource, tracks: Track[], remoteHasMore: boolean, batchSize: number) {
+function queuePageResult(
+  source: QueueSource,
+  tracks: Track[],
+  remoteHasMore: boolean,
+  batchSize: number,
+) {
   const page = uniquePage(source, tracks);
   const buffered = page.tracks.slice(batchSize);
   return {
@@ -235,11 +260,16 @@ export async function nextQueuePage(
   let cancel!: () => void;
   const cancelled = new Promise<never>((_, reject) => {
     cancel = () => {
-      reject(Object.assign(new Error('播放列表请求已取消'), { name: 'AbortError' }));
+      reject(
+        Object.assign(new Error('播放列表请求已取消'), { name: 'AbortError' }),
+      );
       controller.abort();
     };
     options.signal?.addEventListener('abort', cancel, { once: true });
-    if (options.signal?.aborted) { cancel(); return; }
+    if (options.signal?.aborted) {
+      cancel();
+      return;
+    }
     timer = setTimeout(() => {
       reject(new Error('播放列表加载超时，请重试'));
       controller.abort();
@@ -248,7 +278,8 @@ export async function nextQueuePage(
   try {
     if (controller.signal.aborted) return await cancelled;
     return await Promise.race([
-      readQueuePage(source, platforms, batchSize, controller.signal), cancelled,
+      readQueuePage(source, platforms, batchSize, controller.signal),
+      cancelled,
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
@@ -280,7 +311,12 @@ async function readQueuePage(
     while (buffered.length < batchSize && remoteHasMore) {
       let result: Awaited<ReturnType<typeof loadLiveTracks>>;
       try {
-        result = await loadLiveTracks(page + 1, livePlatforms, source.provider, pageSize);
+        result = await loadLiveTracks(
+          page + 1,
+          livePlatforms,
+          source.provider,
+          pageSize,
+        );
         if (result.retryable) throw new Error(result.errors.join('；'));
       } catch (error) {
         // Return successfully consumed pages before surfacing a later failure.
@@ -331,30 +367,55 @@ async function readQueuePage(
     return { tracks: [] as Track[], source: { ...source, hasMore: false } };
   if (source.kind === 'catalog-page') {
     const result = await source.loadPage(source.page + 1, signal);
-    return queuePageResult({ ...source, page: source.page + 1 }, result.tracks, result.hasMore, batchSize);
+    return queuePageResult(
+      { ...source, page: source.page + 1 },
+      result.tracks,
+      result.hasMore,
+      batchSize,
+    );
   }
   if (source.kind === 'home-menu') {
     // Menu queues retain the single platform selected for their first page.
     // Other platforms finishing launch detection cannot widen this cursor.
-    const menuPlatforms = platforms.filter(platform =>
-      platform.enabled && platform.id === source.cursor.providers[0]?.id,
+    const menuPlatforms = platforms.filter(
+      platform =>
+        platform.enabled && platform.id === source.cursor.providers[0]?.id,
     );
     if (!menuPlatforms.length) throw new Error('本次启动没有可用的音乐平台');
     const initial = source.initialMenuBatch;
     const result = initial
       ? await loadHomeMenuPage(
-          source.cursor.choiceId, menuPlatforms, source.cursor.profile,
-          source.cursor.history, Math.min(batchSize, initial.remaining), source.cursor,
-          { ...(source.cursor.choiceId.startsWith('scene-') ? { randomizeSceneBatch: true } : {}), excludedArtists: initial.artists, signal },
+          source.cursor.choiceId,
+          menuPlatforms,
+          source.cursor.profile,
+          source.cursor.history,
+          Math.min(batchSize, initial.remaining),
+          source.cursor,
+          {
+            ...(source.cursor.choiceId.startsWith('scene-')
+              ? { randomizeSceneBatch: true }
+              : {}),
+            excludedArtists: initial.artists,
+            signal,
+          },
         )
       : await loadHomeMenuPage(
-          source.cursor.choiceId, menuPlatforms, source.cursor.profile,
-          source.cursor.history, batchSize, source.cursor,
+          source.cursor.choiceId,
+          menuPlatforms,
+          source.cursor.profile,
+          source.cursor.history,
+          batchSize,
+          source.cursor,
           { signal },
         );
-    const loaded = initial && source.cursor.choiceId.startsWith('scene-') ? shuffleHomeMenuSceneValues(result.tracks) : result.tracks;
+    const loaded =
+      initial && source.cursor.choiceId.startsWith('scene-')
+        ? shuffleHomeMenuSceneValues(result.tracks)
+        : result.tracks;
     const { tracks, seenKeys } = uniquePage(source, loaded);
-    const remaining = initial ? Math.max(0, initial.remaining - tracks.length) : 0;
+    const remaining = initial
+      ? Math.max(0, initial.remaining - tracks.length)
+      : 0;
     return {
       tracks,
       source: {
@@ -363,29 +424,67 @@ async function readQueuePage(
         seenKeys,
         remoteHasMore: result.hasMore,
         hasMore: result.hasMore,
-        ...(initial ? { initialMenuBatch: remaining > 0 && (result.hasMoreForMenuBatch ?? result.hasMore)
-          ? { remaining, artists: [...new Set([...initial.artists,
-              ...tracks.flatMap(item => constituentArtists(item.artist))])] }
-          : undefined } : {}),
+        ...(initial
+          ? {
+              initialMenuBatch:
+                remaining > 0 && (result.hasMoreForMenuBatch ?? result.hasMore)
+                  ? {
+                      remaining,
+                      artists: [
+                        ...new Set([
+                          ...initial.artists,
+                          ...tracks.flatMap(item =>
+                            constituentArtists(item.artist),
+                          ),
+                        ]),
+                      ],
+                    }
+                  : undefined,
+            }
+          : {}),
       },
     };
   }
   if (source.kind === 'search') {
     const exhausted = new Set(source.exhaustedProviders ?? []);
-    const providers = platforms.filter(platform => platform.enabled &&
-      (source.provider === 'all' || platform.id === source.provider) && !exhausted.has(platform.id)).map(platform => platform.id);
-    if (!providers.length) return { tracks: [], source: { ...source, hasMore: false } };
+    const providers = platforms
+      .filter(
+        platform =>
+          platform.enabled &&
+          (source.provider === 'all' || platform.id === source.provider) &&
+          !exhausted.has(platform.id),
+      )
+      .map(platform => platform.id);
+    if (!providers.length)
+      return { tracks: [], source: { ...source, hasMore: false } };
     const providerPages = { ...source.providerPages };
-    providers.forEach(provider => { providerPages[provider] ??= source.page + 1; });
-    const settled = await Promise.allSettled(providers.map(async provider => {
-      const page = providerPages[provider] ?? source.page + 1;
-      const result = await searchOnline(source.query, page, QUEUE_BATCH_SIZE, provider, platforms);
-      if (!result.tracks.length && result.errors.length && !Number.isFinite(result.rawCount))
-        throw new Error(result.errors.join('；'));
-      return { page, result };
-    }));
+    providers.forEach(provider => {
+      providerPages[provider] ??= source.page + 1;
+    });
+    const settled = await Promise.allSettled(
+      providers.map(async provider => {
+        const page = providerPages[provider] ?? source.page + 1;
+        const result = await searchOnline(
+          source.query,
+          page,
+          QUEUE_BATCH_SIZE,
+          provider,
+          platforms,
+        );
+        if (
+          !result.tracks.length &&
+          result.errors.length &&
+          !Number.isFinite(result.rawCount)
+        )
+          throw new Error(result.errors.join('；'));
+        return { page, result };
+      }),
+    );
     if (settled.every(result => result.status === 'rejected')) {
-      const failure = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      const failure = settled.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      );
       throw failure?.reason ?? new Error('搜索续页请求失败，请重试');
     }
     const tracks = settled.flatMap((result, index) => {
@@ -393,11 +492,25 @@ async function readQueuePage(
       const provider = providers[index]!;
       providerPages[provider] = result.value.page + 1;
       const page = result.value.result;
-      if (!(Number.isFinite(page.rawCount) ? Number(page.rawCount) > 0 : page.tracks.length > 0)) exhausted.add(provider);
+      if (
+        !(Number.isFinite(page.rawCount)
+          ? Number(page.rawCount) > 0
+          : page.tracks.length > 0)
+      )
+        exhausted.add(provider);
       return page.tracks;
     });
-    return queuePageResult({ ...source, page: source.page + 1, providerPages,
-      exhaustedProviders: [...exhausted] }, tracks, providers.some(provider => !exhausted.has(provider)), batchSize);
+    return queuePageResult(
+      {
+        ...source,
+        page: source.page + 1,
+        providerPages,
+        exhaustedProviders: [...exhausted],
+      },
+      tracks,
+      providers.some(provider => !exhausted.has(provider)),
+      batchSize,
+    );
   }
   if (source.kind === 'collection') {
     const result = source.metadata
@@ -416,32 +529,12 @@ async function readQueuePage(
           source.offset,
           QUEUE_BATCH_SIZE,
         );
-    let tracks = result.tracks;
-    let resumeEpisode = source.resumeEpisode;
-    let offset = source.offset + QUEUE_BATCH_SIZE;
-    if (resumeEpisode) {
-      const key = resumeEpisode.key;
-      const index = tracks.findIndex(track => trackQueueKey(track) === key);
-      if (index >= 0) {
-        tracks = tracks.slice(index + 1);
-        resumeEpisode = undefined;
-      } else if (!resumeEpisode.checkedHint && resumeEpisode.hint > 0) {
-        // A saved position may drift after a publisher removes episodes.
-        // Verify identity, then fall back to serial pages without retaining them.
-        return { tracks: [], source: { ...source, offset: 0,
-          resumeEpisode: { ...resumeEpisode, checkedHint: true } } };
-      } else {
-        if (!result.hasMore) throw new Error('合集目录中未找到这条播放记录，请重试');
-        if (resumeEpisode.checkedHint && offset === resumeEpisode.hint) offset += QUEUE_BATCH_SIZE;
-        return { tracks: [], source: { ...source, offset } };
-      }
-    }
-    const page = queuePageResult({ ...source, offset, resumeEpisode }, tracks, result.hasMore, batchSize);
-    if (source.initialEpisodeBatch) {
-      const remaining = Math.max(0, source.initialEpisodeBatch.remaining - page.tracks.length);
-      return { ...page, source: { ...(page.source as QueueSourceCollection), initialEpisodeBatch: remaining && page.source.hasMore ? { remaining } : undefined } };
-    }
-    return page;
+    return queuePageResult(
+      { ...source, offset: source.offset + QUEUE_BATCH_SIZE },
+      result.tracks,
+      result.hasMore,
+      batchSize,
+    );
   }
   if (source.kind === 'chart') {
     const result = await loadChartTrackBatch(
@@ -450,7 +543,12 @@ async function readQueuePage(
       source.offset,
       QUEUE_BATCH_SIZE,
     );
-    return queuePageResult({ ...source, offset: source.offset + QUEUE_BATCH_SIZE }, result.tracks, result.hasMore, batchSize);
+    return queuePageResult(
+      { ...source, offset: source.offset + QUEUE_BATCH_SIZE },
+      result.tracks,
+      result.hasMore,
+      batchSize,
+    );
   }
   if (source.kind === 'chart-mix') {
     const result = await loadMixedChartTrackBatch(
@@ -460,14 +558,31 @@ async function readQueuePage(
       undefined,
       true,
     );
-    return queuePageResult({ ...source, offset: source.offset + QUEUE_BATCH_SIZE }, result.tracks, result.hasMore, batchSize);
+    return queuePageResult(
+      { ...source, offset: source.offset + QUEUE_BATCH_SIZE },
+      result.tracks,
+      result.hasMore,
+      batchSize,
+    );
   }
   if (source.remaining?.length) {
     const tracks = source.remaining.slice(0, batchSize);
     const remaining = source.remaining.slice(batchSize);
-    return { tracks, source: { ...source, remaining, hasMore: remaining.length > 0 || (source.remoteHasMore ?? source.hasMore) } };
+    return {
+      tracks,
+      source: {
+        ...source,
+        remaining,
+        hasMore:
+          remaining.length > 0 || (source.remoteHasMore ?? source.hasMore),
+      },
+    };
   }
-  const loaded = await loadCategoryFeedPage(source.category, source.page + 1, platforms);
+  const loaded = await loadCategoryFeedPage(
+    source.category,
+    source.page + 1,
+    platforms,
+  );
   if (loaded.retryable) throw new Error('推荐续页请求失败，请重试');
   const page = uniquePage(source, loaded.tracks);
   const tracks = page.tracks.slice(0, batchSize);

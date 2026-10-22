@@ -1,9 +1,4 @@
-import type {
-  MediaLibraryBucket,
-  PersistedState,
-  Track,
-} from '../domain/types';
-
+import type { PersistedState, Track } from '../domain/types';
 /** Forget only generated artwork files removed by the native cleaner. */
 export function forgetClearedLocalArtwork(
   state: PersistedState,
@@ -15,15 +10,6 @@ export function forgetClearedLocalArtwork(
     track.cover && deleted.has(track.cover)
       ? { ...track, cover: undefined }
       : track;
-  const bucket = (value: MediaLibraryBucket): MediaLibraryBucket => ({
-    ...value,
-    savedTracks: value.savedTracks.map(reset),
-    localTracks: value.localTracks?.map(reset),
-    downloads: value.downloads.map(entry => ({
-      ...entry,
-      track: reset(entry.track),
-    })),
-  });
   return {
     ...state,
     savedTracks: state.savedTracks.map(reset),
@@ -32,7 +18,5 @@ export function forgetClearedLocalArtwork(
       ...entry,
       track: reset(entry.track),
     })),
-    podcastLibrary: bucket(state.podcastLibrary),
-    audiobookLibrary: bucket(state.audiobookLibrary),
   };
 }

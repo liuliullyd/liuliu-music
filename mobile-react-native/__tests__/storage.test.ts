@@ -1,18 +1,58 @@
-import { defaultState, getStateStorageStatus, loadState, normalizeState, saveState, serializePersistedState } from '../src/services/storage';
+import {
+  defaultState,
+  getStateStorageStatus,
+  loadState,
+  normalizeState,
+  saveState,
+  serializePersistedState,
+} from '../src/services/storage';
 
 test('process-only prewarm bindings are removed from saved data and backups without changing local playback URLs', async () => {
   const state = defaultState();
-  const metadata = { songmid: 'qq-warm', _prewarmedUrl: true, _prewarmedAt: 123,
-    _prewarmedQuality: 'hires', _prewarmedAudio: { durationSeconds: 240, sampleBytes: 4096 } };
-  state.savedTracks = [{ id: 'qq-warm', provider: 'qq', playUrl: 'https://audio.test/warm', metadata } as any,
-    { id: 'local', provider: 'custom', playUrl: 'file:///music/local.mp3', metadata: { _libraryLocalFile: 'local' } } as any,
-    { id: 'qq-played', provider: 'qq', playUrl: 'https://audio.test/validated', metadata: {
-      songmid: 'qq-played', _playerPreparationSource: 0, _playbackPreference: '128k',
-      _playbackQuality: '128k', _playbackAudio: { durationSeconds: 240 }, _prewarmedUrl: false,
-    } } as any,
-    { id: 'qq-downloaded', provider: 'qq', playUrl: 'content://downloads/qq-local', metadata: {
-      _libraryLocalFile: 'download:123', _playerPreparationSource: 0, _prewarmedUrl: true,
-    } } as any];
+  const metadata = {
+    songmid: 'qq-warm',
+    _prewarmedUrl: true,
+    _prewarmedAt: 123,
+    _prewarmedQuality: 'hires',
+    _prewarmedAudio: { durationSeconds: 240, sampleBytes: 4096 },
+  };
+  state.savedTracks = [
+    {
+      id: 'qq-warm',
+      provider: 'qq',
+      playUrl: 'https://audio.test/warm',
+      metadata,
+    } as any,
+    {
+      id: 'local',
+      provider: 'custom',
+      playUrl: 'file:///music/local.mp3',
+      metadata: { _libraryLocalFile: 'local' },
+    } as any,
+    {
+      id: 'qq-played',
+      provider: 'qq',
+      playUrl: 'https://audio.test/validated',
+      metadata: {
+        songmid: 'qq-played',
+        _playerPreparationSource: 0,
+        _playbackPreference: '128k',
+        _playbackQuality: '128k',
+        _playbackAudio: { durationSeconds: 240 },
+        _prewarmedUrl: false,
+      },
+    } as any,
+    {
+      id: 'qq-downloaded',
+      provider: 'qq',
+      playUrl: 'content://downloads/qq-local',
+      metadata: {
+        _libraryLocalFile: 'download:123',
+        _playerPreparationSource: 0,
+        _prewarmedUrl: true,
+      },
+    } as any,
+  ];
   // Keep these fixtures owned by favorites while independently testing process-field stripping.
   state.favorites = state.savedTracks.map(track => track.id);
   const restored = JSON.parse(serializePersistedState(state, 2));
@@ -22,46 +62,56 @@ test('process-only prewarm bindings are removed from saved data and backups with
   expect(restored.savedTracks[2].playUrl).toBeUndefined();
   expect(restored.savedTracks[2].metadata).toEqual({ songmid: 'qq-played' });
   expect(restored.savedTracks[3].playUrl).toBe('content://downloads/qq-local');
-  expect(restored.savedTracks[3].metadata._libraryLocalFile).toBe('download:123');
+  expect(restored.savedTracks[3].metadata._libraryLocalFile).toBe(
+    'download:123',
+  );
   expect(state.savedTracks[0]!.playUrl).toBe('https://audio.test/warm');
   expect(metadata._prewarmedUrl).toBe(true);
   await saveState(state);
-  expect((await loadState()).savedTracks.every(track => !/^https?:\/\//i.test(track.playUrl ?? ''))).toBe(true);
+  expect(
+    (await loadState()).savedTracks.every(
+      track => !/^https?:\/\//i.test(track.playUrl ?? ''),
+    ),
+  ).toBe(true);
   await saveState(defaultState());
 });
 
 test('restores typed same-id favorite entities and migrates only complete legacy records', () => {
   const current = defaultState();
   current.savedCollections = [
-    {id: 'same', provider: 'qq', kind: 'playlists', title: '歌手', description: '', metadata: {collectionKind: 'artist'}},
-    {id: 'same', provider: 'qq', kind: 'new-albums', title: '专辑', description: ''},
-    {id: 'same', provider: 'qq', kind: 'playlists', title: '歌单', description: ''},
+    {
+      id: 'same',
+      provider: 'qq',
+      kind: 'playlists',
+      title: '歌手',
+      description: '',
+      metadata: { collectionKind: 'artist' },
+    },
+    {
+      id: 'same',
+      provider: 'qq',
+      kind: 'new-albums',
+      title: '专辑',
+      description: '',
+    },
+    {
+      id: 'same',
+      provider: 'qq',
+      kind: 'playlists',
+      title: '歌单',
+      description: '',
+    },
   ];
   current.favoriteCollections = ['qq:same', 'netease:orphan'];
   const restored = normalizeState(current);
   expect(restored.savedCollections).toHaveLength(3);
-  expect(restored.favoriteCollections).toEqual(['qq:artist:same', 'qq:album:same', 'qq:playlist:same', 'netease:orphan']);
+  expect(restored.favoriteCollections).toEqual([
+    'qq:artist:same',
+    'qq:album:same',
+    'qq:playlist:same',
+    'netease:orphan',
+  ]);
   expect(normalizeState(restored)).toEqual(restored);
-});
-
-test('legacy media bucket keys migrate when the complete entity still lives in the old mixed collection store', () => {
-  const current = defaultState();
-  current.savedCollections = [{id: 'legacy-radio', title: '真实节目', description: '', provider: 'netease', kind: 'playlists', metadata: {mediaType: 'podcast'}}];
-  current.podcastLibrary.favoriteCollections = ['netease:legacy-radio'];
-  const restored = normalizeState(current);
-  expect(restored.savedCollections).toEqual([]);
-  expect(restored.podcastLibrary.savedCollections).toHaveLength(1);
-  expect(restored.podcastLibrary.favoriteCollections).toEqual(['netease:podcast:legacy-radio']);
-});
-
-test('mixed legacy favorite keys follow complete entities already in typed buckets while incomplete entities remain orphan keys', () => {
-  const current = defaultState();
-  current.savedCollections = [{id: 'incomplete', provider: 'qq'} as any];
-  current.podcastLibrary.savedCollections = [{id: 'legacy-radio', title: '真实节目', description: '', provider: 'netease', kind: 'playlists', metadata: {mediaType: 'podcast'}}];
-  current.favoriteCollections = ['netease:legacy-radio', 'qq:incomplete'];
-  const restored = normalizeState(current);
-  expect(restored.favoriteCollections).toEqual(['qq:incomplete']);
-  expect(restored.podcastLibrary.favoriteCollections).toEqual(['netease:podcast:legacy-radio']);
 });
 
 test('enables the locked startup autoplay flow on a fresh installation', () => {
@@ -200,150 +250,6 @@ test('preserves an explicit theme after the real theme system migration', () => 
   expect(normalizeState(current).settings.theme).toBe('night');
 });
 
-test('migrates and preserves persisted podcast and audiobook collection favorites', () => {
-  expect(
-    normalizeState({
-      ...defaultState(),
-      favoriteCollections: undefined,
-    }).favoriteCollections,
-  ).toEqual([]);
-
-  const current = defaultState();
-  current.favoriteCollections = ['netease:radio-1', 'kugou:book-2'];
-  expect(normalizeState(current).favoriteCollections).toEqual([
-    'netease:radio-1',
-    'kugou:book-2',
-  ]);
-});
-
-test('persists complete collection entities for real library favorite views', () => {
-  const current = defaultState();
-  const collection = {
-    id: 'radio-1',
-    title: '真实播客收藏',
-    description: '用于恢复收藏页中的完整实体',
-    provider: 'netease' as const,
-    kind: 'playlist' as const,
-    metadata: { mediaType: 'podcast' },
-  };
-  const restored = normalizeState({
-    ...current,
-    savedCollections: [collection, collection, null],
-  });
-
-  expect(restored.savedCollections).toEqual([]);
-  expect(restored.podcastLibrary.savedCollections).toEqual([collection]);
-  expect(
-    normalizeState({ ...current, savedCollections: undefined })
-      .savedCollections,
-  ).toEqual([]);
-});
-
-test('keeps podcast and audiobook library buckets isolated during migration', () => {
-  const current = defaultState();
-  const podcastTrack = {
-    id: 'same-id',
-    title: '播客单集',
-    artist: '播客作者',
-    album: '播客节目',
-    duration: 120,
-    provider: 'netease' as const,
-    providerId: 'same-id',
-    cover: '',
-    coverKey: 'train' as const,
-    language: '华语' as const,
-    genre: '播客',
-    mood: '发现',
-    releaseYear: 2026,
-    metadata: { mediaType: 'podcast' },
-  };
-  const audiobookTrack = {
-    ...podcastTrack,
-    title: '听书章节',
-    metadata: { mediaType: 'long-audio' },
-  };
-  const restored = normalizeState({
-    ...current,
-    savedTracks: [podcastTrack, audiobookTrack],
-    favorites: ['same-id'],
-    downloads: [
-      {
-        id: 'podcast-download',
-        track: podcastTrack,
-        status: 'downloaded',
-        createdAt: 1,
-      },
-      {
-        id: 'audiobook-download',
-        track: audiobookTrack,
-        status: 'downloaded',
-        createdAt: 2,
-      },
-    ],
-  });
-
-  expect(restored.savedTracks).toEqual([]);
-  expect(restored.podcastLibrary.savedTracks).toEqual([podcastTrack]);
-  expect(restored.audiobookLibrary.savedTracks).toEqual([audiobookTrack]);
-  expect(restored.podcastLibrary.favorites).toEqual(['same-id']);
-  expect(restored.audiobookLibrary.favorites).toEqual(['same-id']);
-  expect(restored.downloads).toEqual([]);
-  expect(restored.podcastLibrary.downloads).toHaveLength(1);
-  expect(restored.audiobookLibrary.downloads).toHaveLength(1);
-});
-
-test('splits legacy recent playback by media type and caps each history at 100', () => {
-  const current = defaultState();
-  const makeTrack = (index: number, mediaType?: 'podcast' | 'long-audio') => ({
-    id: `history-${mediaType ?? 'music'}-${index}`,
-    title: `历史 ${index}`,
-    artist: '测试作者',
-    album: '测试专辑',
-    duration: 120,
-    provider: 'netease' as const,
-    providerId: `history-${mediaType ?? 'music'}-${index}`,
-    cover: '',
-    coverKey: 'train' as const,
-    language: '华语' as const,
-    genre: '测试',
-    mood: '发现',
-    releaseYear: 2026,
-    ...(mediaType ? { metadata: { mediaType } } : {}),
-  });
-  const musicHistory = Array.from({ length: 125 }, (_, index) => ({
-    track: makeTrack(index),
-    playedAt: index,
-    listenedSeconds: 0,
-    completed: false,
-    skipped: false,
-  }));
-  const podcastHistory = Array.from({ length: 125 }, (_, index) => ({
-    track: makeTrack(index, 'podcast'),
-    playedAt: index + 1_000,
-    listenedSeconds: 0,
-    completed: false,
-    skipped: false,
-  }));
-  const restored = normalizeState({
-    ...current,
-    history: [...musicHistory, ...podcastHistory],
-  });
-
-  expect(restored.history).toHaveLength(100);
-  expect(restored.history.every(entry => !entry.track.metadata?.mediaType)).toBe(
-    true,
-  );
-  expect(restored.podcastLibrary.history).toHaveLength(100);
-  expect(
-    restored.podcastLibrary.history.every(
-      entry => entry.track.metadata?.mediaType === 'podcast',
-    ),
-  ).toBe(true);
-  expect(restored.history[0]?.playedAt).toBe(124);
-  expect(restored.podcastLibrary.history[0]?.playedAt).toBe(1124);
-  expect(restored.audiobookLibrary.history).toEqual([]);
-});
-
 test('preserves complete metadata for tracks saved before they are played', () => {
   const current = defaultState();
   const track = {
@@ -374,33 +280,32 @@ test('preserves complete metadata for tracks saved before they are played', () =
   expect(restored.playlists[0].trackIds).toContain(track.id);
 });
 
-test('history migration keeps the newest duplicate and identical IDs in separate media buckets', () => {
-  const state = defaultState();
-  const base = { id: 'same', provider: 'qq', providerId: 'same', metadata: {} } as any;
-  const entry = (mediaType: string | undefined, playedAt: number) => ({
-    track: { ...base, metadata: mediaType ? { mediaType } : {} },
-    playedAt, listenedSeconds: 0, completed: false, skipped: false,
-  });
-  state.history = [entry(undefined, 10), entry('podcast', 20), entry('long-audio', 30), entry(undefined, 1)];
-  const migrated = normalizeState(state);
-  expect(migrated.history.map(item => item.playedAt)).toEqual([10]);
-  expect(migrated.podcastLibrary.history.map(item => item.playedAt)).toEqual([20]);
-  expect(migrated.audiobookLibrary.history.map(item => item.playedAt)).toEqual([30]);
-  expect(normalizeState(migrated)).toEqual(migrated);
-});
-
 test('display paging never truncates persisted favorites, downloads or local music', () => {
   const state = defaultState();
-  state.savedTracks = Array.from({ length: 620 }, (_, index) => ({
-    id: `saved-${index}`, provider: 'custom', metadata: {},
-  } as any));
+  state.savedTracks = Array.from(
+    { length: 620 },
+    (_, index) =>
+      ({
+        id: `saved-${index}`,
+        provider: 'custom',
+        metadata: {},
+      } as any),
+  );
   state.favorites = state.savedTracks.map(track => track.id);
   state.localTracks = state.savedTracks;
   state.downloads = state.savedTracks.map(track => ({
-    id: track.id, track, status: 'failed', createdAt: 1,
+    id: track.id,
+    track,
+    status: 'failed',
+    createdAt: 1,
   }));
   const restored = normalizeState(state);
-  for (const records of [restored.savedTracks, restored.favorites, restored.downloads, restored.localTracks])
+  for (const records of [
+    restored.savedTracks,
+    restored.favorites,
+    restored.downloads,
+    restored.localTracks,
+  ])
     expect(records).toHaveLength(620);
 });
 
@@ -426,8 +331,11 @@ test('round trips independent platform switches and user settings through the pe
   await saveState(state);
   const restored = await loadState();
 
-  expect(restored.platforms.filter(platform => enabledByPlatform.has(platform.id)))
-    .toEqual(state.platforms.filter(platform => enabledByPlatform.has(platform.id)));
+  expect(
+    restored.platforms.filter(platform => enabledByPlatform.has(platform.id)),
+  ).toEqual(
+    state.platforms.filter(platform => enabledByPlatform.has(platform.id)),
+  );
   expect(restored.settings.multiSourceDetection).toBe(false);
   expect(restored.settings.quality).toBe('flac');
   expect(restored.settings.theme).toBe('night');
@@ -458,7 +366,9 @@ test('keeps old persisted data protected when a read or decode fails', async () 
       code: 'STATE_MISSING_AFTER_UPDATE',
     });
   });
-  expect(getStateStorageStatus().readError?.code).toBe('STATE_MISSING_AFTER_UPDATE');
+  expect(getStateStorageStatus().readError?.code).toBe(
+    'STATE_MISSING_AFTER_UPDATE',
+  );
   await expect(saveState(defaultState())).rejects.toMatchObject({
     code: 'STATE_WRITE_BLOCKED',
   });
@@ -472,7 +382,9 @@ test('keeps old persisted data protected when a read or decode fails', async () 
   const restored = await loadState(async () => protectedRaw);
   expect(getStateStorageStatus().readError).toBeNull();
   expect(restored.settings.multiSourceDetection).toBe(false);
-  expect(restored.platforms.find(platform => platform.id === 'qq')?.enabled).toBe(false);
+  expect(
+    restored.platforms.find(platform => platform.id === 'qq')?.enabled,
+  ).toBe(false);
   await saveState(defaultState());
 });
 
@@ -483,4 +395,117 @@ test('surfaces save serialization failures as persistent storage diagnostics', a
   expect(getStateStorageStatus().writeError?.code).toBe('STATE_WRITE_FAILED');
   await saveState(defaultState());
   expect(getStateStorageStatus().writeError).toBeNull();
+});
+
+test('restoring an older backup discards removed media buckets and mixed records while keeping music', () => {
+  const state = defaultState();
+  const song = {
+    id: 'song',
+    provider: 'netease',
+    providerId: '1',
+    title: '音乐',
+    metadata: {},
+  } as any;
+  const unsupported = ['podcast', 'long-audio'].map((mediaType, index) => ({
+    ...song,
+    id: 'removed-' + index,
+    metadata: { mediaType },
+  }));
+  const history = (track: any, playedAt: number) => ({
+    track,
+    playedAt,
+    listenedSeconds: 0,
+    completed: false,
+    skipped: false,
+  });
+  const restored = normalizeState({
+    ...state,
+    savedTracks: [song, ...unsupported],
+    favorites: [song.id, ...unsupported.map(track => track.id)],
+    history: [
+      history(song, 1),
+      ...unsupported.map((track, index) => history(track, index + 20)),
+    ],
+    downloads: [song, ...unsupported].map(track => ({
+      id: track.id,
+      track,
+      status: 'failed',
+      createdAt: 1,
+    })),
+    podcastLibrary: {
+      history: [history(unsupported[0], 30)],
+      favorites: ['removed-0'],
+    },
+    audiobookLibrary: { savedTracks: [unsupported[1]] },
+  });
+  expect(restored.savedTracks).toEqual([song]);
+  expect(restored.favorites).toEqual(['song']);
+  expect(restored.history.map(entry => entry.track.id)).toEqual(['song']);
+  expect(restored.downloads.map(entry => entry.track.id)).toEqual(['song']);
+  expect(restored).not.toHaveProperty('podcastLibrary');
+  expect(restored).not.toHaveProperty('audiobookLibrary');
+  expect(normalizeState(restored)).toEqual(restored);
+});
+
+test('removed media collections cannot be restored as music collections', () => {
+  const music = {
+    id: 'album',
+    provider: 'qq',
+    kind: 'new-albums',
+    title: '音乐专辑',
+    description: '',
+  } as const;
+  const removed = {
+    id: 'book',
+    provider: 'qq',
+    kind: 'playlists',
+    title: '旧收藏',
+    description: '',
+    metadata: { mediaType: 'long-audio' },
+  } as const;
+  const state = normalizeState({
+    ...defaultState(),
+    savedCollections: [music, removed],
+    favoriteCollections: ['qq:album', 'qq:book'],
+  });
+  expect(state.savedCollections).toEqual([music]);
+  expect(state.favoriteCollections).toContain('qq:album:album');
+});
+
+test('backup serialization never recreates removed top-level libraries', () => {
+  const old = {
+    ...defaultState(),
+    podcastLibrary: { favorites: ['old'] },
+    audiobookLibrary: { history: [] },
+  } as any;
+  const saved = JSON.parse(serializePersistedState(old));
+  expect(saved).not.toHaveProperty('podcastLibrary');
+  expect(saved).not.toHaveProperty('audiobookLibrary');
+  expect(saved.settings).toEqual(old.settings);
+  expect(saved.playlists).toEqual(old.playlists);
+});
+
+test('music history keeps its newest duplicate and 100-entry bound after removed media filtering', () => {
+  const make = (id: string, playedAt: number, mediaType?: string) => ({
+    track: {
+      id,
+      provider: 'netease',
+      providerId: id,
+      metadata: mediaType ? { mediaType } : {},
+    },
+    playedAt,
+    listenedSeconds: 0,
+    completed: false,
+    skipped: false,
+  });
+  const music = Array.from({ length: 125 }, (_, index) =>
+    make(String(index), index),
+  );
+  const state = normalizeState({
+    ...defaultState(),
+    history: [...music, make('124', 200), make('removed', 500, 'podcast')],
+  });
+  expect(state.history).toHaveLength(100);
+  expect(state.history[0]?.playedAt).toBe(200);
+  expect(state.history.some(entry => entry.track.id === 'removed')).toBe(false);
 });

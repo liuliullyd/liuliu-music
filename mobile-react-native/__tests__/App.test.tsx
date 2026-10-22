@@ -1,5 +1,8 @@
 import { loadHomeMenuFirstBatch } from '../src/services/homeMenuDiscovery';
-jest.mock('../src/services/homeMenuDiscovery', () => ({...jest.requireActual('../src/services/homeMenuDiscovery'), loadHomeMenuFirstBatch: jest.fn(async()=>({tracks:[],hasMore:false}))}));
+jest.mock('../src/services/homeMenuDiscovery', () => ({
+  ...jest.requireActual('../src/services/homeMenuDiscovery'),
+  loadHomeMenuFirstBatch: jest.fn(async () => ({ tracks: [], hasMore: false })),
+}));
 /**
  * @format
  */
@@ -16,9 +19,7 @@ import {
   shouldStartEdgeBackFrom,
 } from '../src/edgeBackGesture';
 import { defaultState, loadState } from '../src/services/storage';
-import {
-  loadCategoryFeed,
-} from '../src/services/liveDiscovery';
+import { loadCategoryFeed } from '../src/services/liveDiscovery';
 import { nativePlayer } from '../src/services/nativePlayer';
 
 jest.mock('react-native-safe-area-context', () => {
@@ -65,7 +66,8 @@ jest.mock('../src/services/homeNewReleases', () => ({
 jest.mock('../src/services/liveDiscovery', () => ({
   startPlatformHealthDetection: jest.fn((...args) =>
     require('../test-support/launchHealthMock').launchHealthMock(
-      require('../src/services/liveDiscovery').detectHealthyPlatforms, ...args,
+      require('../src/services/liveDiscovery').detectHealthyPlatforms,
+      ...args,
     ),
   ),
   loadDesktopHealthSample: jest.fn(async provider => ({
@@ -113,7 +115,12 @@ jest.mock('../src/services/sourceRuntime', () => ({
 }));
 jest.mock('../src/services/onlineMusic', () => ({
   ...jest.requireActual('../src/services/onlineMusic'),
-  resolvePlaybackWithQuality: jest.fn(async (...args: any[]) => ({ url: await require('../src/services/onlineMusic').resolvePlayback(...args.slice(0, 3)), quality: args[0]?.metadata?._playbackQuality ?? '320k' })),
+  resolvePlaybackWithQuality: jest.fn(async (...args: any[]) => ({
+    url: await require('../src/services/onlineMusic').resolvePlayback(
+      ...args.slice(0, 3),
+    ),
+    quality: args[0]?.metadata?._playbackQuality ?? '320k',
+  })),
   trackLyricsKey: jest.requireActual('../src/services/onlineMusic')
     .trackLyricsKey,
   getCachedTrackLyrics: jest.fn(),
@@ -160,76 +167,162 @@ jest.mock('../src/services/onlineMusic', () => ({
   getAlbumDetail: jest.fn(async () => ({ tracks: [] })),
 }));
 
-
-import { importSourceScript, testImportedSourceScript, saveState } from '../src/services/storage';
-jest.mock('../src/state/useDesktopLyrics', () => ({DesktopLyricsBridge: () => null}));
-jest.mock('../src/screens/HomeScreen', () => ({HomeScreen: () => null}));
+import {
+  importSourceScript,
+  testImportedSourceScript,
+  saveState,
+} from '../src/services/storage';
+jest.mock('../src/state/useDesktopLyrics', () => ({
+  DesktopLyricsBridge: () => null,
+}));
+jest.mock('../src/screens/HomeScreen', () => ({ HomeScreen: () => null }));
 
 let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
-beforeEach(() => { jest.clearAllMocks(); });
+beforeEach(() => {
+  jest.clearAllMocks();
+});
 afterEach(async () => {
   if (renderer) await ReactTestRenderer.act(async () => renderer!.unmount());
   renderer = undefined;
 });
 
 async function openSources() {
-  await ReactTestRenderer.act(async () => {renderer=ReactTestRenderer.create(<App />);});
-  await ReactTestRenderer.act(() => new Promise<void>(resolve=>setTimeout(resolve,30)));
-  await ReactTestRenderer.act(async()=>renderer!.root.findByProps({testID:'nav-settings'}).props.onPress());
-  await ReactTestRenderer.act(async()=>renderer!.root.findByProps({testID:'settings-sources'}).props.onPress());
+  await ReactTestRenderer.act(async () => {
+    renderer = ReactTestRenderer.create(<App />);
+  });
+  await ReactTestRenderer.act(
+    () => new Promise<void>(resolve => setTimeout(resolve, 30)),
+  );
+  await ReactTestRenderer.act(async () =>
+    renderer!.root.findByProps({ testID: 'nav-settings' }).props.onPress(),
+  );
+  await ReactTestRenderer.act(async () =>
+    renderer!.root.findByProps({ testID: 'settings-sources' }).props.onPress(),
+  );
   return renderer!.root;
 }
 async function importFile() {
-  await ReactTestRenderer.act(async()=>{await renderer!.root.findByProps({testID:'import-source-button'}).props.onPress();});
+  await ReactTestRenderer.act(async () => {
+    await renderer!.root
+      .findByProps({ testID: 'import-source-button' })
+      .props.onPress();
+  });
 }
-const status=()=>String(renderer!.root.findByProps({testID:'source-import-status'}).props.children);
-const sourceRows=()=>renderer!.root.findAll(node=>node.type===View && node.props.testID==='imported-source');
+const status = () =>
+  String(
+    renderer!.root.findByProps({ testID: 'source-import-status' }).props
+      .children,
+  );
+const sourceRows = () =>
+  renderer!.root.findAll(
+    node => node.type === View && node.props.testID === 'imported-source',
+  );
 
-test('fresh app opens settings without sources or a passphrase flow',async()=>{
-  const view=await openSources();
-  expect(view.findByProps({testID:'source-empty-state'})).toBeTruthy();
-  expect(view.findByProps({testID:'import-source-button'}).props.disabled).toBe(false);
-  expect(view.findAllByProps({testID:'source-activation-button'})).toHaveLength(0);
-  expect(view.findAllByProps({testID:'source-hidden-controls-trigger'})).toHaveLength(0);
-  expect(view.findAllByProps({testID:'refresh-source-button'})).toHaveLength(0);
+test('Home, Library and Search expose only music features', async () => {
+  await openSources();
+  for (const tab of ['discovery', 'library', 'search']) {
+    await ReactTestRenderer.act(async () =>
+      renderer!.root.findByProps({ testID: `nav-${tab}` }).props.onPress(),
+    );
+    const view = renderer!.root;
+    expect(
+      view.findAll(
+        node =>
+          typeof node.props.testID === 'string' &&
+          /home-top-(podcast|audiobook)|library-mode-(podcast|audiobook)|home-deferred-(podcast|audiobook)/.test(
+            node.props.testID,
+          ),
+      ),
+    ).toHaveLength(0);
+    const labels = view
+      .findAll(node => node.type === Text)
+      .map(node => node.props.children)
+      .flat(Infinity);
+    expect(labels).not.toContain('播客');
+    expect(labels).not.toContain('听书');
+  }
+});
+
+test('fresh app opens settings without sources or a passphrase flow', async () => {
+  const view = await openSources();
+  expect(view.findByProps({ testID: 'source-empty-state' })).toBeTruthy();
+  expect(
+    view.findByProps({ testID: 'import-source-button' }).props.disabled,
+  ).toBe(false);
+  expect(
+    view.findAllByProps({ testID: 'source-activation-button' }),
+  ).toHaveLength(0);
+  expect(
+    view.findAllByProps({ testID: 'source-hidden-controls-trigger' }),
+  ).toHaveLength(0);
+  expect(view.findAllByProps({ testID: 'refresh-source-button' })).toHaveLength(
+    0,
+  );
   expect(testImportedSourceScript).not.toHaveBeenCalled();
 });
-test('cancelling the system file picker leaves the source list empty',async()=>{
+test('cancelling the system file picker leaves the source list empty', async () => {
   jest.mocked(importSourceScript).mockResolvedValueOnce(null);
-  await openSources(); await importFile();
+  await openSources();
+  await importFile();
   expect(sourceRows()).toHaveLength(0);
   expect(status()).toBe('已取消导入');
   expect(testImportedSourceScript).not.toHaveBeenCalled();
 });
-test('invalid uploaded metadata is rejected before runtime initialization',async()=>{
-  jest.mocked(importSourceScript).mockResolvedValueOnce({fileName:'invalid.js',content:'invalid'});
-  await openSources(); await importFile();
+test('invalid uploaded metadata is rejected before runtime initialization', async () => {
+  jest
+    .mocked(importSourceScript)
+    .mockResolvedValueOnce({ fileName: 'invalid.js', content: 'invalid' });
+  await openSources();
+  await importFile();
   expect(sourceRows()).toHaveLength(0);
   expect(status()).toContain('缺少头部注释');
   expect(testImportedSourceScript).not.toHaveBeenCalled();
 });
-test('failed runtime initialization does not persist a source',async()=>{
-  jest.mocked(testImportedSourceScript).mockResolvedValueOnce({ok:false,sources:[],message:'failed'});
-  await openSources(); await importFile();
+test('failed runtime initialization does not persist a source', async () => {
+  jest
+    .mocked(testImportedSourceScript)
+    .mockResolvedValueOnce({ ok: false, sources: [], message: 'failed' });
+  await openSources();
+  await importFile();
   expect(sourceRows()).toHaveLength(0);
   expect(status()).toBe('检测未通过');
 });
-test('uploaded source is saved locally, duplicate import rejected, and source can be deleted',async()=>{
-  await openSources(); await importFile();
+test('uploaded source is saved locally, duplicate import rejected, and source can be deleted', async () => {
+  await openSources();
+  await importFile();
   expect(sourceRows()).toHaveLength(1);
   expect(status()).toBe('音源已导入并保存');
-  await ReactTestRenderer.act(()=>new Promise<void>(resolve=>setTimeout(resolve,220)));
-  const saved=jest.mocked(saveState).mock.calls.map(call=>call[0]).filter(state=>state.sources.length);
+  await ReactTestRenderer.act(
+    () => new Promise<void>(resolve => setTimeout(resolve, 220)),
+  );
+  const saved = jest
+    .mocked(saveState)
+    .mock.calls.map(call => call[0])
+    .filter(state => state.sources.length);
   expect(saved.length).toBeGreaterThan(0);
-  const source=saved[saved.length-1]!.sources[0]!;
+  const source = saved[saved.length - 1]!.sources[0]!;
   expect(source.origin).toBe('imported');
   expect(source.script).toContain('@name 测试音源');
   await importFile();
   expect(sourceRows()).toHaveLength(1);
   expect(status()).toContain('已存在相同版本');
-  await ReactTestRenderer.act(async()=>renderer!.root.findByProps({testID:'delete-source-button'}).props.onPress());
-  await ReactTestRenderer.act(async()=>renderer!.root.findByProps({testID:'select-delete-source-'+source.id}).props.onPress());
-  await ReactTestRenderer.act(async()=>{await renderer!.root.findByProps({testID:'confirm-delete-source'}).props.onPress();});
+  await ReactTestRenderer.act(async () =>
+    renderer!.root
+      .findByProps({ testID: 'delete-source-button' })
+      .props.onPress(),
+  );
+  await ReactTestRenderer.act(async () =>
+    renderer!.root
+      .findByProps({ testID: 'select-delete-source-' + source.id })
+      .props.onPress(),
+  );
+  await ReactTestRenderer.act(async () => {
+    await renderer!.root
+      .findByProps({ testID: 'confirm-delete-source' })
+      .props.onPress();
+  });
   expect(sourceRows()).toHaveLength(0);
-  expect(renderer!.root.findByProps({testID:'source-empty-state'})).toBeTruthy();
+  expect(
+    renderer!.root.findByProps({ testID: 'source-empty-state' }),
+  ).toBeTruthy();
 });

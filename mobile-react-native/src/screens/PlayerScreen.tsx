@@ -1,13 +1,3 @@
-import { EffectsScreen } from './EffectsScreen';
-import {
-  OrderedCoverScope,
-  OrderedCoverBatch,
-  OrderedRemoteCover,
-} from '../components/OrderedRemoteCover';
-import { covers } from '../assets/covers';
-import { ListPagingFooter } from '../components/ListPaging';
-import { usePlaybackListFollow } from '../components/usePlaybackListFollow';
-import { mediaPlaybackKey } from '../services/mediaPlaybackProgress';
 import React, {
   useCallback,
   useEffect,
@@ -28,15 +18,35 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
+import { covers } from '../assets/covers';
 import { getSelectedHomeMenuChoice } from '../components/HomeMenuDrawer';
-import { createThemedStyles, serif } from '../theme';
-import { useApp } from '../state/AppContext';
-import { AppHeader, Cover, Glyph, TrackRow } from '../components/UI';
-import { QueueTrackActions } from '../components/QueueTrackActions';
+import { ListPagingFooter } from '../components/ListPaging';
+import {
+  OrderedCoverBatch,
+  OrderedCoverScope,
+  OrderedRemoteCover,
+} from '../components/OrderedRemoteCover';
 import { PlaybackModePicker } from '../components/PlaybackModePicker';
-import { QueueOrderButton } from '../components/QueueOrderButton';
 import { PlayerQueueButton } from '../components/PlayerQueueButton';
+import { QueueOrderButton } from '../components/QueueOrderButton';
+import { QueueTrackActions } from '../components/QueueTrackActions';
+import { AppHeader, Cover, Glyph, TrackRow } from '../components/UI';
+import { useLibraryTrackArtwork } from '../components/useLibraryTrackArtwork';
+import { usePlaybackListFollow } from '../components/usePlaybackListFollow';
 import { useQueueListPrefetch } from '../components/useQueueListPrefetch';
+import {
+  playbackQualityOptions,
+  trackQueueKey,
+  type PlaybackQuality,
+} from '../domain/types';
+import { localPlaybackReference } from '../services/libraryPlayback';
+import { mediaPlaybackKey } from '../services/mediaPlaybackProgress';
+import { playbackNetworkQuality } from '../services/networkQuality';
+import {
+  enrichTrackPresentation,
+  playerCoverCandidates,
+  trackCoverCandidates,
+} from '../services/onlineCatalog';
 import {
   getCachedTrackLyrics,
   getTrackLyrics,
@@ -44,47 +54,30 @@ import {
   trackLyricsKey,
   type LyricLine,
 } from '../services/onlineMusic';
-import { subscribePlayerLyrics } from '../services/playerLyrics';
-import {
-  enrichTrackPresentation,
-  playerCoverCandidates,
-  trackCoverCandidates,
-} from '../services/onlineCatalog';
 import {
   playerForegroundForTone,
   preloadPlayerArtworkTone,
   usePlayerBackdropSurfaceTone,
 } from '../services/playerAppearance';
-import { useLayout } from '../state/LayoutContext';
-import {
-  playbackQualityOptions,
-  trackQueueKey,
-  type PlaybackQuality,
-} from '../domain/types';
+import { subscribePlayerLyrics } from '../services/playerLyrics';
 import { playerQuality } from '../services/playerQuality';
-import { playbackNetworkQuality } from '../services/networkQuality';
-import { localPlaybackReference } from '../services/libraryPlayback';
-import { useLibraryTrackArtwork } from '../components/useLibraryTrackArtwork';
-
+import { useApp } from '../state/AppContext';
+import { useLayout } from '../state/LayoutContext';
+import { createThemedStyles, serif } from '../theme';
+import { EffectsScreen } from './EffectsScreen';
 type PlayerTrack = NonNullable<ReturnType<typeof useApp>['current']>;
 const supplementalPlayerCovers = new Map<string, string[]>();
 const pendingPlayerCovers = new Map<string, Promise<string[]>>();
 const isSpokenMediaPresentation = (track: Pick<PlayerTrack, 'metadata'>) => {
   const mediaType = String(track.metadata?.mediaType ?? '').toLowerCase();
-  return (
-    mediaType === 'podcast' ||
-    mediaType === 'audiobook' ||
-    mediaType === 'long-audio'
-  );
+  return mediaType === 'long-audio';
 };
-
 function withAlpha(hex: string, alpha: number) {
   const match = /^#([0-9a-f]{6})$/i.exec(hex);
   if (!match) return `rgba(78,59,54,${alpha})`;
   const value = parseInt(match[1]!, 16);
   return `rgba(${value >> 16},${(value >> 8) & 255},${value & 255},${alpha})`;
 }
-
 function formatTime(seconds: number) {
   const value = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
   return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(
@@ -92,7 +85,6 @@ function formatTime(seconds: number) {
     '0',
   )}`;
 }
-
 const PROGRESS_WAVE_HEIGHT = 8;
 const PROGRESS_WAVE_CYCLE = 36;
 // The motion viewport is twice this width. Keep two complete path bands so
@@ -109,15 +101,12 @@ const PROGRESS_WAVE_PATH = `M 0 4 ${Array.from(
     } 8 ${end} 4`;
   },
 ).join(' ')}`;
-
 const playerCoverFallbacks = (track: PlayerTrack) =>
   playerCoverCandidates(track);
-
 const normalizedMatchText = (value: string) =>
   value
     .toLocaleLowerCase()
     .replace(/[\s\u3000'"“”‘’·•,，.。!！?？:：/\\|、()[\]{}<>《》]/g, '');
-
 /** Search results are presentation metadata only; accept a cover only when the
  * provider and the song identity still match the playing track. */
 export const isMatchingCoverTrack = (
@@ -143,7 +132,6 @@ export const isMatchingCoverTrack = (
     Math.abs(sourceDuration - candidateDuration) <= 12
   );
 };
-
 function usePlayerCover(track: PlayerTrack | null, enabled = true) {
   const requestKey = useRef('');
   const requestGeneration = useRef(0);
@@ -163,7 +151,6 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
     key: trackKey,
     uris: supplementalPlayerCovers.get(trackKey) ?? [],
   }));
-
   const requestSupplement = useCallback(() => {
     if (!enabled || !track || !presentation || requestKey.current === trackKey)
       return;
@@ -201,7 +188,6 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
         setSupplemental({ key: trackKey, uris });
     });
   }, [enabled, presentation, track, trackKey]);
-
   useEffect(() => {
     requestGeneration.current += 1;
     setSupplemental({
@@ -216,8 +202,6 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
     )
       return;
     requestSupplement();
-    // The request is intentionally keyed to the playing track.  It is a
-    // low-priority presentation lookup and never participates in playback.
   }, [
     metadataCandidates.length,
     metadataKey,
@@ -225,7 +209,6 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
     track,
     trackKey,
   ]);
-
   const candidates = Array.from(
     new Set([
       ...metadataCandidates,
@@ -240,7 +223,6 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
     onExhausted: requestSupplement,
   };
 }
-
 export function PlayerScreen() {
   const app = useApp();
   if (app.page === 'lyrics') return <Lyrics />;
@@ -269,7 +251,10 @@ function NowPlaying() {
     slot: number;
     token: number;
   } | null>(null);
-  const committedFallback = useRef<{ key: string; token: number } | null>(null);
+  const committedFallback = useRef<{
+    key: string;
+    token: number;
+  } | null>(null);
   const resetFallbackPage = useCallback(() => {
     committedFallback.current = null;
     setFallbackPage(null);
@@ -331,7 +316,11 @@ function NowPlaying() {
     pageSlotsRef.current.get(visualKey) ?? visualSlotRef.current;
   const pages = new Map<
     string,
-    { track: PlayerTrack; offset: number; slot: number }
+    {
+      track: PlayerTrack;
+      offset: number;
+      slot: number;
+    }
   >();
   for (const offset of [0, 1, 2, -1]) {
     const item = offset === 0 ? track : app.queue[centerIndex + offset];
@@ -350,7 +339,8 @@ function NowPlaying() {
     const fallbackKey = trackQueueKey(fallbackPage.track);
     pages.set(fallbackKey, {
       track: fallbackPage.track,
-      offset: pages.get(fallbackKey)?.offset ?? fallbackPage.index - centerIndex,
+      offset:
+        pages.get(fallbackKey)?.offset ?? fallbackPage.index - centerIndex,
       slot: fallbackPage.slot,
     });
   }
@@ -736,9 +726,9 @@ function NowPlaying() {
               const isPreview =
                 !active &&
                 Boolean(previewTrack && trackQueueKey(previewTrack) === key);
-                const isFallback =
-                  fallbackPage?.token === pagerToken.current &&
-                  trackQueueKey(fallbackPage.track) === key;
+              const isFallback =
+                fallbackPage?.token === pagerToken.current &&
+                trackQueueKey(fallbackPage.track) === key;
               return (
                 <View
                   key={key}
@@ -823,7 +813,6 @@ function NowPlaying() {
     </View>
   );
 }
-
 function PlayerSongPage({
   track,
   active,
@@ -1057,7 +1046,6 @@ function PlayerSongPage({
     </View>
   );
 }
-
 function PlayerActionRow({
   track,
   color,
@@ -1109,7 +1097,6 @@ function PlayerActionRow({
     </View>
   );
 }
-
 export function ProgressScrubber({
   id,
   duration,
@@ -1424,7 +1411,6 @@ export function ProgressScrubber({
     </Pressable>
   );
 }
-
 function ScrollingTitle({
   title,
   color,
@@ -1489,30 +1475,29 @@ function ScrollingTitle({
           setDistance(Math.max(0, textWidth.current - viewportWidth.current));
         }}
       >
-      <Animated.Text
-        key={displayTitle}
-        testID={testID}
-        accessibilityLabel={displayTitle}
-        numberOfLines={1}
-        ellipsizeMode="clip"
-        style={[
-          s.title,
-          s.scrollingTitleText,
-          {
-            color,
-            fontSize: layout.playerTitleFontSize,
-            lineHeight: layout.playerTitleLineHeight,
-          },
-          { transform: [{ translateX: offset }] },
-        ]}
-      >
-        {displayTitle}
-      </Animated.Text>
+        <Animated.Text
+          key={displayTitle}
+          testID={testID}
+          accessibilityLabel={displayTitle}
+          numberOfLines={1}
+          ellipsizeMode="clip"
+          style={[
+            s.title,
+            s.scrollingTitleText,
+            {
+              color,
+              fontSize: layout.playerTitleFontSize,
+              lineHeight: layout.playerTitleLineHeight,
+            },
+            { transform: [{ translateX: offset }] },
+          ]}
+        >
+          {displayTitle}
+        </Animated.Text>
       </ScrollView>
     </View>
   );
 }
-
 export function PlayerBackdrop() {
   const app = useApp();
   const tone = usePlayerBackdropSurfaceTone(app.current);
@@ -1524,7 +1509,6 @@ export function PlayerBackdrop() {
     />
   );
 }
-
 function PlayerPageBackdrop({
   track,
   viewTestID,
@@ -1541,7 +1525,6 @@ function PlayerPageBackdrop({
     />
   );
 }
-
 function TimerSheet({ onClose }: { onClose: () => void }) {
   const app = useApp();
   const layout = useLayout();
@@ -1611,7 +1594,6 @@ function TimerSheet({ onClose }: { onClose: () => void }) {
     </View>
   );
 }
-
 function QualitySheet({
   selected,
   actualDescription,
@@ -1651,12 +1633,14 @@ function QualitySheet({
             <Text style={[s.timerSub, { color: foreground.secondary }]}>
               {switching ? app.message : '全局音质设置，会应用于后续播放'}
             </Text>
-              {actualDescription ? <Text
+            {actualDescription ? (
+              <Text
                 testID="player-quality-actual"
                 style={[s.timerSub, { color: foreground.secondary }]}
               >
                 {actualDescription}
-              </Text> : null}
+              </Text>
+            ) : null}
           </View>
           <Pressable
             testID="player-quality-close"
@@ -1696,11 +1680,9 @@ function QualitySheet({
     </View>
   );
 }
-
 function Effects() {
   return <EffectsScreen />;
 }
-
 function LyricPreview({
   track,
   position,
@@ -1738,9 +1720,6 @@ function LyricPreview({
       ? lyricState.error
       : lyricState.key !== key || !lyricState.loaded
       ? '正在读取平台字幕…'
-      : String(presentation.metadata?.mediaType ?? '').toLowerCase() ===
-        'podcast'
-      ? '该节目暂无平台字幕'
       : '该章节暂无平台字幕'
     : '暂无歌词';
   useEffect(() => {
@@ -1838,7 +1817,6 @@ function LyricPreview({
     </Pressable>
   );
 }
-
 function LyricEdgeFade({
   tone,
   bottom = false,
@@ -1859,7 +1837,6 @@ function LyricEdgeFade({
     </Svg>
   );
 }
-
 function Lyrics() {
   const app = useApp(),
     layout = useLayout(),
@@ -1874,7 +1851,13 @@ function Lyrics() {
   const [pageHeight, setPageHeight] = useState(0);
   const [viewport, setViewport] = useState({ y: 0, height: 0 });
   const [lineLayouts, setLineLayouts] = useState<
-    Record<number, { y: number; height: number }>
+    Record<
+      number,
+      {
+        y: number;
+        height: number;
+      }
+    >
   >({});
   const [lines, setLines] = useState<LyricLine[]>([]),
     [loaded, setLoaded] = useState(false),
@@ -1909,10 +1892,7 @@ function Lyrics() {
   const spokenMedia = Boolean(
     presentation && isSpokenMediaPresentation(presentation),
   );
-  const spokenEmptyLabel =
-    String(presentation?.metadata?.mediaType ?? '').toLowerCase() === 'podcast'
-      ? '该节目暂无平台字幕'
-      : '该章节暂无平台字幕';
+  const spokenEmptyLabel = '该章节暂无平台字幕';
   const centerY = pageHeight / 2 - viewport.y;
   const activeLayout = lineLayouts[activeIndex];
   const topPadding = Math.max(0, centerY - (lineLayouts[0]?.height ?? 0) / 2);
@@ -2094,7 +2074,15 @@ function Queue() {
     layout.trackRowHeight,
   );
   const queueScrollRef = useRef<ScrollView | null>(null);
-  const queueRows = useRef(new Map<number, { key: string; y: number }>());
+  const queueRows = useRef(
+    new Map<
+      number,
+      {
+        key: string;
+        y: number;
+      }
+    >(),
+  );
   const queueItems = useRef(app.queue);
   queueItems.current = app.queue;
   const locateCurrent = useCallback((index: number) => {
@@ -2266,7 +2254,6 @@ function PlayerDock({
     </View>
   );
 }
-
 const s = createThemedStyles(
   StyleSheet.create({
     root: { flex: 1, backgroundColor: 'transparent' },

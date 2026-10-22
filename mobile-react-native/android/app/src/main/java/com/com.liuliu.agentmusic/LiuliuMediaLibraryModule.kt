@@ -83,8 +83,8 @@ class LiuliuMediaLibraryModule(context: ReactApplicationContext) : ReactContextB
   }
   @ReactMethod fun addListener(name: String) { listeners++ }
   @ReactMethod fun removeListeners(count: Double) { listeners = (listeners - count.toInt()).coerceAtLeast(0) }
-  @ReactMethod fun setLibraryReady(ready: Boolean) { CarLibraryState.updateReady(ready); CarConnections.notifyLibraryChanged() }
-  @ReactMethod fun notifyLibraryChanged() { CarLibraryState.notifyLibraryChanged(); CarConnections.notifyLibraryChanged() }
+  @ReactMethod fun setLibraryReady(ready: Boolean) { CarLibraryState.updateReady(ready) }
+  @ReactMethod fun notifyLibraryChanged() { CarLibraryState.notifyLibraryChanged() }
   @ReactMethod fun beginQueuePageTask(requestId: String, promise: Promise) {
     reactApplicationContext.runOnUiQueueThread {
       try {

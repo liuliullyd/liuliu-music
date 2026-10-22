@@ -7,7 +7,6 @@ import {
   setRoamBackgroundDiagnosticScene,
   traceRoamBackground,
 } from './roamBackgroundDiagnostic';
-
 /** The preview and page use the same complete bitmap, without a scene overlay. */
 export function ThemeArtwork({
   theme,
@@ -52,14 +51,12 @@ export function ThemeArtwork({
     />
   );
 }
-
 export type ThemeBackgroundSurface = {
   tab: AppTab;
   page: AppPage;
   playerSurface: boolean;
   homeMenuOrigin: 'home' | 'player' | null;
 };
-
 /** Root shells retain artwork; opaque detail/player surfaces own their tone. */
 export const themeBackgroundAllowed = ({
   tab,
@@ -70,17 +67,13 @@ export const themeBackgroundAllowed = ({
   if (playerSurface) return false;
   if (tab === 'discovery') {
     return (
-      page === 'root' ||
-      page === 'podcast' ||
-      page === 'audiobook' ||
-      (page === 'home-menu' && homeMenuOrigin === 'home')
+      page === 'root' || (page === 'home-menu' && homeMenuOrigin === 'home')
     );
   }
   if (tab === 'search') return page === 'root';
   if (tab === 'library') return page === 'root';
   return ['root', 'appearance', 'playback', 'sources', 'data'].includes(page);
 };
-
 export function ThemeBackground({
   visible = true,
   scrollY,
@@ -126,11 +119,15 @@ export function ThemeBackground({
     />
   );
 }
-
 // Playback/catalog context updates must not re-submit a stale JS scroll sample
 // over the transform that the native scroll driver is currently displaying.
 const ThemeBackgroundView = React.memo(function BackgroundView({
-  visible, scrollY, scrollScale, diagnosticPage, themeId, backgroundColor,
+  visible,
+  scrollY,
+  scrollScale,
+  diagnosticPage,
+  themeId,
+  backgroundColor,
 }: {
   visible: boolean;
   scrollY?: Animated.Value;
@@ -195,7 +192,6 @@ const ThemeBackgroundView = React.memo(function BackgroundView({
     </View>
   );
 });
-
 const styles = StyleSheet.create({
   root: {
     position: 'absolute',

@@ -1,4 +1,3 @@
-import { platformLabel } from './platformPresentation';
 import type { PlatformSetting, Track } from '../domain/types';
 import {
   enrichTrackPresentation,
@@ -8,18 +7,15 @@ import {
   type OnlineProvider,
 } from './onlineCatalog';
 import { searchOnline } from './onlineMusic';
-import { mediaProviders } from './mediaDiscoveryPaging';
-
-export type MediaDiscoveryKind =
-  | 'radio'
-  | 'video'
-  | 'podcast'
-  | 'audiobook'
-  | 'live';
-
+import { platformLabel } from './platformPresentation';
+export type MediaDiscoveryKind = 'radio' | 'video' | 'live';
 export const mediaDiscoveryConfigs: Record<
   MediaDiscoveryKind,
-  { title: string; query: string; description: string }
+  {
+    title: string;
+    query: string;
+    description: string;
+  }
 > = {
   radio: {
     title: '电台',
@@ -31,16 +27,6 @@ export const mediaDiscoveryConfigs: Record<
     query: '音乐 MV',
     description: '发现音乐影像与主题曲目',
   },
-  podcast: {
-    title: '播客',
-    query: '音乐播客',
-    description: '收听音乐故事与人物访谈',
-  },
-  audiobook: {
-    title: '听书',
-    query: '有声书',
-    description: '收听有声读物与故事',
-  },
   live: {
     title: 'Live 现场',
     // Keep the original bilingual query. Migu ranks a bare English `Live`
@@ -50,9 +36,7 @@ export const mediaDiscoveryConfigs: Record<
     description: '收听演唱会与现场版本',
   },
 };
-
 export type MediaProvider = 'all' | OnlineProvider;
-
 const interleave = (groups: Track[][], limit: number) => {
   const output: Track[] = [];
   const seen = new Set<string>();
@@ -70,7 +54,6 @@ const interleave = (groups: Track[][], limit: number) => {
   }
   return output;
 };
-
 /**
  * NetEase's public song search intentionally omits album artwork for many
  * results. Live rows are still the same song identities, so hydrate only the
@@ -79,7 +62,8 @@ const interleave = (groups: Track[][], limit: number) => {
  */
 async function hydrateNeteaseLiveCovers(tracks: Track[]) {
   const missing = tracks.filter(
-    track => track.provider === 'netease' && !trackCoverCandidates(track).length,
+    track =>
+      track.provider === 'netease' && !trackCoverCandidates(track).length,
   );
   if (!missing.length) return tracks;
   const ids = missing
@@ -88,7 +72,7 @@ async function hydrateNeteaseLiveCovers(tracks: Track[]) {
   if (!ids.length) return tracks;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12_000);
+    const timer = setTimeout(() => controller.abort(), 12000);
     let body: any;
     try {
       const response = await fetch(
@@ -131,7 +115,6 @@ async function hydrateNeteaseLiveCovers(tracks: Track[]) {
     return tracks;
   }
 }
-
 /**
  * Live surfaces use a positive English marker in song-facing fields. Keep this
  * deliberately narrow: a search result that only says “现场”, or an artist or
@@ -165,13 +148,20 @@ export const isLiveTrack = (track: Track) => {
     metadata.FileName,
   ];
   const hasLiveMarker = (value: unknown) =>
-    (typeof value === 'string' || typeof value === 'number') && /\blive\b/i.test(String(value));
+    (typeof value === 'string' || typeof value === 'number') &&
+    /\blive\b/i.test(String(value));
   // Migu's public search includes studio songs whose actual name is "Live",
   // including the studio album "Live In The Moment". That title alone is not
   // a performance-version marker; require separate version/name evidence.
   if (/^live$/i.test(track.title.trim()))
-    return explicitVersionFields.some(hasLiveMarker) || songNameFields.some(value =>
-      typeof value === 'string' && !/^live$/i.test(value.trim()) && hasLiveMarker(value),
+    return (
+      explicitVersionFields.some(hasLiveMarker) ||
+      songNameFields.some(
+        value =>
+          typeof value === 'string' &&
+          !/^live$/i.test(value.trim()) &&
+          hasLiveMarker(value),
+      )
     );
   return /\blive\b/i.test(
     [track.title, track.album, ...explicitVersionFields, ...songNameFields]
@@ -179,7 +169,6 @@ export const isLiveTrack = (track: Track) => {
       .join(' '),
   );
 };
-
 export async function loadLiveTracks(
   page: number,
   platforms: PlatformSetting[],
@@ -201,7 +190,6 @@ export async function loadLiveTracks(
       errors: ['没有已启用的音乐平台'],
       hasMore: false,
     };
-
   // Home's song rail requests eighteen candidates per provider so filtering
   // does not turn a valid page into an unexpectedly short first batch.
   const perProvider =
@@ -219,7 +207,7 @@ export async function loadLiveTracks(
         'music',
       ];
       if (searchOptions) {
-        args[6] = 12_000;
+        args[6] = 12000;
         args[9] = searchOptions;
       }
       return searchOnline(...args);
@@ -229,14 +217,12 @@ export async function loadLiveTracks(
   const groups = settled.map((result, index) => {
     if (result.status === 'fulfilled') {
       errors.push(...result.value.errors);
-      return result.value.tracks
-        .filter(isLiveTrack)
-        .map(track => ({
-          ...enrichTrackPresentation(track),
-          reason: `${mediaDiscoveryConfigs.live.title} · ${
-            platformLabel(selected[index]!)
-          }`,
-        }));
+      return result.value.tracks.filter(isLiveTrack).map(track => ({
+        ...enrichTrackPresentation(track),
+        reason: `${mediaDiscoveryConfigs.live.title} · ${platformLabel(
+          selected[index]!,
+        )}`,
+      }));
     }
     errors.push(
       `${platformLabel(selected[index]!)}：${
@@ -266,7 +252,6 @@ export async function loadLiveTracks(
       ),
   };
 }
-
 export async function loadMediaDiscovery(
   kind: MediaDiscoveryKind,
   page: number,
@@ -275,32 +260,16 @@ export async function loadMediaDiscovery(
 ) {
   const config = mediaDiscoveryConfigs[kind];
   const enabled = platforms.filter(item => item.enabled);
-  const mediaType =
-    kind === 'podcast'
-      ? ('podcast' as const)
-      : kind === 'audiobook'
-      ? ('audiobook' as const)
-      : ('music' as const);
-  const typedProviders =
-    kind === 'podcast' || kind === 'audiobook'
-      ? new Set(mediaProviders(platforms, kind, false))
-      : null;
+  const mediaType = 'music' as const;
+  const typedProviders = null;
   const selected =
     provider === 'all'
-      ? enabled
-          .filter(item => !typedProviders || typedProviders.has(item.id))
-          .map(item => item.id)
-      : enabled.some(
-          item =>
-            item.id === provider &&
-            (!typedProviders || typedProviders.has(item.id)),
-        )
+      ? enabled.filter(item => true).map(item => item.id)
+      : enabled.some(item => item.id === provider)
       ? [provider]
       : [];
   if (!selected.length) return { tracks: [], errors: ['没有已启用的音乐平台'] };
-
   if (kind === 'live') return loadLiveTracks(page, platforms, provider, 20);
-
   const perProvider = provider === 'all' ? 8 : 20;
   const settled = await Promise.allSettled(
     selected.map(id =>

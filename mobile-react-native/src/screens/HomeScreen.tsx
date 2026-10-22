@@ -1,15 +1,3 @@
-import { PersonalPlaylistManager } from '../components/PersonalPlaylistManager';
-import { PlaylistManagementActions, playlistManagementLayout } from '../components/PlaylistManagementActions';
-import { savedPlaylistReference } from '../services/linkedPlaylist';
-import { homePersonalPlaylists, type PersonalPlaylistDisplayItem } from '../services/homePersonalPlaylists';
-import { collectKnownTracks } from '../services/libraryPlaybackActions';
-import { PersonalPlaylistDetail } from '../components/PersonalPlaylistDetail';
-import { collectionEntityKind } from '../services/collectionIdentity';
-import { HomePlaylistDetail } from '../components/HomePlaylistDetail';
-import { PlaylistShareButton } from '../components/PlaylistShareButton';
-import { useVisibleTrackPrewarm } from '../components/useVisibleTrackPrewarm';
-import { useStableNativeScrollEvent } from '../components/useStableNativeScrollEvent';
-import { PLAYLIST_PLATFORM_WIDTH, usePlaylistPlatformSnap } from '../components/usePlaylistPlatformSnap';
 import React, {
   useCallback,
   useEffect,
@@ -33,54 +21,54 @@ import {
 } from 'react-native';
 import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
 import { covers } from '../assets/covers';
-import { Glyph, SectionTitle, TrackRow } from '../components/UI';
-import { platformDisplayText } from '../services/platformPresentation';
-import { byStartupPassOrder } from '../services/startupPlatformOrder';
-import { catalogSearchInputWidth, catalogSearchScrollOffset } from '../services/catalogSearchLayout';
-import type { DownloadPreview } from '../services/downloadPresentation';
-import { platformLabel, platformCaption } from '../components/platformLabels';
-import { PlaybackModePicker } from '../components/PlaybackModePicker';
-import { CollectionOrderButton } from '../components/CollectionOrderButton';
-import { collectionOrderItem, isEpisodeCollection, type CollectionEpisodeOrder } from '../services/collectionOrder';
-import { QueueTrackActions } from '../components/QueueTrackActions';
-import { TrackActionIcon } from '../components/TrackActionIcon';
-import { StickyPressable } from '../components/StickyPressable';
-import { PlaylistDownloadPicker } from '../components/PlaylistDownloadPicker';
-import {
-  PlaylistInformationSurface,
-  PlaylistInformationGradient,
-  PlaylistInformationTopGradient,
-  usePlaylistInformationColor,
-} from '../components/PlaylistInformationSurface';
-import {
-  LibraryDetailTopGradient,
-} from '../components/LibraryDetailAppearance';
-import { StickyBackgroundExtension } from '../components/StickyBackgroundExtension';
-import {
-  PlaylistDetailGradientViewport,
-  usePlaylistDetailScrollGradient,
-} from '../components/PlaylistDetailScrollGradient';
-import { sampleLibraryCoverEdgeColor } from '../services/libraryArtwork';
-import { libraryCollectionArtwork } from '../services/libraryCollectionArtwork';
 import {
   HomeNewReleases,
   type HomeReleaseCacheState,
 } from '../components/HomeNewReleases';
+import { HomePlaylistDetail } from '../components/HomePlaylistDetail';
+import { ListPagingFooter, reachedListBottom } from '../components/ListPaging';
 import {
-  ReferenceHomeSurface,
-  ReferenceHomeScenes,
+  OrderedCoverBatch,
+  OrderedCoverScope,
+} from '../components/OrderedRemoteCover';
+import { PersonalPlaylistDetail } from '../components/PersonalPlaylistDetail';
+import { PersonalPlaylistManager } from '../components/PersonalPlaylistManager';
+import { platformCaption, platformLabel } from '../components/platformLabels';
+import { PlaybackModePicker } from '../components/PlaybackModePicker';
+import {
+  PlaylistDetailGradientViewport,
+  usePlaylistDetailScrollGradient,
+} from '../components/PlaylistDetailScrollGradient';
+import { PlaylistDownloadPicker } from '../components/PlaylistDownloadPicker';
+import {
+  PlaylistInformationGradient,
+  PlaylistInformationSurface,
+  PlaylistInformationTopGradient,
+  usePlaylistInformationColor,
+} from '../components/PlaylistInformationSurface';
+import {
+  PlaylistManagementActions,
+  playlistManagementLayout,
+} from '../components/PlaylistManagementActions';
+import { PlaylistShareButton } from '../components/PlaylistShareButton';
+import { QueueTrackActions } from '../components/QueueTrackActions';
+import {
   ReferenceHomePlaylistRail,
+  ReferenceHomeScenes,
+  ReferenceHomeSurface,
 } from '../components/ReferenceHomeSurface';
 import { ResilientHomeCover } from '../components/ResilientHomeCover';
-import {
-  OrderedCoverScope,
-  OrderedCoverBatch,
-} from '../components/OrderedRemoteCover';
-import { ListPagingFooter, reachedListBottom } from '../components/ListPaging';
+import { StickyBackgroundExtension } from '../components/StickyBackgroundExtension';
+import { StickyPressable } from '../components/StickyPressable';
+import { TrackActionIcon } from '../components/TrackActionIcon';
+import { Glyph, SectionTitle, TrackRow } from '../components/UI';
 import { useListPrefetch } from '../components/useListPrefetch';
-import { useCollectionResumePosition } from '../components/useCollectionResumePosition';
-import { createHomeTimingTrace } from '../services/homeTiming';
-import { useCollectionPages, type CollectionPageSnapshot } from '../state/useCollectionPages';
+import {
+  PLAYLIST_PLATFORM_WIDTH,
+  usePlaylistPlatformSnap,
+} from '../components/usePlaylistPlatformSnap';
+import { useStableNativeScrollEvent } from '../components/useStableNativeScrollEvent';
+import { useVisibleTrackPrewarm } from '../components/useVisibleTrackPrewarm';
 import { categories } from '../data/catalog';
 import type {
   CatalogItem,
@@ -89,16 +77,48 @@ import type {
   Track,
 } from '../domain/types';
 import { trackQueueKey } from '../domain/types';
-import { HOME_RELEASE_BATCH_SIZE } from '../services/homeNewReleases';
-import { useApp, type AppPage } from '../state/AppContext';
-import { useLayout } from '../state/LayoutContext';
-import { createThemedStyles, light, serif, useTheme } from '../theme';
 import {
   DESIGN_WIDTH,
   HOME_TOP_NAV_HEIGHT,
   homeLayoutMetrics,
   type HomeLayoutMetrics,
 } from '../layout';
+import {
+  catalogSearchInputWidth,
+  catalogSearchScrollOffset,
+} from '../services/catalogSearchLayout';
+import { collectionEntityKind } from '../services/collectionIdentity';
+import { loadCollectionTrackBatch } from '../services/collectionPaging';
+import type { DownloadPreview } from '../services/downloadPresentation';
+import { HOME_RELEASE_BATCH_SIZE } from '../services/homeNewReleases';
+import {
+  homePersonalPlaylists,
+  type PersonalPlaylistDisplayItem,
+} from '../services/homePersonalPlaylists';
+import {
+  createHomeScenePlaceholders,
+  isHomeSceneLoadReady,
+  loadHomeScenePlaylists,
+  type HomeScenePlaylist,
+} from '../services/homeScenePlaylists';
+import { createHomeTimingTrace } from '../services/homeTiming';
+import { sampleLibraryCoverEdgeColor } from '../services/libraryArtwork';
+import { libraryCollectionArtwork } from '../services/libraryCollectionArtwork';
+import { collectKnownTracks } from '../services/libraryPlaybackActions';
+import { savedPlaylistReference } from '../services/linkedPlaylist';
+import { loadCategoryFeedPage } from '../services/liveDiscovery';
+import {
+  loadLiveTracks,
+  loadMediaDiscovery,
+  mediaDiscoveryConfigs,
+  type MediaDiscoveryKind,
+  type MediaProvider,
+} from '../services/mediaDiscovery';
+import {
+  copyMediaCursor,
+  createMediaCursor,
+  type MediaCursor,
+} from '../services/mediaDiscoveryPaging';
 import {
   getCatalog,
   getPlaylistCatalogPage,
@@ -109,45 +129,16 @@ import {
   type OnlineProvider,
 } from '../services/onlineCatalog';
 import { searchOnlinePlaylists } from '../services/onlineMusic';
-import {
-  createHomeScenePlaceholders,
-  isHomeSceneLoadReady,
-  loadHomeScenePlaylists,
-  type HomeScenePlaylist,
-} from '../services/homeScenePlaylists';
-import {
-  loadMediaDiscovery,
-  loadLiveTracks,
-  mediaDiscoveryConfigs,
-  type MediaDiscoveryKind,
-  type MediaProvider,
-} from '../services/mediaDiscovery';
-import { loadCategoryFeedPage } from '../services/liveDiscovery';
-import { loadCollectionTrackBatch } from '../services/collectionPaging';
+import { platformDisplayText } from '../services/platformPresentation';
 import { catalogSnapshotQueueSource } from '../services/queuePaging';
+import { byStartupPassOrder } from '../services/startupPlatformOrder';
+import { useApp, type AppPage } from '../state/AppContext';
+import { useLayout } from '../state/LayoutContext';
 import {
-  loadPodcastCategoryCollections,
-  loadPodcastCollections,
-  loadPodcastTracks,
-  loadLatestPodcastEpisodes,
-  podcastTrackCategories,
-} from '../services/podcastDiscovery';
-import {
-  loadAudiobookCategoryCollections,
-  loadAudiobookCollections,
-  loadAudiobookTracks,
-  loadLatestAudiobookEpisodes,
-  audiobookTrackCategories,
-} from '../services/audiobookDiscovery';
-import {
-  copyMediaCursor,
-  createMediaCursor,
-  mediaHasMore,
-  mediaProviders,
-  isMediaEntity,
-  type MediaCursor,
-} from '../services/mediaDiscoveryPaging';
-
+  useCollectionPages,
+  type CollectionPageSnapshot,
+} from '../state/useCollectionPages';
+import { createThemedStyles, light, serif, useTheme } from '../theme';
 const HOME_RECOMMENDATION_BATCH_SIZE = 6;
 const HOME_HORIZONTAL_BATCH_SIZE = 10;
 // Network batches and render windows stay at twenty; scrolling preloads by six.
@@ -162,7 +153,6 @@ const HOME_VERTICAL_GROUP_HEIGHT =
   (HOME_VERTICAL_BATCH_SIZE - 1) * HOME_VERTICAL_CARD_GAP;
 const HOME_VERTICAL_CARD_STRIDE =
   HOME_VERTICAL_CARD_HEIGHT + HOME_VERTICAL_CARD_GAP;
-
 export const PLAYLIST_CATEGORY_LABELS = [
   '全部',
   '华语',
@@ -221,22 +211,18 @@ export const PLAYLIST_CATEGORY_LABELS = [
   '90后',
   '00后',
 ] as const;
-
 export const isKuwoPlaylistSearch = (
   kind: CatalogKind,
   provider: OnlineProvider | null,
   query: string,
 ) => kind === 'playlists' && provider === 'kuwo' && query.trim().length > 0;
-
 export const isPlaylistSearch = (
   kind: CatalogKind,
   provider: OnlineProvider | null,
   query: string,
 ) => kind === 'playlists' && provider !== null && query.trim().length > 0;
-
 export const playlistCategoryScrollOffset = (layoutX: number) =>
   Math.max(0, layoutX - 18);
-
 /** Select a fresh Home catalog page for each persisted launch/refresh token. */
 export const homePlaylistStartPage = (launchPage: number, refreshToken = 0) =>
   Math.max(
@@ -244,7 +230,6 @@ export const homePlaylistStartPage = (launchPage: number, refreshToken = 0) =>
     Math.floor(Number(launchPage) || 1) +
       Math.max(0, Math.floor(Number(refreshToken) || 0)),
   );
-
 /**
  * One cover request slot per rendered card keeps catalog cover startup in the
  * same top-to-bottom order as the page, without making a whole rail/batch the
@@ -255,7 +240,6 @@ export const catalogCoverModuleKey = (order: number) =>
     6,
     '0',
   )}`;
-
 export interface HomeVerticalPlaylistRenderWindow {
   startIndex: number;
   endIndex: number;
@@ -263,7 +247,6 @@ export interface HomeVerticalPlaylistRenderWindow {
   afterHeight: number;
   totalHeight: number;
 }
-
 /**
  * Keep the complete playlist data in memory while mounting only the current
  * group and its immediate neighbours. The spacer heights preserve the exact
@@ -300,23 +283,6 @@ export function getHomeVerticalPlaylistRenderWindow(
     Math.max(0, count - 1) * HOME_VERTICAL_CARD_GAP;
   return { startIndex, endIndex, beforeHeight, afterHeight, totalHeight };
 }
-const PODCAST_FIXED_CATEGORY_COUNT: number = podcastTrackCategories.length;
-const AUDIOBOOK_FIXED_CATEGORY_COUNT: number = audiobookTrackCategories.length;
-export interface HomeMediaCursorState {
-  identity: string;
-  catalogIdentity?: string;
-  refreshKey: number;
-  generation: number;
-  cursor: MediaCursor<Track>;
-}
-
-export const createHomeMediaCursorState = (): HomeMediaCursorState => ({
-  identity: '',
-  refreshKey: -1,
-  generation: 0,
-  cursor: createMediaCursor<Track>(),
-});
-
 function interleaveCatalogBatches(batches: CatalogItem[][]) {
   const result: CatalogItem[] = [];
   const seen = new Set<string>();
@@ -332,7 +298,6 @@ function interleaveCatalogBatches(batches: CatalogItem[][]) {
     }
   return result;
 }
-
 /**
  * Some provider plaza endpoints ignore their page argument and return the
  * same ordered batch every time. Advance the visible start within that
@@ -343,10 +308,7 @@ function interleaveCatalogBatches(batches: CatalogItem[][]) {
 export function catalogItemKey(item: CatalogItem) {
   return `${item.provider}:${item.id}`;
 }
-
-/** Home's music/catalog rails intentionally bind to the first startup-healthy
- * platform. Podcast and audiobook rails keep their own all-healthy-provider
- * path below. */
+/** Home music/catalog rails bind to the first startup-healthy platform. */
 export function firstPassingHomeProvider(
   platforms: ReadonlyArray<Pick<PlatformSetting, 'id'>>,
   firstDetected?: OnlineProvider | null,
@@ -358,7 +320,6 @@ export function firstPassingHomeProvider(
     return firstDetected;
   return platforms[0]?.id;
 }
-
 /** Keep the selected provider as its full PlatformSetting at service edges. */
 export function firstPassingHomePlatforms(
   platforms: ReadonlyArray<PlatformSetting>,
@@ -367,7 +328,6 @@ export function firstPassingHomePlatforms(
   const provider = firstPassingHomeProvider(platforms, firstDetected);
   return provider ? platforms.filter(platform => platform.id === provider) : [];
 }
-
 export function filterFreshHomePlaylistItems(
   items: CatalogItem[],
   excludedKeys?: ReadonlySet<string>,
@@ -375,7 +335,6 @@ export function filterFreshHomePlaylistItems(
   if (!excludedKeys?.size) return items;
   return items.filter(item => !excludedKeys.has(catalogItemKey(item)));
 }
-
 /**
  * The public plaza APIs are often cached by page. Shuffle the provider-local
  * batch after removing recently shown collections so a refresh can advance
@@ -402,7 +361,6 @@ export function shuffleHomePlaylistItems(
   }
   return shuffled;
 }
-
 export function randomHomePlaylistPage(
   basePage: number,
   random: () => number = Math.random,
@@ -414,7 +372,6 @@ export function randomHomePlaylistPage(
     : 0;
   return page + Math.floor(normalized * 5);
 }
-
 export function rotateHomePlaylistFirst(
   items: CatalogItem[],
   previousKey?: string,
@@ -431,7 +388,6 @@ export function rotateHomePlaylistFirst(
     ];
   return result;
 }
-
 export async function loadHomePlaylistRefreshPage(
   provider: OnlineProvider,
   requestedPage: number,
@@ -555,7 +511,6 @@ export async function loadHomePlaylistRefreshPage(
     items: filterFreshHomePlaylistItems(items, excludedKeys),
   };
 }
-
 /**
  * Probe a short window of provider pages for a genuinely new batch. Some
  * providers ignore the requested page, so the caller also receives the page
@@ -590,7 +545,6 @@ export async function loadFreshHomePlaylistPage(
   const fallback = await loadHomePlaylistRefreshPage(provider, startPage, 0);
   return { ...fallback, page: startPage };
 }
-
 export type MediaSurfaceSnapshot<T> = {
   items: T[];
   cursor: MediaCursor<T>;
@@ -598,12 +552,11 @@ export type MediaSurfaceSnapshot<T> = {
   hasMore: boolean;
   refreshKey: number;
 };
-
 type PlaylistBrowserContext = {
   personal?: boolean;
   section?: 'scenes' | 'mine';
   personalPlaylistId?: string;
-  mediaKind: 'music' | 'podcast' | 'audiobook';
+  mediaKind: 'music';
   title: string;
   query?: string;
   /**
@@ -615,16 +568,14 @@ type PlaylistBrowserContext = {
   initialItems?: CatalogItem[];
   initialSnapshot?: MediaSurfaceSnapshot<CatalogItem>;
 };
-
 export type DetailCatalogListContext = {
-  mediaKind: 'music' | 'podcast' | 'audiobook';
+  mediaKind: 'music';
   title: string;
   listKind: 'tracks';
   query?: string;
   source?: CatalogItem;
   initialSnapshot?: MediaSurfaceSnapshot<Track>;
 };
-
 export function HomeScreen({
   designHeight,
   hidden = false,
@@ -636,11 +587,18 @@ export function HomeScreen({
 }) {
   const app = useApp();
   const theme = useTheme();
-  const homeRootActive = !hidden && (app.page === 'root' || app.page === 'home-menu');
+  const homeRootActive =
+    !hidden && (app.page === 'root' || app.page === 'home-menu');
   const homeRootCommitted = useRef(homeRootActive);
-  useLayoutEffect(() => { homeRootCommitted.current = homeRootActive; }, [homeRootActive]);
-  const personalState = app.state, personalCurrent = app.current;
-  const personalPlaylists = useMemo(() => homePersonalPlaylists(personalState, personalCurrent), [personalState, personalCurrent]);
+  useLayoutEffect(() => {
+    homeRootCommitted.current = homeRootActive;
+  }, [homeRootActive]);
+  const personalState = app.state,
+    personalCurrent = app.current;
+  const personalPlaylists = useMemo(
+    () => homePersonalPlaylists(personalState, personalCurrent),
+    [personalState, personalCurrent],
+  );
   const localScrollY = useRef(new Animated.Value(0)).current;
   const homeScrollY = backgroundScrollY ?? localScrollY;
   const [sceneRailTop, setSceneRailTop] = useState<number | null>(null);
@@ -660,21 +618,6 @@ export function HomeScreen({
   const playlistBrowserEntry = useRef(0);
   const playlistBrowserActive = !hidden && app.page === 'playlist';
   if (playlistBrowserActive) playlistBrowserVisited.current = true;
-  const visitedMediaPages = useRef(new Set<'podcast' | 'audiobook'>());
-  const mediaRefreshKeys = useRef({
-    podcast: app.pageRefreshToken,
-    audiobook: app.pageRefreshToken,
-  });
-  const observedMediaRefresh = useRef(app.pageRefreshToken);
-  if (!hidden && (app.page === 'podcast' || app.page === 'audiobook')) {
-    if (
-      !visitedMediaPages.current.has(app.page) ||
-      observedMediaRefresh.current !== app.pageRefreshToken
-    )
-      mediaRefreshKeys.current[app.page] = app.pageRefreshToken;
-    visitedMediaPages.current.add(app.page);
-  }
-  observedMediaRefresh.current = app.pageRefreshToken;
   const [verticalEndToken, setVerticalEndToken] = useState(0);
   const [verticalRetryToken, setVerticalRetryToken] = useState(0);
   const verticalGesture = useRef({ active: false, moved: false, lastY: 0 });
@@ -706,16 +649,23 @@ export function HomeScreen({
     [homeRankingCharts, setHomeRankingCharts] = useState<CatalogItem[]>([]),
     [selectedState, setSelected] = useState<CatalogItem | null>(null),
     [playlistBrowserState, setPlaylistBrowserState] =
-      useState<PlaylistBrowserContext>(() => app.catalogViewState?.get('home-playlist-browser-context') as PlaylistBrowserContext | undefined ?? {
-        mediaKind: 'music',
-        title: '歌单推荐',
-      }),
+      useState<PlaylistBrowserContext>(
+        () =>
+          (app.catalogViewState?.get('home-playlist-browser-context') as
+            | PlaylistBrowserContext
+            | undefined) ?? {
+            mediaKind: 'music',
+            title: '歌单推荐',
+          },
+      ),
     [detailCatalogState, setDetailCatalogList] =
       useState<DetailCatalogListContext | null>(null),
     [homeError, setHomeError] = useState('');
   let selected = selectedState;
   let playlistBrowserContext = playlistBrowserState;
-  const setPlaylistBrowserContext = (next: React.SetStateAction<PlaylistBrowserContext>) => {
+  const setPlaylistBrowserContext = (
+    next: React.SetStateAction<PlaylistBrowserContext>,
+  ) => {
     setPlaylistBrowserState(previous => {
       const value = typeof next === 'function' ? next(previous) : next;
       app.catalogViewState?.set('home-playlist-browser-context', value);
@@ -724,7 +674,8 @@ export function HomeScreen({
   };
   const playlistSection = playlistBrowserContext.section ?? 'scenes';
   const personalPlaylistId = playlistBrowserContext.personalPlaylistId;
-  const setPlaylistSection = (section: 'scenes' | 'mine') => setPlaylistBrowserContext(current => ({ ...current, section }));
+  const setPlaylistSection = (section: 'scenes' | 'mine') =>
+    setPlaylistBrowserContext(current => ({ ...current, section }));
   let detailCatalogList = detailCatalogState;
   const playlistLoadingRef = useRef(false);
   const playlistNextPages = useRef(new Map<OnlineProvider, number>());
@@ -741,10 +692,6 @@ export function HomeScreen({
   const playlistPendingLoads = useRef(0);
   const playlistLoadDraining = useRef(false);
   const releaseCache = useRef(new Map<string, HomeReleaseCacheState>());
-  const homeMediaCursors = useRef({
-    podcast: createHomeMediaCursorState(),
-    audiobook: createHomeMediaCursorState(),
-  });
   const selectedHomeProvider = firstPassingHomeProvider(
     app.recommendationPlatforms,
     app.startupHealth?.first,
@@ -781,15 +728,26 @@ export function HomeScreen({
   const homeScrollPosition = useRef({ key: startupKey, y: 0 });
   const homeOriginRestoreVersion = useRef(0);
   const originRestore = app.catalogRestore;
-  if (originRestore?.version !== undefined && homeOriginRestoreVersion.current !== originRestore.version) {
+  if (
+    originRestore?.version !== undefined &&
+    homeOriginRestoreVersion.current !== originRestore.version
+  ) {
     homeOriginRestoreVersion.current = originRestore.version;
     if (originRestore.keys.includes('home-origin-scroll-y')) {
-      homeScrollPosition.current.y = Number(app.catalogViewState.get('home-origin-scroll-y') ?? 0);
+      homeScrollPosition.current.y = Number(
+        app.catalogViewState.get('home-origin-scroll-y') ?? 0,
+      );
     }
     if (originRestore.keys.includes('home-selected')) {
-      selected = app.catalogViewState.get('home-selected') as CatalogItem | null;
-      playlistBrowserContext = app.catalogViewState.get('home-playlist-browser-context') as PlaylistBrowserContext;
-      detailCatalogList = app.catalogViewState.get('home-detail-catalog-list') as DetailCatalogListContext | null;
+      selected = app.catalogViewState.get(
+        'home-selected',
+      ) as CatalogItem | null;
+      playlistBrowserContext = app.catalogViewState.get(
+        'home-playlist-browser-context',
+      ) as PlaylistBrowserContext;
+      detailCatalogList = app.catalogViewState.get(
+        'home-detail-catalog-list',
+      ) as DetailCatalogListContext | null;
       setSelected(selected);
       setPlaylistBrowserContext(playlistBrowserContext);
       setDetailCatalogList(detailCatalogList);
@@ -804,33 +762,55 @@ export function HomeScreen({
   const startupStage = startup.key === startupKey ? startup.stage : 0;
   const currentStartupKey = useRef(startupKey);
   currentStartupKey.current = startupKey;
-  const finishStartupStage = useCallback((expected: number, key = startupKey) => {
-    if (currentStartupKey.current !== key) return;
-    setStartup(current => current.key === key && current.stage === expected
-      ? { ...current, stage: expected + 1 } : current);
-  }, [startupKey]);
-  const finishNewReleases = useCallback(() => finishStartupStage(2), [finishStartupStage]);
-  const finishLive = useCallback(() => finishStartupStage(3), [finishStartupStage]);
-  const finishRisingChart = useCallback(() => finishStartupStage(5), [finishStartupStage]);
-  const finishHotChart = useCallback(() => finishStartupStage(6), [finishStartupStage]);
-  const finishRankingCharts = useCallback(() => finishStartupStage(7), [finishStartupStage]);
-  const [homeMediaGenerations, setHomeMediaGenerations] = useState<Partial<Record<'podcast' | 'audiobook', { key: string; refreshKey: number }>>>({});
-  useEffect(() => {
-    const kind = startupStage === 8 ? 'podcast' : startupStage === 9 ? 'audiobook' : null;
-    if (!kind) return;
-    setHomeMediaGenerations(current => current[kind]?.key === startupKey ? current
-      : { ...current, [kind]: { key: startupKey, refreshKey: app.homeRefreshToken } });
-  }, [startupStage, startupKey, app.homeRefreshToken]);
-  const finishPodcast = useCallback(() => {
-    if (homeMediaGenerations.podcast) finishStartupStage(8, homeMediaGenerations.podcast.key);
-  }, [finishStartupStage, homeMediaGenerations.podcast]);
-  const finishAudiobook = useCallback(() => {
-    if (homeMediaGenerations.audiobook) finishStartupStage(9, homeMediaGenerations.audiobook.key);
-  }, [finishStartupStage, homeMediaGenerations.audiobook]);
-  const verticalReady = startupStage >= 10;
-  const completeHomeRefresh = app.finishHomeRefresh, refreshGeneration = app.homeRefreshToken;
-  const finishHomeRefresh = useCallback(() => completeHomeRefresh?.(refreshGeneration),
-    [completeHomeRefresh, refreshGeneration]);
+  const finishStartupStage = useCallback(
+    (expected: number, key = startupKey) => {
+      if (currentStartupKey.current !== key) return;
+      setStartup(current =>
+        current.key === key && current.stage === expected
+          ? { ...current, stage: expected + 1 }
+          : current,
+      );
+    },
+    [startupKey],
+  );
+  const finishNewReleases = useCallback(
+    () => finishStartupStage(2),
+    [finishStartupStage],
+  );
+  const finishLive = useCallback(
+    () => finishStartupStage(3),
+    [finishStartupStage],
+  );
+  const finishRisingChart = useCallback(
+    () => finishStartupStage(5),
+    [finishStartupStage],
+  );
+  const finishHotChart = useCallback(
+    () => finishStartupStage(6),
+    [finishStartupStage],
+  );
+  const finishRankingCharts = useCallback(
+    () => finishStartupStage(7),
+    [finishStartupStage],
+  );
+  const [homeMediaGenerations, setHomeMediaGenerations] = useState<
+    Partial<
+      Record<
+        never,
+        {
+          key: string;
+          refreshKey: number;
+        }
+      >
+    >
+  >({});
+  const verticalReady = startupStage >= 8;
+  const completeHomeRefresh = app.finishHomeRefresh,
+    refreshGeneration = app.homeRefreshToken;
+  const finishHomeRefresh = useCallback(
+    () => completeHomeRefresh?.(refreshGeneration),
+    [completeHomeRefresh, refreshGeneration],
+  );
   useEffect(() => {
     // No usable platform is a settled empty generation, so it cannot lock retry.
     if (!enabledProviders.length) finishHomeRefresh();
@@ -1060,7 +1040,6 @@ export function HomeScreen({
       playlistLoadingRef.current = false;
     };
   }, [enabledProviders, homeCatalogLaunchPage, startupKey]);
-
   useEffect(() => {
     if (
       !isHomeSceneLoadReady(
@@ -1080,12 +1059,12 @@ export function HomeScreen({
       setHomeScenePlaylists(current =>
         current.map(value => (value.sceneId === scene.sceneId ? scene : value)),
       );
-    }).catch(() => {
-      // Keep the theme-colored scene placeholders visible when a scene query fails.
-      // A failed remote query must not collapse the already-mounted rail.
-    }).finally(() => {
-      if (active && sceneGeneration.current === version) finishStartupStage(1);
-    });
+    })
+      .catch(() => {})
+      .finally(() => {
+        if (active && sceneGeneration.current === version)
+          finishStartupStage(1);
+      });
     return () => {
       active = false;
     };
@@ -1097,7 +1076,6 @@ export function HomeScreen({
     startupKey,
     finishStartupStage,
   ]);
-
   useEffect(() => {
     if (startupStage !== 4) return;
     let active = true;
@@ -1133,7 +1111,6 @@ export function HomeScreen({
       active = false;
     };
   }, [homeRankingProvider, app.homeRefreshToken, startupKey, startupStage]);
-
   const loadMorePlaylists = useCallback(async () => {
     if (playlistLoadingRef.current || !playlistHasMore) return;
     const enabled = enabledProviders;
@@ -1220,7 +1197,6 @@ export function HomeScreen({
       }
     }
   }, [enabledProviders, playlistHasMore]);
-
   const loadMorePlaylistsRef = useRef(loadMorePlaylists);
   loadMorePlaylistsRef.current = loadMorePlaylists;
   const queuePlaylistLoad = useCallback(async () => {
@@ -1236,9 +1212,12 @@ export function HomeScreen({
       playlistLoadDraining.current = false;
     }
   }, []);
-
   const recordPlaylistScroll = useCallback(
-    (nativeEvent: { contentOffset: { x: number } }) => {
+    (nativeEvent: {
+      contentOffset: {
+        x: number;
+      };
+    }) => {
       if (
         !playlistSwipeTriggered.current &&
         nativeEvent.contentOffset.x > playlistSwipeStartX.current + 1
@@ -1249,18 +1228,22 @@ export function HomeScreen({
     },
     [queuePlaylistLoad],
   );
-
   const handleHomeScroll = useCallback(
     (nativeEvent: NativeScrollEvent) => {
       if (!homeRootCommitted.current) return;
-      if (verticalGesture.current.active && nativeEvent.contentOffset.y < -40 && !pullTriggered.current) {
+      if (
+        verticalGesture.current.active &&
+        nativeEvent.contentOffset.y < -40 &&
+        !pullTriggered.current
+      ) {
         pullTriggered.current = true;
         app.refreshHome();
       }
       const visibleBottom =
         nativeEvent.contentOffset.y + nativeEvent.layoutMeasurement.height;
       const gesture = verticalGesture.current;
-      const movingDown = gesture.active && nativeEvent.contentOffset.y > gesture.lastY + 1;
+      const movingDown =
+        gesture.active && nativeEvent.contentOffset.y > gesture.lastY + 1;
       const firstMovement = movingDown && !gesture.moved;
       if (movingDown) gesture.moved = true;
       gesture.lastY = nativeEvent.contentOffset.y;
@@ -1286,7 +1269,12 @@ export function HomeScreen({
         const group =
           3 +
           Math.floor(
-            Math.max(0, visibleBottom - verticalListTop.current - HOME_VERTICAL_SECTION_GAP) /
+            Math.max(
+              0,
+              visibleBottom -
+                verticalListTop.current -
+                HOME_VERTICAL_SECTION_GAP,
+            ) /
               (HOME_VERTICAL_PREFETCH_GROUP_SIZE * HOME_VERTICAL_CARD_STRIDE),
           );
         if (group > verticalPrefetchGroup.current) {
@@ -1299,15 +1287,20 @@ export function HomeScreen({
     },
     [verticalReady, app],
   );
-
   const homeScrollEvent = useStableNativeScrollEvent(
     homeScrollY,
     ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
       homeScrollPosition.current.y = Math.max(0, nativeEvent.contentOffset.y);
-      app.catalogViewState?.set('home-origin-scroll-y', homeScrollPosition.current.y);
+      app.catalogViewState?.set(
+        'home-origin-scroll-y',
+        homeScrollPosition.current.y,
+      );
       // Decoration follows native frames; preserve the existing 100ms list gate.
       const now = Date.now();
-      if (now - lastHomeScrollEventAt.current >= 100 || nativeEvent.contentOffset.y < -40) {
+      if (
+        now - lastHomeScrollEventAt.current >= 100 ||
+        nativeEvent.contentOffset.y < -40
+      ) {
         lastHomeScrollEventAt.current = now;
         handleHomeScroll(nativeEvent);
       }
@@ -1317,24 +1310,17 @@ export function HomeScreen({
     nativeEvent,
   }: NativeSyntheticEvent<NativeScrollEvent>) => {
     homeScrollPosition.current.y = Math.max(0, nativeEvent.contentOffset.y);
-    app.catalogViewState?.set('home-origin-scroll-y', homeScrollPosition.current.y);
+    app.catalogViewState?.set(
+      'home-origin-scroll-y',
+      homeScrollPosition.current.y,
+    );
     handleHomeScroll(nativeEvent);
   };
-
   const openItem = (item: CatalogItem) => {
     app.catalogViewState?.set('home-selected', item);
     setSelected(item);
     app.open('playlist-detail');
   };
-  const openMediaItem = (item: CatalogItem) =>
-    openItem({
-      ...item,
-      metadata: {
-        ...item.metadata,
-        detailLayout: 'playlist',
-        detailTopGradient: true,
-      },
-    });
   const openCatalogCollectionItem = (
     item: CatalogItem,
     sourceKind: Extract<CatalogKind, 'new-albums' | 'charts'>,
@@ -1370,7 +1356,10 @@ export function HomeScreen({
     });
   const openPersonalItem = (item: PersonalPlaylistDisplayItem) => {
     if (item.personalPlaylistId) {
-      setPlaylistBrowserContext(current => ({ ...current, personalPlaylistId: item.personalPlaylistId }));
+      setPlaylistBrowserContext(current => ({
+        ...current,
+        personalPlaylistId: item.personalPlaylistId,
+      }));
       app.open('personal-playlist');
     } else if (item.collection) openScenePlaylist(item.collection);
   };
@@ -1412,10 +1401,12 @@ export function HomeScreen({
       },
     });
   const openPlaylistBrowser = (context: PlaylistBrowserContext) => {
-    if (context.mediaKind === 'music' && (!context.sourceKind || context.sourceKind === 'charts'))
+    if (!context.sourceKind || context.sourceKind === 'charts')
       playlistBrowserEntry.current += 1;
-    setPlaylistBrowserContext(current => ({ ...context,
-      section: current.section, personalPlaylistId: current.personalPlaylistId,
+    setPlaylistBrowserContext(current => ({
+      ...context,
+      section: current.section,
+      personalPlaylistId: current.personalPlaylistId,
     }));
     app.open('playlist');
   };
@@ -1438,17 +1429,31 @@ export function HomeScreen({
     setDetailCatalogList(context);
     app.open('catalog-list');
   };
-
   const renderCurrentContent = () => {
     if (hidden) return null;
     if (app.page === 'personal-playlist') {
-      const playlist = app.state.playlists.find(item => item.id === personalPlaylistId);
+      const playlist = app.state.playlists.find(
+        item => item.id === personalPlaylistId,
+      );
       if (playlist) {
-        const tracks = new Map(collectKnownTracks(app.state, app.current).map(track => [track.id, track]));
-        return <PersonalPlaylistDetail playlistId={playlist.id} title={playlist.title}
-          tracks={playlist.trackIds.flatMap(id => tracks.get(id) ?? [])}
-          fallbackCoverKey={playlist.coverKey} playlistCover={playlist.cover}
-          description={playlist.description} onBack={app.back} onDeleted={returnToPersonalManager} />;
+        const tracks = new Map(
+          collectKnownTracks(app.state, app.current).map(track => [
+            track.id,
+            track,
+          ]),
+        );
+        return (
+          <PersonalPlaylistDetail
+            playlistId={playlist.id}
+            title={playlist.title}
+            tracks={playlist.trackIds.flatMap(id => tracks.get(id) ?? [])}
+            fallbackCoverKey={playlist.coverKey}
+            playlistCover={playlist.cover}
+            description={playlist.description}
+            onBack={app.back}
+            onDeleted={returnToPersonalManager}
+          />
+        );
       }
     }
     if (app.page === 'feed')
@@ -1480,8 +1485,6 @@ export function HomeScreen({
           homeLayout={layout}
         />
       );
-    if (app.page === 'podcast') return null;
-    if (app.page === 'audiobook') return null;
     if (app.page === 'radio' || app.page === 'live')
       return <MediaDiscovery kind={app.page} />;
     if (app.page === 'playlist-detail')
@@ -1499,31 +1502,41 @@ export function HomeScreen({
           testID="discovery-home"
           key={`home-root-${startupKey}`}
           initialScrollY={homeScrollPosition.current.y}
-          originRestoreVersion={originRestore?.keys.includes('home-origin-scroll-y') ? originRestore.version : 0}
+          originRestoreVersion={
+            originRestore?.keys.includes('home-origin-scroll-y')
+              ? originRestore.version
+              : 0
+          }
           scrollY={homeScrollY}
-          stickyHeaderIndices={playlistSection === 'mine' || homeScenePlaylists.length ? [2] : []}
+          stickyHeaderIndices={
+            playlistSection === 'mine' || homeScenePlaylists.length ? [2] : []
+          }
           style={[s.root, { backgroundColor: 'transparent' }]}
           contentContainerStyle={s.content}
-          showsVerticalScrollIndicator={false}
+          showsVerticalScrollIndicator
           onScrollBeginDrag={({ nativeEvent }) => {
             if (!homeRootCommitted.current) return;
             pullTriggered.current = false;
-            verticalGesture.current = { active: true, moved: false, lastY: nativeEvent.contentOffset.y };
+            verticalGesture.current = {
+              active: true,
+              moved: false,
+              lastY: nativeEvent.contentOffset.y,
+            };
           }}
           scrollEventThrottle={16}
           refreshControl={
-              <RefreshControl
-                refreshing={app.homeRefreshing ?? false}
-                onRefresh={() => {
-                  // Android can emit both the pull threshold scroll event and
-                  // RefreshControl.onRefresh for one gesture. Treat them as one
-                  // refresh so the playlist request cannot be cancelled by a
-                  // second generation before the four startup sections finish.
-                  if (!homeRootCommitted.current || pullTriggered.current) return;
-                  pullTriggered.current = true;
-                  app.refreshHome();
-                }}
-              />
+            <RefreshControl
+              refreshing={app.homeRefreshing ?? false}
+              onRefresh={() => {
+                // Android can emit both the pull threshold scroll event and
+                // RefreshControl.onRefresh for one gesture. Treat them as one
+                // refresh so the playlist request cannot be cancelled by a
+                // second generation before the four startup sections finish.
+                if (!homeRootCommitted.current || pullTriggered.current) return;
+                pullTriggered.current = true;
+                app.refreshHome();
+              }}
+            />
           }
           onScroll={homeScrollEvent}
           onScrollEndDrag={event => {
@@ -1546,9 +1559,11 @@ export function HomeScreen({
             onPlaylistSectionChange={setPlaylistSection}
             onOpenPlaylist={openRecommendationItem}
             onViewAllPlaylists={() =>
-              openPlaylistBrowser(playlistSection === 'mine'
-                ? { mediaKind: 'music', title: '我的歌单', personal: true }
-                : { mediaKind: 'music', title: '歌单推荐' })
+              openPlaylistBrowser(
+                playlistSection === 'mine'
+                  ? { mediaKind: 'music', title: '我的歌单', personal: true }
+                  : { mediaKind: 'music', title: '歌单推荐' },
+              )
             }
             onRefreshRecommendations={() => {
               refreshRecommendationPlaylists().catch(() => undefined);
@@ -1563,8 +1578,16 @@ export function HomeScreen({
             testID="home-scenes-sticky"
             onLayout={event => setSceneRailTop(event.nativeEvent.layout.y)}
           >
-            <StickyBackgroundExtension active={!hidden && app.page === 'root' && (playlistSection === 'mine' || homeScenePlaylists.length > 0) && sceneRailTop !== null}
-              color={theme.bg} opacity={sceneBackdropOpacity} />
+            <StickyBackgroundExtension
+              active={
+                !hidden &&
+                app.page === 'root' &&
+                (playlistSection === 'mine' || homeScenePlaylists.length > 0) &&
+                sceneRailTop !== null
+              }
+              color={theme.bg}
+              opacity={sceneBackdropOpacity}
+            />
             <Animated.View
               testID="home-scenes-sticky-backdrop"
               pointerEvents="none"
@@ -1573,20 +1596,32 @@ export function HomeScreen({
                 { backgroundColor: theme.bg, opacity: sceneBackdropOpacity },
               ]}
             />
-            {playlistSection === 'mine' ? <ReferenceHomePlaylistRail
-              emptyCopy="暂无我的歌单"
-              cards={personalPlaylists.map(item => ({
-                key: `${item.provider ?? 'personal'}:${item.id}`,
-                title: item.title, copy: item.description,
-                cover: item.cover, coverCandidates: item.coverCandidates,
-                fallback: item.coverKey ? covers[item.coverKey] : undefined,
-                coverTestID: `home-my-playlist-cover-${item.provider ?? 'personal'}-${item.id}`,
-                moduleKey: `home-my-playlist-${item.provider ?? 'personal'}:${item.id}`,
-                onPress: () => openPersonalItem(item), suppressLongPress: true,
-              }))} /> : <ReferenceHomeScenes
-              scenePlaylists={homeScenePlaylists}
-              onOpenScenePlaylist={openScenePlaylist}
-            />}
+            {playlistSection === 'mine' ? (
+              <ReferenceHomePlaylistRail
+                emptyCopy="暂无我的歌单"
+                cards={personalPlaylists.map(item => ({
+                  key: `${item.provider ?? 'personal'}:${item.id}`,
+                  title: item.title,
+                  copy: item.description,
+                  cover: item.cover,
+                  coverCandidates: item.coverCandidates,
+                  fallback: item.coverKey ? covers[item.coverKey] : undefined,
+                  coverTestID: `home-my-playlist-cover-${
+                    item.provider ?? 'personal'
+                  }-${item.id}`,
+                  moduleKey: `home-my-playlist-${item.provider ?? 'personal'}:${
+                    item.id
+                  }`,
+                  onPress: () => openPersonalItem(item),
+                  suppressLongPress: true,
+                }))}
+              />
+            ) : (
+              <ReferenceHomeScenes
+                scenePlaylists={homeScenePlaylists}
+                onOpenScenePlaylist={openScenePlaylist}
+              />
+            )}
           </View>
 
           {startupStage >= 2 ? (
@@ -1714,10 +1749,7 @@ export function HomeScreen({
             if (section.key === 'rising')
               return startupStage >= 5 ? content : null;
             return startupStage >= 6 ? (
-              <View
-                key="hot-boundary"
-                testID="home-hot-boundary"
-              >
+              <View key="hot-boundary" testID="home-hot-boundary">
                 {content}
               </View>
             ) : null;
@@ -1748,36 +1780,6 @@ export function HomeScreen({
           </SequencedHomeSection>
 
           <SequencedHomeSection
-            testID="home-deferred-podcast"
-            loaded={homeMediaGenerations.podcast?.key === startupKey}
-            height={layout.releaseHeight + 10}
-          >
-            <HomeMediaRail
-              kind="podcast"
-              layout={layout}
-              refreshKey={homeMediaGenerations.podcast?.refreshKey ?? app.homeRefreshToken}
-              loadEnabled={homeMediaGenerations.podcast?.key === startupKey}
-              onInitialLoadComplete={finishPodcast}
-              cache={releaseCache.current}
-              cursorState={homeMediaCursors.current.podcast}
-            />
-          </SequencedHomeSection>
-          <SequencedHomeSection
-            testID="home-deferred-audiobook"
-            loaded={homeMediaGenerations.audiobook?.key === startupKey}
-            height={layout.releaseHeight + 10}
-          >
-            <HomeMediaRail
-              kind="audiobook"
-              layout={layout}
-              refreshKey={homeMediaGenerations.audiobook?.refreshKey ?? app.homeRefreshToken}
-              loadEnabled={homeMediaGenerations.audiobook?.key === startupKey}
-              onInitialLoadComplete={finishAudiobook}
-              cache={releaseCache.current}
-              cursorState={homeMediaCursors.current.audiobook}
-            />
-          </SequencedHomeSection>
-          <SequencedHomeSection
             testID="home-deferred-playlists"
             loaded={verticalReady}
             onTop={value => {
@@ -1807,10 +1809,15 @@ export function HomeScreen({
   };
   return (
     <>
-      <View testID="home-kept-content" style={homeRootActive ? s.homeContentVisible : s.homeContentHidden}
+      <View
+        testID="home-kept-content"
+        style={homeRootActive ? s.homeContentVisible : s.homeContentHidden}
         pointerEvents={homeRootActive ? 'auto' : 'none'}
         accessibilityElementsHidden={!homeRootActive}
-        importantForAccessibility={homeRootActive ? 'auto' : 'no-hide-descendants'}>
+        importantForAccessibility={
+          homeRootActive ? 'auto' : 'no-hide-descendants'
+        }
+      >
         {renderHomeContent()}
       </View>
       {renderCurrentContent()}
@@ -1829,12 +1836,18 @@ export function HomeScreen({
             playlistBrowserActive ? 'auto' : 'no-hide-descendants'
           }
         >
-          {playlistBrowserContext.personal ? <PersonalPlaylistManager
-            onOpenCollection={openScenePlaylist}
-            onOpenPersonalPlaylist={id => {
-              setPlaylistBrowserContext(current => ({ ...current, personalPlaylistId: id }));
-              app.open('personal-playlist');
-            }} /> : playlistBrowserContext.mediaKind === 'music' ? (
+          {playlistBrowserContext.personal ? (
+            <PersonalPlaylistManager
+              onOpenCollection={openScenePlaylist}
+              onOpenPersonalPlaylist={id => {
+                setPlaylistBrowserContext(current => ({
+                  ...current,
+                  personalPlaylistId: id,
+                }));
+                app.open('personal-playlist');
+              }}
+            />
+          ) : (
             <CatalogBrowser
               kind={playlistBrowserContext.sourceKind ?? 'playlists'}
               playlistLayout={Boolean(playlistBrowserContext.sourceKind)}
@@ -1845,64 +1858,12 @@ export function HomeScreen({
               active={playlistBrowserActive}
               entryRevision={playlistBrowserEntry.current}
             />
-          ) : (
-            <TypedCatalogBrowser
-              mediaKind={playlistBrowserContext.mediaKind}
-              title={playlistBrowserContext.title}
-              query={playlistBrowserContext.query ?? ''}
-              initialSnapshot={playlistBrowserContext.initialSnapshot}
-              homeLayout={layout}
-              onOpen={openMediaItem}
-              active={playlistBrowserActive}
-            />
           )}
         </View>
       ) : null}
-      {(['podcast', 'audiobook'] as const)
-        .filter(page => visitedMediaPages.current.has(page))
-        .map(page => {
-          const active = !hidden && app.page === page;
-          return (
-            <OrderedCoverScope
-              key={page}
-              active={active}
-              generationKey={`${page}:${mediaRefreshKeys.current[page]}`}
-            >
-              <View
-                style={active ? [s.root, s.mediaPageRoot] : { display: 'none' }}
-                pointerEvents={active ? 'auto' : 'none'}
-                accessibilityElementsHidden={!active}
-                importantForAccessibility={
-                  active ? 'auto' : 'no-hide-descendants'
-                }
-              >
-                {page === 'podcast' ? (
-                  <PodcastDiscovery
-                    layout={layout}
-                    onOpen={openMediaItem}
-                    openPlaylistBrowser={openPlaylistBrowser}
-                    openDetailCatalogList={openDetailCatalogList}
-                    refreshKeyOverride={mediaRefreshKeys.current[page]}
-                    active={active}
-                  />
-                ) : (
-                  <AudiobookDiscovery
-                    layout={layout}
-                    onOpen={openMediaItem}
-                    openPlaylistBrowser={openPlaylistBrowser}
-                    openDetailCatalogList={openDetailCatalogList}
-                    refreshKeyOverride={mediaRefreshKeys.current[page]}
-                    active={active}
-                  />
-                )}
-              </View>
-            </OrderedCoverScope>
-          );
-        })}
     </>
   );
 }
-
 function HomeRootScrollView({
   initialScrollY,
   originRestoreVersion,
@@ -1928,12 +1889,16 @@ function HomeRootScrollView({
   useLayoutEffect(() => {
     scrollY.setValue(initialOffset.y);
   }, [scrollY, initialOffset]);
-  return <Animated.ScrollView {...props} ref={scrollRef} contentOffset={initialOffset}
-    showsHorizontalScrollIndicator={false}
-    showsVerticalScrollIndicator={false}
-  />;
+  return (
+    <Animated.ScrollView
+      {...props}
+      ref={scrollRef}
+      contentOffset={initialOffset}
+      showsHorizontalScrollIndicator
+      showsVerticalScrollIndicator
+    />
+  );
 }
-
 function SequencedHomeSection({
   children,
   height,
@@ -1957,7 +1922,6 @@ function SequencedHomeSection({
     </View>
   );
 }
-
 function HomeVerticalPlaylists({
   onInitialLoadComplete,
   providers,
@@ -1981,12 +1945,17 @@ function HomeVerticalPlaylists({
   const initialComplete = useRef(onInitialLoadComplete);
   initialComplete.current = onInitialLoadComplete;
   const [items, setItems] = useState<CatalogItem[]>([]);
-  const cursors = useRef(new Map<OnlineProvider, {
-    page: number;
-    buffer: CatalogItem[];
-    exhausted: boolean;
-    restartAtFirstPage: boolean;
-  }>());
+  const cursors = useRef(
+    new Map<
+      OnlineProvider,
+      {
+        page: number;
+        buffer: CatalogItem[];
+        exhausted: boolean;
+        restartAtFirstPage: boolean;
+      }
+    >(),
+  );
   const seen = useRef(new Set<string>());
   const firstPage = useRef(initialPage);
   const hasMore = useRef(true);
@@ -2009,13 +1978,22 @@ function HomeVerticalPlaylists({
     retryNeeded.current = false;
     // Work on copies so a failure or an obsolete response cannot consume a
     // buffered tail, advance a real page, or commit only part of this batch.
-    const nextCursors = new Map(availableProviders.map(provider => {
-      const current = cursors.current.get(provider);
-      return [provider, current
-        ? { ...current, buffer: [...current.buffer] }
-        : { page: firstPage.current, buffer: [], exhausted: false,
-            restartAtFirstPage: firstPage.current > 1 }];
-    }));
+    const nextCursors = new Map(
+      availableProviders.map(provider => {
+        const current = cursors.current.get(provider);
+        return [
+          provider,
+          current
+            ? { ...current, buffer: [...current.buffer] }
+            : {
+                page: firstPage.current,
+                buffer: [],
+                exhausted: false,
+                restartAtFirstPage: firstPage.current > 1,
+              },
+        ];
+      }),
+    );
     const batch: CatalogItem[] = [];
     const nextSeen = new Set(seen.current);
     const fetched = new Set<OnlineProvider>();
@@ -2039,23 +2017,29 @@ function HomeVerticalPlaylists({
           return !cursor.exhausted && !fetched.has(provider);
         });
         if (!missing.length) break;
-        const results = await Promise.all(missing.map(async provider => {
-          const cursor = nextCursors.get(provider)!;
-          let page = cursor.page;
-          let result = await getPlaylistCatalogPage(provider, page, {
-            paginateKugouAllPlaylists: true,
-          });
-          if (generation.current !== version) return { provider, result, page };
-          // Persisted launch counters can outgrow the provider's finite plaza.
-          // Restart only an empty initial cursor; normal terminal pages end it.
-          if ((!result.items.length || result.outOfRange) && cursor.restartAtFirstPage) {
-            page = 1;
-            result = await getPlaylistCatalogPage(provider, page, {
+        const results = await Promise.all(
+          missing.map(async provider => {
+            const cursor = nextCursors.get(provider)!;
+            let page = cursor.page;
+            let result = await getPlaylistCatalogPage(provider, page, {
               paginateKugouAllPlaylists: true,
             });
-          }
-          return { provider, result, page };
-        }));
+            if (generation.current !== version)
+              return { provider, result, page };
+            // Persisted launch counters can outgrow the provider's finite plaza.
+            // Restart only an empty initial cursor; normal terminal pages end it.
+            if (
+              (!result.items.length || result.outOfRange) &&
+              cursor.restartAtFirstPage
+            ) {
+              page = 1;
+              result = await getPlaylistCatalogPage(provider, page, {
+                paginateKugouAllPlaylists: true,
+              });
+            }
+            return { provider, result, page };
+          }),
+        );
         if (generation.current !== version) return false;
         for (const { provider, result, page } of results) {
           const cursor = nextCursors.get(provider)!;
@@ -2064,10 +2048,10 @@ function HomeVerticalPlaylists({
           cursor.page = result.nextPage ?? page;
           cursor.restartAtFirstPage = false;
           cursor.buffer = [...values];
-          cursor.exhausted = result.nextPage === null || !values.some(value => !nextSeen.has(catalogItemKey(value)));
+          cursor.exhausted =
+            result.nextPage === null ||
+            !values.some(value => !nextSeen.has(catalogItemKey(value)));
         }
-        // At most one upstream page per provider per gesture-owned batch:
-        // duplicate-only or short pages cannot turn into a request loop.
       }
       if (generation.current !== version) return false;
       cursors.current = nextCursors;
@@ -2083,7 +2067,6 @@ function HomeVerticalPlaylists({
       }
     }
   }, []);
-
   const drainPendingPages = useCallback(
     async (version: number) => {
       if (loadingRef.current || !providersRef.current.length) return;
@@ -2094,7 +2077,7 @@ function HomeVerticalPlaylists({
       ) {
         pendingPages.current -= 1;
         try {
-          if (!await requestBatch(version)) return;
+          if (!(await requestBatch(version))) return;
         } catch {
           if (generation.current === version) {
             retryNeeded.current = true;
@@ -2106,7 +2089,6 @@ function HomeVerticalPlaylists({
     },
     [requestBatch],
   );
-
   useEffect(() => {
     const version = ++generation.current;
     firstPage.current = Math.max(1, Math.floor(initialPage));
@@ -2119,22 +2101,22 @@ function HomeVerticalPlaylists({
     lastEndToken.current = latestTokens.current.endToken;
     lastRetryToken.current = latestTokens.current.retryToken;
     setItems([]);
-    drainPendingPages(version).catch(() => undefined).finally(() => {
-      if (generation.current === version) initialComplete.current?.();
-    });
+    drainPendingPages(version)
+      .catch(() => undefined)
+      .finally(() => {
+        if (generation.current === version) initialComplete.current?.();
+      });
     return () => {
       generation.current += 1;
       loadingRef.current = false;
     };
   }, [drainPendingPages, initialPage, providerIdentity, refreshKey]);
-
   useEffect(() => {
     if (endToken === lastEndToken.current) return;
     pendingPages.current += Math.max(0, endToken - lastEndToken.current);
     lastEndToken.current = endToken;
     drainPendingPages(generation.current).catch(() => undefined);
   }, [drainPendingPages, endToken]);
-
   useEffect(() => {
     if (retryToken === lastRetryToken.current) return;
     lastRetryToken.current = retryToken;
@@ -2142,7 +2124,6 @@ function HomeVerticalPlaylists({
     pendingPages.current = 1;
     drainPendingPages(generation.current).catch(() => undefined);
   }, [drainPendingPages, retryToken]);
-
   const renderWindow = getHomeVerticalPlaylistRenderWindow(
     items.length,
     renderGroup,
@@ -2151,7 +2132,6 @@ function HomeVerticalPlaylists({
     renderWindow.startIndex,
     renderWindow.endIndex,
   );
-
   return (
     <View testID="home-playlists" style={s.verticalPlaylistList}>
       <OrderedCoverBatch
@@ -2190,135 +2170,6 @@ function HomeVerticalPlaylists({
     </View>
   );
 }
-
-export async function loadHomeMediaPage(
-  kind: 'podcast' | 'audiobook',
-  page: number,
-  pageSize: number,
-  platforms: PlatformSetting[],
-  cursor?: MediaCursor<Track>,
-) {
-  const hasTypedProvider = mediaProviders(platforms, kind, false).length > 0;
-  if (!hasTypedProvider) return { tracks: [], hasMore: false };
-  const result =
-    kind === 'podcast'
-      ? await loadPodcastTracks(
-          mediaDiscoveryConfigs.podcast.query,
-          page,
-          platforms,
-          pageSize,
-          cursor,
-        )
-      : await loadLatestAudiobookEpisodes(page, platforms, pageSize, cursor);
-  // Empty failed podcast requests must reach the rail's existing retry path.
-  // Keep available partial data and the audiobook adapter's contract intact.
-  if (kind === 'podcast' && !result.items.length && result.errors.length)
-    throw new Error(result.errors.join('；'));
-  return {
-    tracks: result.items.slice(0, pageSize),
-    hasMore: result.hasMore,
-  };
-}
-
-export function HomeMediaRail({
-  kind,
-  layout,
-  refreshKey,
-  cache,
-  cursorState,
-  loadEnabled = true,
-  onInitialLoadComplete,
-}: {
-  kind: 'podcast' | 'audiobook';
-  layout: HomeLayoutMetrics;
-  refreshKey: number;
-  cache: Map<string, HomeReleaseCacheState>;
-  cursorState: HomeMediaCursorState;
-  loadEnabled?: boolean;
-  onInitialLoadComplete?: () => void;
-}) {
-  const app = useApp();
-  const providerIdentity = mediaProviders(
-    app.recommendationPlatforms,
-    kind,
-    false,
-  ).join('|');
-  const platformsRef = useRef(app.recommendationPlatforms);
-  platformsRef.current = app.recommendationPlatforms;
-  if (cursorState.catalogIdentity === undefined)
-    cursorState.catalogIdentity = providerIdentity;
-  if (cursorState.identity !== providerIdentity) {
-    const previous = cursorState.identity.split('|').filter(Boolean);
-    const current = providerIdentity.split('|').filter(Boolean);
-    // Adding a background-passing provider preserves existing streams and seen keys.
-    if (
-      previous.some(provider => !current.includes(provider)) ||
-      (kind === 'podcast' && previous.length === 0 && current.length > 0)
-    ) {
-      cursorState.cursor = createMediaCursor<Track>();
-      cursorState.generation += 1;
-      cursorState.catalogIdentity = providerIdentity;
-    }
-    cursorState.identity = providerIdentity;
-  }
-  if (cursorState.refreshKey !== refreshKey) {
-    cursorState.refreshKey = refreshKey;
-    cursorState.cursor = createMediaCursor<Track>();
-    cursorState.generation += 1;
-  }
-  const loadPage = useCallback(
-    async (page: number, pageSize: number) => {
-      const version = cursorState.generation;
-      const committedCursor = cursorState.cursor;
-      let failure: unknown;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const nextCursor = copyMediaCursor(committedCursor);
-        try {
-          const result = await loadHomeMediaPage(
-            kind,
-            page,
-            pageSize,
-            platformsRef.current,
-            nextCursor,
-          );
-          if (cursorState.generation === version)
-            cursorState.cursor = nextCursor;
-          return result;
-        } catch (error) {
-          failure = error;
-          if (cursorState.generation !== version) throw error;
-        }
-      }
-      throw failure;
-    },
-    [cursorState, kind],
-  );
-  useEffect(
-    () => () => {
-      cursorState.generation += 1;
-    },
-    [cursorState],
-  );
-  return (
-    <HomeNewReleases
-      loadEnabled={loadEnabled}
-      onInitialLoadComplete={onInitialLoadComplete}
-      title={kind === 'podcast' ? '播客' : '听书'}
-      testPrefix={`home-${kind}`}
-      coverSectionOrder={kind === 'podcast' ? 6 : 7}
-      showPlatformDuration={false}
-      layout={layout}
-      refreshKey={refreshKey}
-      onViewAll={() => app.open(kind)}
-      loadPage={loadPage}
-      catalogIdentity={`home-${kind}:${cursorState.catalogIdentity}`}
-      catalogProviderKey={providerIdentity}
-      replenishBlockedTracks={kind !== 'podcast'}
-      cache={cache}
-    />
-  );
-}
-
 function OtherChartsRail({
   charts,
   ready,
@@ -2401,7 +2252,7 @@ function OtherChartsRail({
             hideActionLabel
             onPress={onViewAll}
             actionTestID="home-other-charts-all"
-            darkMode={false}
+            darkMode
           />
         </View>
       ) : null}
@@ -2424,8 +2275,8 @@ function OtherChartsRail({
         scrollEventThrottle={100}
         style={[s.playlistScroller, { height: layout.playlistHeight }]}
         contentContainerStyle={[s.playlistRail, s.homeChartsRail]}
-        showsHorizontalScrollIndicator={false}
-        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator
+        showsVerticalScrollIndicator
       >
         {displayedCharts.map((chart, index) => (
           <PlaylistCard
@@ -2443,21 +2294,11 @@ function OtherChartsRail({
     </>
   );
 }
-
 const homeChartSections = [
   { key: 'rising', title: '飙升榜', match: /飙升/ },
   { key: 'hot', title: '热歌榜', match: /热歌|TOP500/ },
 ];
-
-const homeMediaLinks: {
-  page: Extract<AppPage, 'podcast' | 'audiobook'>;
-  label: string;
-}[] = [
-  { page: 'podcast', label: '播客' },
-  { page: 'audiobook', label: '听书' },
-];
-
-function HomeNavigationBar({ activePage }: { activePage?: AppPage } = {}) {
+function HomeNavigationBar() {
   const app = useApp();
   const layout = useLayout();
   return (
@@ -2509,47 +2350,6 @@ function HomeNavigationBar({ activePage }: { activePage?: AppPage } = {}) {
             ]}
           />
         </Pressable>
-        <View
-          testID="home-media-nav"
-          style={[
-            s.homeMediaNav,
-            {
-              marginLeft: Math.round(layout.homeTopNavigationPadding * 0.62),
-              gap: Math.max(
-                8,
-                Math.round(layout.homeTopNavigationFontSize * 0.6),
-              ),
-            },
-          ]}
-        >
-          {homeMediaLinks.map(item => (
-            <Pressable
-              key={item.page}
-              testID={`home-top-${item.page}`}
-              accessibilityRole="button"
-              accessibilityLabel={item.label}
-              accessibilityState={{ selected: activePage === item.page }}
-              onPress={() => app.open(item.page)}
-              style={[
-                s.homeMediaTarget,
-                { height: layout.homeTopNavigationButtonSize },
-              ]}
-            >
-              <Text
-                style={[
-                  s.homeMediaText,
-                  { fontSize: layout.homeTopNavigationFontSize },
-                  activePage === item.page && s.homeMediaTextActive,
-                ]}
-              >
-                {item.label}
-              </Text>
-              {activePage === item.page ? (
-                <View testID="home-media-active-line" style={s.homeMediaLine} />
-              ) : null}
-            </Pressable>
-          ))}
-        </View>
         <Pressable
           testID="home-top-search"
           accessibilityRole="button"
@@ -2578,7 +2378,6 @@ function HomeNavigationBar({ activePage }: { activePage?: AppPage } = {}) {
     </View>
   );
 }
-
 function PlaylistCard({
   item,
   onPress,
@@ -2627,696 +2426,27 @@ function PlaylistCard({
     </Pressable>
   );
 }
-
-export function PodcastDiscovery({
-  layout,
-  onOpen,
-  openPlaylistBrowser = () => undefined,
-  openDetailCatalogList = () => undefined,
-  refreshKeyOverride,
-  active = true,
-}: {
-  layout: HomeLayoutMetrics;
-  onOpen: (item: CatalogItem) => void;
-  openPlaylistBrowser?: (context: PlaylistBrowserContext) => void;
-  openDetailCatalogList?: (context: DetailCatalogListContext) => void;
-  refreshKeyOverride?: number;
-  active?: boolean;
-}) {
-  const app = useApp();
-  const refreshKey = refreshKeyOverride ?? app.pageRefreshToken;
-  const [refreshTargetKey, setRefreshTargetKey] = useState<number | null>(null);
-  const pullTriggered = useRef(false);
-  const verticalDragStartY = useRef(0);
-  const verticalDragActive = useRef(false);
-  const verticalDragMoved = useRef(false);
-  const collectionPlatforms = app.recommendationPlatforms;
-  const [todayReadyKey, setTodayReadyKey] = useState(-1);
-  const category = useCategoryCollections(
-    'podcast',
-    collectionPlatforms,
-    todayReadyKey === refreshKey,
-    refreshKey,
-    active,
-  );
-  const categoryItems = category.items;
-  const categoryReady = category.settled;
-  const podcastCategoryTitles = podcastTrackCategories;
-  const [categoryCount, setCategoryCount] = useState(0);
-  const [categorySettledKeys, setCategorySettledKeys] = useState<number[]>([]);
-  const categoryRailTop = useRef<number | null>(null);
-  const categorySectionTops = useRef<Array<number | null>>([]);
-  const [directEnabled, setDirectEnabled] = useState(false);
-  const [directTop, setDirectTop] = useState<number | null>(null);
-  const directPrefetchCount = useRef(0);
-  const providerKey = collectionPlatforms.map(item => item.id).join('|');
-  const recommended = usePodcastCollections(
-    '精品播客',
-    collectionPlatforms,
-    10,
-    true,
-    refreshKey,
-    active,
-  );
-  const directReady =
-    directEnabled &&
-    categoryReady &&
-    (categoryCount === 0 ||
-      categorySettledKeys[categoryCount - 1] === refreshKey);
-  const direct = usePodcastCollections(
-    '播客',
-    collectionPlatforms,
-    MEDIA_DIRECT_BATCH_SIZE,
-    directReady,
-    refreshKey,
-    active,
-  );
-  const directItems = direct.items;
-  const directHasMore = direct.hasMore;
-  const directLoadMore = direct.loadMore;
-  useEffect(() => {
-    if (
-      refreshTargetKey === refreshKey &&
-      recommended.settled &&
-      todayReadyKey === refreshKey &&
-      categoryReady &&
-      podcastCategoryTitles
-        .slice(0, categoryCount)
-        .every((_, index) => categorySettledKeys[index] === refreshKey) &&
-      (!directEnabled || direct.settled)
-    )
-      setRefreshTargetKey(null);
-  }, [
-    categoryCount,
-    categoryReady,
-    categorySettledKeys,
-    podcastCategoryTitles,
-    direct.settled,
-    directEnabled,
-    recommended.settled,
-    refreshKey,
-    refreshTargetKey,
-    todayReadyKey,
-  ]);
-  const onScroll = useCallback(
-    (event: { nativeEvent: NativeScrollEvent }) => {
-      const { contentOffset, layoutMeasurement } = event.nativeEvent;
-      const visibleBottom = contentOffset.y + layoutMeasurement.height;
-      if (
-        categoryReady &&
-        categoryRailTop.current !== null &&
-        visibleBottom >= categoryRailTop.current
-      )
-        setCategoryCount(current => Math.max(current, 1));
-      categorySectionTops.current.forEach((top, index) => {
-        if (top === null || visibleBottom < top) return;
-        setCategoryCount(current =>
-          Math.max(current, Math.min(PODCAST_FIXED_CATEGORY_COUNT, index + 2)),
-        );
-        if (index >= PODCAST_FIXED_CATEGORY_COUNT - 1) setDirectEnabled(true);
-      });
-      if (
-        directEnabled &&
-        directTop !== null &&
-        contentOffset.y >= directTop &&
-        directItems.length > 0 &&
-        directHasMore
-      ) {
-        const firstVisibleIndex = Math.floor(
-          Math.max(0, contentOffset.y - directTop) /
-            (HOME_VERTICAL_CARD_HEIGHT + HOME_VERTICAL_CARD_GAP),
-        );
-        const threshold = Math.max(
-          0,
-          directItems.length - MEDIA_DIRECT_BATCH_SIZE,
-        );
-        if (
-          firstVisibleIndex >= threshold &&
-          directPrefetchCount.current < directItems.length
-        ) {
-          directPrefetchCount.current = directItems.length;
-          directLoadMore();
-        }
-      }
-    },
-    [
-      categoryReady,
-      directEnabled,
-      directHasMore,
-      directItems.length,
-      directLoadMore,
-      directTop,
-    ],
-  );
-  const onRealVerticalScroll = useCallback(
-    (event: { nativeEvent: NativeScrollEvent }) => {
-      if (!verticalDragActive.current) return;
-      const offsetY = event.nativeEvent.contentOffset.y;
-      if (!verticalDragMoved.current) {
-        if (offsetY <= verticalDragStartY.current + 1) return;
-        verticalDragMoved.current = true;
-      }
-      onScroll(event);
-    },
-    [onScroll],
-  );
-  useEffect(() => {
-    if (categoryReady) setCategoryCount(current => Math.max(current, 1));
-  }, [categoryReady]);
-  useEffect(() => {
-    setCategoryCount(0);
-    setCategorySettledKeys([]);
-    setDirectEnabled(false);
-  }, [refreshKey]);
-  useEffect(() => {
-    directPrefetchCount.current = 0;
-  }, [providerKey, refreshKey]);
-  return (
-    <ScrollView
-      testID="podcast-page"
-      style={[s.root, s.mediaPageRoot]}
-      contentContainerStyle={s.podcastContent}
-      showsVerticalScrollIndicator={false}
-      onScrollBeginDrag={({ nativeEvent }) => {
-        pullTriggered.current = false;
-        verticalDragStartY.current = nativeEvent.contentOffset.y;
-        verticalDragMoved.current = false;
-        verticalDragActive.current = true;
-      }}
-      onScroll={onRealVerticalScroll}
-      onScrollEndDrag={event => {
-        onRealVerticalScroll(event);
-        verticalDragActive.current = false;
-      }}
-      onMomentumScrollBegin={() => {
-        if (verticalDragMoved.current) verticalDragActive.current = true;
-      }}
-      onMomentumScrollEnd={event => {
-        onRealVerticalScroll(event);
-        verticalDragActive.current = false;
-        verticalDragMoved.current = false;
-      }}
-      scrollEventThrottle={100}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshTargetKey !== null}
-          onRefresh={() => {
-            if (pullTriggered.current) return;
-            pullTriggered.current = true;
-            setRefreshTargetKey(app.pageRefreshToken + 1);
-            app.refreshPage();
-          }}
-        />
-      }
-      showsHorizontalScrollIndicator={false}
-    >
-      <HomeNavigationBar activePage="podcast" />
-      <PodcastCollectionRail
-        testID="podcast-recommended"
-        error={recommended.error}
-        title="推荐节目"
-        items={recommended.items}
-        loading={!recommended.settled}
-        hasMore={recommended.hasMore}
-        onMore={recommended.loadMore}
-        onOpen={onOpen}
-        layout={layout}
-        onViewAll={() =>
-          openPlaylistBrowser({
-            mediaKind: 'podcast',
-            title: '推荐节目',
-            query: '精品播客',
-            initialSnapshot: recommended.snapshot(),
-          })
-        }
-      />
-      <PodcastTrackRail
-        title="今日更新"
-        testID="podcast-today"
-        refreshKeyOverride={refreshKey}
-        active={active}
-        query="今日更新 播客"
-        platforms={collectionPlatforms}
-        enabled={recommended.settled}
-        onSettled={() => setTodayReadyKey(refreshKey)}
-        onViewAll={snapshot =>
-          openDetailCatalogList({
-            mediaKind: 'podcast',
-            title: '今日更新',
-            listKind: 'tracks',
-            query: '今日更新 播客',
-            initialSnapshot: snapshot,
-          })
-        }
-      />
-      <View
-        onLayout={event => {
-          categoryRailTop.current = event.nativeEvent.layout.y;
-        }}
-      >
-        <PodcastCollectionRail
-          testID="podcast-categories"
-          error={category.error}
-          title="热门节目"
-          items={categoryItems.map(value => value.item)}
-          loading={!categoryReady}
-          hasMore={category.hasMore}
-          onMore={category.loadMore}
-          onOpen={onOpen}
-          layout={layout}
-          onViewAll={() =>
-            openPlaylistBrowser({
-              mediaKind: 'podcast',
-              title: '热门节目',
-              query: '热门播客',
-              initialSnapshot: collectionItemsSnapshot(
-                categoryItems.map(value => value.item),
-                refreshKey,
-                category.snapshot().cursor,
-              ),
-            })
-          }
-        />
-      </View>
-      {podcastCategoryTitles.slice(0, categoryCount).map((section, index) => (
-        <View
-          key={section.key}
-          onLayout={event => {
-            categorySectionTops.current[index] = event.nativeEvent.layout.y;
-          }}
-        >
-          <CollectionTrackRail
-            kind="podcast"
-            mediaLabel="播客"
-            title={section.title}
-            query={section.query}
-            testID={`podcast-category-${section.key}`}
-            refreshKey={refreshKey}
-            platforms={collectionPlatforms}
-            enabled={
-              categoryReady &&
-              (index === 0 || categorySettledKeys[index - 1] === refreshKey)
-            }
-            onSettled={() =>
-              setCategorySettledKeys(current => {
-                if (current[index] === refreshKey) return current;
-                const next = [...current];
-                next[index] = refreshKey;
-                return next;
-              })
-            }
-            onOpen={onOpen}
-            active={active}
-            onViewAll={snapshot =>
-              openPlaylistBrowser({
-                mediaKind: 'podcast',
-                title: section.title,
-                query: section.query,
-                initialSnapshot: snapshot,
-              })
-            }
-          />
-        </View>
-      ))}
-      {directEnabled ? (
-        <PodcastVerticalCollections
-          title=""
-          items={direct.items}
-          error={direct.error}
-          onRetry={direct.loadMore}
-          onOpen={onOpen}
-          onLayout={event => setDirectTop(event.nativeEvent.layout.y)}
-          onViewAll={() =>
-            openPlaylistBrowser({
-              mediaKind: 'podcast',
-              title: '播客合集',
-              query: '播客',
-              initialSnapshot: direct.snapshot(),
-            })
-          }
-        />
-      ) : null}
-    </ScrollView>
-  );
-}
-
-export function AudiobookDiscovery({
-  layout,
-  onOpen,
-  openPlaylistBrowser = () => undefined,
-  openDetailCatalogList = () => undefined,
-  refreshKeyOverride,
-  active = true,
-}: {
-  layout: HomeLayoutMetrics;
-  onOpen: (item: CatalogItem) => void;
-  openPlaylistBrowser?: (context: PlaylistBrowserContext) => void;
-  openDetailCatalogList?: (context: DetailCatalogListContext) => void;
-  refreshKeyOverride?: number;
-  active?: boolean;
-}) {
-  const app = useApp();
-  const refreshKey = refreshKeyOverride ?? app.pageRefreshToken;
-  const [refreshTargetKey, setRefreshTargetKey] = useState<number | null>(null);
-  const pullTriggered = useRef(false);
-  const verticalDragStartY = useRef(0);
-  const verticalDragActive = useRef(false);
-  const verticalDragMoved = useRef(false);
-  const platforms = app.recommendationPlatforms;
-  const [todayReadyKey, setTodayReadyKey] = useState(-1);
-  const category = useCategoryCollections(
-    'audiobook',
-    platforms,
-    todayReadyKey === refreshKey,
-    refreshKey,
-    active,
-  );
-  const categoryItems = category.items;
-  const categoryReady = category.settled;
-  const audiobookCategoryTitles = audiobookTrackCategories;
-  const [directEnabled, setDirectEnabled] = useState(false);
-  const [directTop, setDirectTop] = useState<number | null>(null);
-  const directPrefetchCount = useRef(0);
-  const [categoryCount, setCategoryCount] = useState(0);
-  const [categorySettledKeys, setCategorySettledKeys] = useState<number[]>([]);
-  const directReady =
-    directEnabled &&
-    categoryReady &&
-    (categoryCount === 0 ||
-      categorySettledKeys[categoryCount - 1] === refreshKey);
-  const recommended = useAudiobookCollections(
-    '推荐有声小说',
-    platforms,
-    10,
-    true,
-    refreshKey,
-    active,
-  );
-  const direct = useAudiobookCollections(
-    '有声小说',
-    platforms,
-    MEDIA_DIRECT_BATCH_SIZE,
-    directReady,
-    refreshKey,
-    active,
-  );
-  const directItems = direct.items;
-  const directHasMore = direct.hasMore;
-  const directLoadMore = direct.loadMore;
-  useEffect(() => {
-    if (
-      refreshTargetKey === refreshKey &&
-      recommended.settled &&
-      todayReadyKey === refreshKey &&
-      categoryReady &&
-      audiobookCategoryTitles
-        .slice(0, categoryCount)
-        .every((_, index) => categorySettledKeys[index] === refreshKey) &&
-      (!directEnabled || direct.settled)
-    )
-      setRefreshTargetKey(null);
-  }, [
-    categoryCount,
-    categoryReady,
-    categorySettledKeys,
-    audiobookCategoryTitles,
-    direct.settled,
-    directEnabled,
-    recommended.settled,
-    refreshKey,
-    refreshTargetKey,
-    todayReadyKey,
-  ]);
-  const categoryRailTop = useRef<number | null>(null);
-  const categorySectionTops = useRef<Array<number | null>>([]);
-  const onScroll = useCallback(
-    (event: { nativeEvent: NativeScrollEvent }) => {
-      const bottom =
-        event.nativeEvent.contentOffset.y +
-        event.nativeEvent.layoutMeasurement.height;
-      if (
-        categoryReady &&
-        categoryRailTop.current !== null &&
-        bottom >= categoryRailTop.current
-      )
-        setCategoryCount(current => Math.max(current, 1));
-      categorySectionTops.current.forEach((top, index) => {
-        if (top === null || bottom < top) return;
-        setCategoryCount(current =>
-          Math.max(
-            current,
-            Math.min(AUDIOBOOK_FIXED_CATEGORY_COUNT, index + 2),
-          ),
-        );
-        if (index >= AUDIOBOOK_FIXED_CATEGORY_COUNT - 1) setDirectEnabled(true);
-      });
-      if (
-        directEnabled &&
-        directTop !== null &&
-        event.nativeEvent.contentOffset.y >= directTop &&
-        directItems.length > 0 &&
-        directHasMore
-      ) {
-        const firstVisibleIndex = Math.floor(
-          Math.max(0, event.nativeEvent.contentOffset.y - directTop) /
-            (HOME_VERTICAL_CARD_HEIGHT + HOME_VERTICAL_CARD_GAP),
-        );
-        const threshold = Math.max(
-          0,
-          directItems.length - MEDIA_DIRECT_BATCH_SIZE,
-        );
-        if (
-          firstVisibleIndex >= threshold &&
-          directPrefetchCount.current < directItems.length
-        ) {
-          directPrefetchCount.current = directItems.length;
-          directLoadMore();
-        }
-      }
-    },
-    [
-      categoryReady,
-      directHasMore,
-      directItems.length,
-      directLoadMore,
-      directEnabled,
-      directTop,
-    ],
-  );
-  const onRealVerticalScroll = useCallback(
-    (event: { nativeEvent: NativeScrollEvent }) => {
-      if (!verticalDragActive.current) return;
-      const offsetY = event.nativeEvent.contentOffset.y;
-      if (!verticalDragMoved.current) {
-        if (offsetY <= verticalDragStartY.current + 1) return;
-        verticalDragMoved.current = true;
-      }
-      onScroll(event);
-    },
-    [onScroll],
-  );
-  useEffect(() => {
-    if (categoryReady) setCategoryCount(current => Math.max(current, 1));
-  }, [categoryReady]);
-  useEffect(() => {
-    setCategoryCount(0);
-    setCategorySettledKeys([]);
-    setDirectEnabled(false);
-  }, [refreshKey]);
-  useEffect(() => {
-    directPrefetchCount.current = 0;
-  }, [platforms, refreshKey]);
-  return (
-    <ScrollView
-      testID="audiobook-page"
-      style={[s.root, s.mediaPageRoot]}
-      contentContainerStyle={s.podcastContent}
-      showsVerticalScrollIndicator={false}
-      onScrollBeginDrag={({ nativeEvent }) => {
-        pullTriggered.current = false;
-        verticalDragStartY.current = nativeEvent.contentOffset.y;
-        verticalDragMoved.current = false;
-        verticalDragActive.current = true;
-      }}
-      onScroll={onRealVerticalScroll}
-      onScrollEndDrag={event => {
-        onRealVerticalScroll(event);
-        verticalDragActive.current = false;
-      }}
-      onMomentumScrollBegin={() => {
-        if (verticalDragMoved.current) verticalDragActive.current = true;
-      }}
-      onMomentumScrollEnd={event => {
-        onRealVerticalScroll(event);
-        verticalDragActive.current = false;
-        verticalDragMoved.current = false;
-      }}
-      scrollEventThrottle={100}
-      refreshControl={
-        <RefreshControl
-          refreshing={refreshTargetKey !== null}
-          onRefresh={() => {
-            if (pullTriggered.current) return;
-            pullTriggered.current = true;
-            setRefreshTargetKey(app.pageRefreshToken + 1);
-            app.refreshPage();
-          }}
-        />
-      }
-      showsHorizontalScrollIndicator={false}
-    >
-      <HomeNavigationBar activePage="audiobook" />
-      <PodcastCollectionRail
-        mediaLabel="听书"
-        testID="audiobook-recommended"
-        error={recommended.error}
-        title="推荐好书"
-        items={recommended.items}
-        loading={!recommended.settled}
-        hasMore={recommended.hasMore}
-        onMore={recommended.loadMore}
-        onOpen={onOpen}
-        layout={layout}
-        onViewAll={() =>
-          openPlaylistBrowser({
-            mediaKind: 'audiobook',
-            title: '推荐好书',
-            query: '推荐有声小说',
-            initialSnapshot: recommended.snapshot(),
-          })
-        }
-      />
-      <PodcastTrackRail
-        mediaLabel="听书"
-        testID="audiobook-today"
-        episodeMode
-        refreshKeyOverride={refreshKey}
-        active={active}
-        title="今日更新"
-        query="最新更新 单集小说音频"
-        platforms={platforms}
-        enabled={recommended.settled}
-        onSettled={() => setTodayReadyKey(refreshKey)}
-        onOpen={onOpen}
-        onViewAll={snapshot =>
-          openDetailCatalogList({
-            mediaKind: 'audiobook',
-            title: '今日更新',
-            listKind: 'tracks',
-            query: '最新有声小说',
-            initialSnapshot: snapshot,
-          })
-        }
-      />
-      <View
-        onLayout={event => {
-          categoryRailTop.current = event.nativeEvent.layout.y;
-        }}
-      >
-        <PodcastCollectionRail
-          mediaLabel="听书"
-          testID="audiobook-categories"
-          error={category.error}
-          title="热门好书"
-          items={categoryItems.map(value => value.item)}
-          loading={!categoryReady}
-          hasMore={category.hasMore}
-          onMore={category.loadMore}
-          onOpen={onOpen}
-          layout={layout}
-          onViewAll={() =>
-            openPlaylistBrowser({
-              mediaKind: 'audiobook',
-              title: '热门好书',
-              query: '热门有声小说',
-              initialSnapshot: collectionItemsSnapshot(
-                categoryItems.map(value => value.item),
-                refreshKey,
-                category.snapshot().cursor,
-              ),
-            })
-          }
-        />
-      </View>
-      {audiobookCategoryTitles.slice(0, categoryCount).map((section, index) => (
-        <View
-          key={section.key}
-          onLayout={event => {
-            categorySectionTops.current[index] = event.nativeEvent.layout.y;
-          }}
-        >
-          <CollectionTrackRail
-            kind="audiobook"
-            mediaLabel="听书"
-            testID={`audiobook-${section.key}`}
-            refreshKey={refreshKey}
-            active={active}
-            title={section.title}
-            query={section.query}
-            platforms={platforms}
-            enabled={
-              categoryReady &&
-              (index === 0 || categorySettledKeys[index - 1] === refreshKey)
-            }
-            onSettled={() =>
-              setCategorySettledKeys(current => {
-                if (current[index] === refreshKey) return current;
-                const next = [...current];
-                next[index] = refreshKey;
-                return next;
-              })
-            }
-            onOpen={onOpen}
-            onViewAll={snapshot =>
-              openPlaylistBrowser({
-                mediaKind: 'audiobook',
-                title: section.title,
-                query: section.query,
-                initialSnapshot: snapshot,
-              })
-            }
-          />
-        </View>
-      ))}
-      {directEnabled ? (
-        <PodcastVerticalCollections
-          mediaLabel="听书"
-          title=""
-          items={direct.items}
-          error={direct.error}
-          onRetry={direct.loadMore}
-          onOpen={onOpen}
-          onLayout={event => setDirectTop(event.nativeEvent.layout.y)}
-          onViewAll={() =>
-            openPlaylistBrowser({
-              mediaKind: 'audiobook',
-              title: '听书合集',
-              query: '有声小说',
-              initialSnapshot: direct.snapshot(),
-            })
-          }
-        />
-      ) : null}
-    </ScrollView>
-  );
-}
-
-type CategoryCollection = {
-  category: { key: string; title: string; query: string; glyph: string };
-  item: CatalogItem;
-};
-
 type MediaOriginReturn<T> = {
   version: number;
-  state?: MediaSurfaceSnapshot<T> & { identity: string };
-  onChange?: (snapshot: MediaSurfaceSnapshot<T> & { identity: string }) => void;
+  state?: MediaSurfaceSnapshot<T> & {
+    identity: string;
+  };
+  onChange?: (
+    snapshot: MediaSurfaceSnapshot<T> & {
+      identity: string;
+    },
+  ) => void;
   requested?: boolean;
 };
 function useMediaItems<T>(
   loader: (
     page: number,
     cursor: MediaCursor<T>,
-  ) => Promise<{ items: T[]; hasMore: boolean; errors?: string[] }>,
+  ) => Promise<{
+    items: T[];
+    hasMore: boolean;
+    errors?: string[];
+  }>,
   enabled: boolean,
   identity: string,
   refreshKey: number,
@@ -3352,14 +2482,21 @@ function useMediaItems<T>(
   const returnState = useRef(originReturn);
   returnState.current = originReturn;
   const restoredVersion = useRef(-1);
-  const currentIdentity = !(originReturn?.state || originReturn?.requested) || cursorIdentity.current === identity;
+  const currentIdentity =
+    !(originReturn?.state || originReturn?.requested) ||
+    cursorIdentity.current === identity;
   let visibleItems = currentIdentity ? items : [];
   let visibleLoading = currentIdentity ? loading : true;
   let visibleHasMore = currentIdentity ? hasMore : true;
   let visibleError = currentIdentity ? error : '';
-  let visibleSettled = currentIdentity && settledKey === `${identity}:${refreshKey}`;
+  let visibleSettled =
+    currentIdentity && settledKey === `${identity}:${refreshKey}`;
   const restored = originReturn?.state;
-  if (restored?.identity === identity && restored.refreshKey === refreshKey && restoredVersion.current !== originReturn!.version) {
+  if (
+    restored?.identity === identity &&
+    restored.refreshKey === refreshKey &&
+    restoredVersion.current !== originReturn!.version
+  ) {
     restoredVersion.current = originReturn!.version;
     requestController.current?.abort();
     generation.current += 1;
@@ -3472,8 +2609,15 @@ function useMediaItems<T>(
     generation.current += 1;
     active.current = null;
     pending.current = 0;
-    if (returnState.current?.state?.identity === identity && returnState.current.state.refreshKey === refreshKey && restoredVersion.current === returnState.current.version) {
-      return () => { generation.current += 1; requestController.current?.abort(); };
+    if (
+      returnState.current?.state?.identity === identity &&
+      returnState.current.state.refreshKey === refreshKey &&
+      restoredVersion.current === returnState.current.version
+    ) {
+      return () => {
+        generation.current += 1;
+        requestController.current?.abort();
+      };
     }
     if (cursorIdentity.current !== identity) cursorIdentity.current = identity;
     // A refresh owns a new catalog generation. Reset this surface's cursor
@@ -3523,7 +2667,9 @@ function useMediaItems<T>(
     identity,
     refreshKey,
   ]);
-  const snapshot = (): MediaSurfaceSnapshot<T> & { identity: string } => ({
+  const snapshot = (): MediaSurfaceSnapshot<T> & {
+    identity: string;
+  } => ({
     identity,
     items: [...publishedItems.current],
     cursor: copyMediaCursor(cursor.current),
@@ -3534,7 +2680,8 @@ function useMediaItems<T>(
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   useEffect(() => {
-    if (cursorIdentity.current === identity) returnState.current?.onChange?.(snapshotRef.current());
+    if (cursorIdentity.current === identity)
+      returnState.current?.onChange?.(snapshotRef.current());
   }, [error, hasMore, identity, items, loading, refreshKey]);
   return {
     items: visibleItems,
@@ -3546,890 +2693,6 @@ function useMediaItems<T>(
     snapshot,
   };
 }
-
-function collectionItemsSnapshot(
-  items: CatalogItem[],
-  refreshKey: number,
-  sourceCursor?: MediaCursor<unknown>,
-): MediaSurfaceSnapshot<CatalogItem> {
-  const cursor = sourceCursor
-    ? (copyMediaCursor(
-        sourceCursor.nested ?? sourceCursor,
-      ) as MediaCursor<CatalogItem>)
-    : createMediaCursor<CatalogItem>();
-  cursor.seen = items.map(item => `${item.provider}:${item.id}`);
-  return { items: [...items], cursor, page: 0, hasMore: true, refreshKey };
-}
-
-export function useCategoryCollections(
-  kind: 'podcast' | 'audiobook',
-  platforms: PlatformSetting[],
-  enabled: boolean,
-  refreshKey: number,
-  active = true,
-) {
-  const providerKey = platforms
-    .filter(item => item.enabled)
-    .map(item => item.id)
-    .join('|');
-  return useMediaItems<CategoryCollection>(
-    async (page, cursor) => {
-      try {
-        const items =
-          kind === 'podcast'
-            ? await loadPodcastCategoryCollections(
-                platforms,
-                page,
-                page,
-                cursor,
-              )
-            : await loadAudiobookCategoryCollections(
-                platforms,
-                page,
-                page,
-                cursor,
-              );
-        return {
-          items,
-          hasMore: Object.keys(cursor.streams).length
-            ? mediaHasMore(cursor)
-            : items.length > 0,
-        };
-      } catch (error) {
-        return {
-          items: [] as CategoryCollection[],
-          hasMore: false,
-          errors: [error instanceof Error ? error.message : String(error)],
-        };
-      }
-    },
-    enabled,
-    `${kind}:${
-      kind === 'podcast' ? 'popular-programs' : 'popular-books'
-    }:${providerKey}`,
-    refreshKey,
-    value => `${value.item.provider}:${value.item.id}`,
-    undefined,
-    true,
-    active,
-  );
-}
-
-export function useCollectionRail(
-  kind: 'podcast' | 'audiobook',
-  query: string,
-  platforms: PlatformSetting[],
-  enabled: boolean,
-  refreshKey: number,
-  active = true,
-) {
-  const providerKey = platforms
-    .filter(item => item.enabled)
-    .map(item => item.id)
-    .join('|');
-  return useMediaItems<CatalogItem>(
-    async (page, cursor) => {
-      const result =
-        kind === 'podcast'
-          ? await loadPodcastCollections(query, page, platforms, 18, cursor)
-          : await loadAudiobookCollections(query, page, platforms, 18, cursor);
-      return {
-        items: result.items,
-        hasMore: Object.keys(cursor.streams).length
-          ? mediaHasMore(cursor)
-          : result.items.length > 0,
-      };
-    },
-    enabled,
-    `${kind}:fixed-collection-rail:${query}:${providerKey}`,
-    refreshKey,
-    item => `${item.provider}:${item.id}`,
-    undefined,
-    true,
-    active,
-  );
-}
-
-export function useAudiobookCollections(
-  query: string,
-  platforms: PlatformSetting[],
-  batchSize: number,
-  enabled: boolean,
-  refreshKey = 0,
-  active = true,
-) {
-  return useMediaItems<CatalogItem>(
-    (page, cursor) =>
-      loadAudiobookCollections(query, page, platforms, batchSize, cursor),
-    enabled,
-    `audiobook:${query}:${platforms
-      .filter(item => item.enabled)
-      .map(item => item.id)
-      .join('|')}`,
-    refreshKey,
-    item => `${item.provider}:${item.id}`,
-    undefined,
-    true,
-    active,
-  );
-}
-
-export function usePodcastCollections(
-  query: string,
-  platforms: PlatformSetting[],
-  batchSize: number,
-  enabled: boolean,
-  refreshKey = 0,
-  active = true,
-) {
-  return useMediaItems<CatalogItem>(
-    (page, cursor) =>
-      loadPodcastCollections(query, page, platforms, batchSize, cursor),
-    enabled,
-    `podcast:${query}:${platforms
-      .filter(item => item.enabled)
-      .map(item => item.id)
-      .join('|')}`,
-    refreshKey,
-    item => `${item.provider}:${item.id}`,
-    undefined,
-    true,
-    active,
-  );
-}
-
-export function PodcastCollectionRail({
-  title,
-  items,
-  loading,
-  hasMore,
-  onMore,
-  onOpen,
-  layout,
-  testID,
-  categoryLabels,
-  mediaLabel = '播客',
-  error = '',
-  onViewAll,
-}: {
-  title: string;
-  items: CatalogItem[];
-  loading: boolean;
-  hasMore: boolean;
-  onMore: () => Promise<void>;
-  onOpen: (item: CatalogItem) => void;
-  layout: HomeLayoutMetrics;
-  testID: string;
-  categoryLabels?: string[];
-  mediaLabel?: string;
-  error?: string;
-  onViewAll?: () => void;
-}) {
-  const theme = useTheme();
-  const swipeStartX = useRef(0);
-  const swipeTriggered = useRef(false);
-  const touchStartX = useRef(0);
-  const touchStartY = useRef(0);
-  const touchActive = useRef(false);
-  const scrollDragActive = useRef(false);
-  const pendingLoads = useRef(0);
-  const draining = useRef(false);
-  const hasMoreRef = useRef(hasMore);
-  const loadingRef = useRef(loading);
-  const onMoreRef = useRef(onMore);
-  hasMoreRef.current = hasMore;
-  loadingRef.current = loading;
-  onMoreRef.current = onMore;
-  const drainLoads = useCallback(async () => {
-    if (draining.current || loadingRef.current) return;
-    draining.current = true;
-    try {
-      while (
-        pendingLoads.current > 0 &&
-        hasMoreRef.current &&
-        !loadingRef.current
-      ) {
-        pendingLoads.current -= 1;
-        await onMoreRef.current();
-      }
-    } finally {
-      draining.current = false;
-    }
-  }, []);
-  const requestNextBatch = useCallback(() => {
-    if (swipeTriggered.current || !hasMoreRef.current) return;
-    swipeTriggered.current = true;
-    pendingLoads.current += 1;
-    drainLoads().catch(() => undefined);
-  }, [drainLoads]);
-  useEffect(() => {
-    if (!items.length && loading) {
-      swipeStartX.current = 0;
-      swipeTriggered.current = false;
-      pendingLoads.current = 0;
-    }
-  }, [items.length, loading]);
-  useEffect(() => {
-    if (!loading) drainLoads().catch(() => undefined);
-  }, [drainLoads, loading]);
-  return (
-    <View testID={testID} style={s.podcastSection}>
-      <SectionTitle
-        title={title}
-        action={onViewAll ? '查看全部' : undefined}
-        hideActionLabel={Boolean(onViewAll)}
-        onPress={onViewAll}
-        darkMode={false}
-      />
-      <ScrollView
-        testID={`${testID}-rail`}
-        horizontal
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator={false}
-        style={[
-          s.podcastCollectionScroller,
-          { height: items.length ? layout.playlistHeight + 40 : 92 },
-        ]}
-        contentContainerStyle={s.podcastCollectionRail}
-        onTouchStart={({ nativeEvent }) => {
-          touchStartX.current = nativeEvent.pageX;
-          touchStartY.current = nativeEvent.pageY;
-          touchActive.current = true;
-          swipeTriggered.current = false;
-        }}
-        onTouchMove={({ nativeEvent }) => {
-          const leftDistance = touchStartX.current - nativeEvent.pageX;
-          const verticalDistance = Math.abs(
-            touchStartY.current - nativeEvent.pageY,
-          );
-          if (leftDistance > 16 && leftDistance > verticalDistance)
-            requestNextBatch();
-        }}
-        onTouchEnd={() => {
-          touchActive.current = false;
-        }}
-        onTouchCancel={() => {
-          touchActive.current = false;
-        }}
-        onScrollBeginDrag={({ nativeEvent }) => {
-          scrollDragActive.current = true;
-          swipeStartX.current = nativeEvent.contentOffset.x;
-          if (!touchActive.current) swipeTriggered.current = false;
-        }}
-        onScrollEndDrag={({ nativeEvent }) => {
-          if (nativeEvent.contentOffset.x > swipeStartX.current + 1)
-            requestNextBatch();
-          scrollDragActive.current = false;
-        }}
-        onScroll={({ nativeEvent }) => {
-          if (
-            scrollDragActive.current &&
-            nativeEvent.contentOffset.x > swipeStartX.current + 1
-          )
-            requestNextBatch();
-        }}
-        scrollEventThrottle={100}
-        showsVerticalScrollIndicator={false}
-      >
-        {items.map((item, index) => (
-          <Pressable
-            key={`${item.provider}:${item.id}`}
-            testID={`${testID}-card`}
-            accessibilityRole="button"
-            accessibilityLabel={`打开${mediaLabel}合集 ${item.title}`}
-            onPress={() => onOpen(item)}
-            style={[
-              s.podcastCollectionCard,
-              { width: layout.playlistCardWidth },
-            ]}
-          >
-            <ResilientHomeCover
-              clipToImageStyle
-              uri={item.cover}
-              uris={item.coverCandidates}
-              fallback={covers.train}
-              testID={`${testID}-cover`}
-              style={[
-                s.podcastCollectionImage,
-                { height: layout.playlistImageHeight + 35 },
-              ]}
-              imageStyle={s.podcastCollectionRadius}
-            />
-            <View
-              testID={`${testID}-copy`}
-              style={[
-                s.podcastCollectionCopy,
-                { backgroundColor: theme.panelSoft },
-              ]}
-            >
-              <Text numberOfLines={1} style={s.podcastCollectionTitle}>
-                {categoryLabels?.[index] ?? item.title}
-              </Text>
-              {!categoryLabels && item.description ? (
-                <Text numberOfLines={1} style={s.podcastCollectionDescription}>
-                  {platformDisplayText(item.description)}
-                </Text>
-              ) : null}
-            </View>
-          </Pressable>
-        ))}
-        {error && !items.length ? (
-          <Pressable testID={`${testID}-retry`} onPress={onMore}>
-            <Text style={s.podcastEmpty}>加载失败，点击重试</Text>
-          </Pressable>
-        ) : !items.length && !loading ? (
-          <Text style={s.podcastEmpty}>暂无可用{mediaLabel}合集</Text>
-        ) : null}
-      </ScrollView>
-    </View>
-  );
-}
-
-function catalogItemAsMediaTrack(item: CatalogItem, mediaLabel: string): Track {
-  return {
-    id: `collection:${item.provider}:${item.id}`,
-    providerId: item.id,
-    provider: item.provider,
-    title: item.title,
-    artist: item.description || item.artist || platformLabel(item.provider),
-    album: item.title,
-    cover: item.cover,
-    coverKey: 'train',
-    duration: 0,
-    language: '华语',
-    genre: mediaLabel === '听书' ? '有声书' : '播客',
-    mood: '发现',
-    releaseYear: 0,
-    metadata: {
-      ...item.metadata,
-      albumid: item.id,
-      mediaType: mediaLabel === '听书' ? 'long-audio' : 'podcast',
-      discoveryEntity: 'collection',
-      collectionId: item.id,
-    },
-  };
-}
-
-export function CollectionTrackRail({
-  kind,
-  query,
-  title,
-  platforms,
-  enabled,
-  testID,
-  mediaLabel,
-  onSettled,
-  onOpen,
-  refreshKey,
-  active,
-  onViewAll,
-}: {
-  kind: 'podcast' | 'audiobook';
-  query: string;
-  title: string;
-  platforms: PlatformSetting[];
-  enabled: boolean;
-  testID: string;
-  mediaLabel: '播客' | '听书';
-  onSettled?: () => void;
-  onOpen?: (item: CatalogItem) => void;
-  refreshKey: number;
-  active?: boolean;
-  onViewAll?: (snapshot: MediaSurfaceSnapshot<CatalogItem>) => void;
-}) {
-  const collection = useCollectionRail(
-    kind,
-    query,
-    platforms,
-    enabled,
-    refreshKey,
-    active,
-  );
-  const items = useMemo(() => collection.items, [collection.items]);
-  return (
-    <PodcastTrackRail
-      title={title}
-      query={query}
-      platforms={platforms}
-      enabled={enabled}
-      testID={testID}
-      mediaLabel={mediaLabel}
-      collectionMode
-      collectionItemsOverride={items}
-      collectionSettled={collection.settled}
-      collectionError={collection.error}
-      collectionLoadMore={collection.loadMore}
-      onSettled={onSettled}
-      onOpen={onOpen}
-      refreshKeyOverride={refreshKey}
-      active={active}
-      onViewAll={onViewAll ? () => onViewAll(collection.snapshot()) : undefined}
-    />
-  );
-}
-
-export function PodcastTrackRail({
-  title,
-  query,
-  platforms,
-  enabled,
-  testID,
-  mediaLabel = '播客',
-  tracksOverride,
-  collectionItemsOverride,
-  collectionMode = false,
-  collectionSettled = false,
-  collectionError = '',
-  collectionLoadMore,
-  onSettled,
-  onOpen,
-  refreshKeyOverride,
-  active = true,
-  episodeMode = false,
-  onViewAll,
-}: {
-  title: string;
-  query: string;
-  platforms: PlatformSetting[];
-  enabled: boolean;
-  testID: string;
-  mediaLabel?: string;
-  tracksOverride?: Track[];
-  collectionItemsOverride?: CatalogItem[];
-  collectionMode?: boolean;
-  collectionSettled?: boolean;
-  collectionError?: string;
-  collectionLoadMore?: () => Promise<void>;
-  onSettled?: () => void;
-  onOpen?: (item: CatalogItem) => void;
-  refreshKeyOverride?: number;
-  active?: boolean;
-  episodeMode?: boolean;
-  onViewAll?: (snapshot: MediaSurfaceSnapshot<Track>) => void;
-}) {
-  const app = useApp();
-  const prewarmHomeTracks = app.prewarmHomeTracks;
-  const refreshKey = refreshKeyOverride ?? app.pageRefreshToken;
-  const isBookRail = mediaLabel === '听书' && !episodeMode;
-  const isCollectionRail = collectionMode || Boolean(collectionItemsOverride);
-  const providerKey = platforms
-    .filter(item => item.enabled)
-    .map(item => item.id)
-    .join('|');
-  const loadTrackPage = (page: number, cursor: MediaCursor<Track>) =>
-    episodeMode
-      ? loadLatestAudiobookEpisodes(page, platforms, 18, cursor)
-      : mediaLabel === '听书'
-      ? loadAudiobookTracks(query, page, platforms, 18, cursor)
-      : title === '今日更新'
-      ? loadLatestPodcastEpisodes(query, page, platforms, 18, cursor)
-      : loadPodcastTracks(
-          query,
-          page,
-          platforms,
-          18,
-          cursor,
-          title !== '今日更新',
-        );
-  const data = useMediaItems<Track>(
-    loadTrackPage,
-    enabled && !tracksOverride && !collectionMode && !collectionItemsOverride,
-    `${mediaLabel}:tracks:${episodeMode}:${query}:${providerKey}`,
-    refreshKey,
-    item =>
-      `${item.provider}:${
-        isBookRail
-          ? item.metadata?.albumid ?? item.providerId ?? item.id
-          : item.providerId ?? item.id
-      }`,
-    undefined,
-    true,
-    active,
-  );
-  const collectionTracks = useMemo(
-    () =>
-      (collectionItemsOverride ?? []).map(item =>
-        catalogItemAsMediaTrack(item, mediaLabel),
-      ),
-    [collectionItemsOverride, mediaLabel],
-  );
-  const tracks = isCollectionRail
-    ? collectionTracks
-    : tracksOverride ?? data.items;
-  const settled = isCollectionRail
-    ? collectionSettled
-    : Boolean(tracksOverride) || data.settled;
-  const swipeStartX = useRef(0);
-  const swipeTriggered = useRef(false);
-  const touchStartX = useRef(0);
-  const touchStartY = useRef(0);
-  const touchActive = useRef(false);
-  const scrollDragActive = useRef(false);
-  const initialPrewarmDone = useRef(false);
-  const loadMoreRef = useRef(data.loadMore);
-  loadMoreRef.current =
-    collectionMode && collectionLoadMore ? collectionLoadMore : data.loadMore;
-  const requestNextPage = useCallback(() => {
-    if (swipeTriggered.current) return;
-    swipeTriggered.current = true;
-    void loadMoreRef.current();
-  }, []);
-  useEffect(() => {
-    swipeStartX.current = 0;
-    swipeTriggered.current = false;
-    initialPrewarmDone.current = false;
-    scrollDragActive.current = false;
-  }, [collectionMode, providerKey, query, refreshKey]);
-  useEffect(() => {
-    if (settled) onSettled?.();
-  }, [onSettled, settled]);
-  const visibleTracks = useMemo(
-    () =>
-      isBookRail || isCollectionRail
-        ? tracks
-        : tracks.filter(track => !app.isTrackBlocked?.(track)),
-    [app, isBookRail, isCollectionRail, tracks],
-  );
-  const replenishedCount = useRef(0);
-  useEffect(() => {
-    const removed = tracks.length - visibleTracks.length;
-    if (
-      !isBookRail &&
-      !isCollectionRail &&
-      removed > replenishedCount.current &&
-      data.hasMore &&
-      !tracksOverride
-    ) {
-      replenishedCount.current = removed;
-      void loadMoreRef.current();
-    }
-  }, [
-    data.hasMore,
-    isBookRail,
-    isCollectionRail,
-    tracks.length,
-    tracksOverride,
-    visibleTracks.length,
-  ]);
-  const columns: Track[][] = [];
-  for (let index = 0; index < visibleTracks.length; index += 3)
-    columns.push(visibleTracks.slice(index, index + 3));
-  useEffect(() => {
-    if (
-      !active ||
-      isBookRail ||
-      isCollectionRail ||
-      !visibleTracks.length ||
-      initialPrewarmDone.current
-    )
-      return;
-    initialPrewarmDone.current = true;
-    prewarmHomeTracks(visibleTracks.slice(0, 6));
-  }, [active, isBookRail, isCollectionRail, prewarmHomeTracks, visibleTracks]);
-  return (
-    <View testID={testID} style={s.podcastSection}>
-      <SectionTitle
-        title={title}
-        action={onViewAll ? '查看全部' : undefined}
-        hideActionLabel={Boolean(onViewAll)}
-        onPress={onViewAll ? () => onViewAll(data.snapshot()) : undefined}
-        darkMode={false}
-      />
-      <ScrollView
-        testID={`${testID}-rail`}
-        horizontal
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator={false}
-        style={[s.podcastTrackScroller, !columns.length && { height: 92 }]}
-        contentContainerStyle={s.podcastTrackRail}
-        onTouchStart={({ nativeEvent }) => {
-          touchStartX.current = nativeEvent.pageX;
-          touchStartY.current = nativeEvent.pageY;
-          touchActive.current = true;
-          swipeTriggered.current = false;
-        }}
-        onTouchMove={({ nativeEvent }) => {
-          const leftDistance = touchStartX.current - nativeEvent.pageX;
-          const verticalDistance = Math.abs(
-            touchStartY.current - nativeEvent.pageY,
-          );
-          if (leftDistance > 16 && leftDistance > verticalDistance)
-            requestNextPage();
-        }}
-        onTouchEnd={() => {
-          touchActive.current = false;
-        }}
-        onTouchCancel={() => {
-          touchActive.current = false;
-        }}
-        onScrollBeginDrag={({ nativeEvent }) => {
-          scrollDragActive.current = true;
-          swipeStartX.current = nativeEvent.contentOffset.x;
-          if (!touchActive.current) swipeTriggered.current = false;
-        }}
-        onScrollEndDrag={({ nativeEvent }) => {
-          if (
-            !swipeTriggered.current &&
-            nativeEvent.contentOffset.x > swipeStartX.current + 1
-          )
-            requestNextPage();
-          scrollDragActive.current = false;
-        }}
-        onScroll={({ nativeEvent }) => {
-          const offsetX = nativeEvent.contentOffset.x;
-          if (
-            scrollDragActive.current &&
-            !swipeTriggered.current &&
-            offsetX > swipeStartX.current + 1
-          )
-            requestNextPage();
-          if (active && !isBookRail && !isCollectionRail && offsetX > 0) {
-            const columnWidth = 264 + 14;
-            const firstVisibleColumn = Math.floor(offsetX / columnWidth);
-            const lastVisibleColumn = Math.max(
-              firstVisibleColumn,
-              Math.ceil(
-                (offsetX + nativeEvent.layoutMeasurement.width) / columnWidth,
-              ) - 1,
-            );
-            prewarmHomeTracks(
-              columns.slice(firstVisibleColumn, lastVisibleColumn + 1).flat(),
-            );
-          }
-        }}
-        scrollEventThrottle={100}
-        showsVerticalScrollIndicator={false}
-      >
-        {columns.map((column, columnIndex) => (
-          <View
-            key={`${testID}-column-${columnIndex}`}
-            style={s.podcastTrackColumn}
-          >
-            {column.map((track, row) => (
-              <Pressable
-                key={`${track.provider}:${
-                  track.providerId ?? track.id
-                }:${columnIndex}:${row}`}
-                testID={`${testID}-track`}
-                accessibilityRole="button"
-                accessibilityLabel={`${
-                  isCollectionRail
-                    ? `打开${mediaLabel}合集`
-                    : isBookRail
-                    ? '打开听书'
-                    : episodeMode
-                    ? '播放小说单集'
-                    : '播放播客'
-                } ${track.title}`}
-                onPress={() => {
-                  if (isCollectionRail && onOpen) {
-                    const collection = collectionItemsOverride?.find(
-                      item =>
-                        item.provider === track.provider &&
-                        item.id === track.providerId,
-                    );
-                    if (collection) {
-                      onOpen(collection);
-                      return;
-                    }
-                  }
-                  if (isBookRail && onOpen) {
-                    const metadata = (track.metadata ?? {}) as Record<
-                      string,
-                      unknown
-                    >;
-                    const collectionId = String(
-                      metadata.albumid ?? metadata.albumId ?? '',
-                    );
-                    if (!collectionId) return;
-                    onOpen({
-                      id: collectionId,
-                      title: track.title,
-                      description: track.artist,
-                      provider: track.provider as CatalogItem['provider'],
-                      kind: 'playlists',
-                      cover: track.cover,
-                      metadata: { ...metadata, mediaType: 'long-audio' },
-                    });
-                    return;
-                  }
-                  app
-                    .playTrack(track, visibleTracks, columnIndex * 3 + row, {
-                      openPlayer: false,
-                      queueOrigin: app.captureQueueOrigin?.(title),
-                      ...(!tracksOverride
-                        ? {
-                            queueSource: catalogSnapshotQueueSource(
-                              data.snapshot(),
-                              loadTrackPage,
-                            ),
-                          }
-                        : {}),
-                    })
-                    .catch(() => undefined);
-                }}
-                style={s.podcastTrack}
-              >
-                <ResilientHomeCover
-                  clipToImageStyle
-                  uri={track.cover}
-                  uris={trackCoverCandidates(track)}
-                  fallback={covers.train}
-                  testID={`${testID}-cover`}
-                  style={s.podcastTrackCover}
-                  imageStyle={s.podcastTrackRadius}
-                />
-                <View style={s.podcastTrackCopy}>
-                  <Text numberOfLines={1} style={s.podcastTrackTitle}>
-                    {track.title}
-                  </Text>
-                  <Text numberOfLines={1} style={s.podcastTrackArtist}>
-                    {track.artist}
-                  </Text>
-                  <Text numberOfLines={1} style={s.podcastTrackMeta}>
-                    {isCollectionRail
-                      ? `${mediaLabel}合集 · 点击查看详情`
-                      : isBookRail
-                      ? '有声书 · 点击查看章节'
-                      : `${
-                          episodeMode
-                            ? String(track.metadata?.publish_date ?? '最新单集')
-                            : '今日'
-                        } · ${Math.max(
-                          1,
-                          Math.round(track.duration / 60),
-                        )}分钟`}
-                  </Text>
-                </View>
-              </Pressable>
-            ))}
-          </View>
-        ))}
-        {(collectionMode ? collectionError : data.error) && !columns.length ? (
-          <Pressable
-            testID={`${testID}-retry`}
-            onPress={collectionMode ? collectionLoadMore : data.loadMore}
-          >
-            <Text style={s.podcastEmpty}>加载失败，点击重试</Text>
-          </Pressable>
-        ) : !columns.length && enabled && settled ? (
-          <Text style={s.podcastEmpty}>暂无可用节目</Text>
-        ) : null}
-      </ScrollView>
-    </View>
-  );
-}
-
-function PodcastVerticalCollections({
-  items,
-  onOpen,
-  onLayout,
-  mediaLabel = '播客',
-  title = '播客合集',
-  error = '',
-  onRetry,
-  onViewAll,
-}: {
-  items: CatalogItem[];
-  onOpen: (item: CatalogItem) => void;
-  onLayout?: (event: { nativeEvent: { layout: { y: number } } }) => void;
-  mediaLabel?: string;
-  title?: string;
-  error?: string;
-  onRetry?: () => Promise<void>;
-  onViewAll?: () => void;
-}) {
-  const app = useApp();
-  const c = useTheme();
-  return (
-    <View
-      testID="podcast-collections"
-      style={s.podcastVerticalList}
-      onLayout={onLayout}
-    >
-      {title || onViewAll ? (
-        <SectionTitle
-          title={title}
-          action={onViewAll ? '查看全部' : undefined}
-          hideActionLabel={Boolean(onViewAll)}
-          onPress={onViewAll}
-          darkMode={false}
-        />
-      ) : null}
-      {error && !items.length ? (
-        <Pressable testID="media-direct-retry" onPress={onRetry}>
-          <Text style={s.podcastEmpty}>加载失败，点击重试</Text>
-        </Pressable>
-      ) : !items.length ? (
-        <Text style={s.podcastEmpty}>暂无可用{mediaLabel}合集</Text>
-      ) : null}
-      {items.map(item => {
-        const key = `${item.provider}:${item.id}`;
-        const favorite = app.isCollectionFavorite(item);
-        return (
-          <Pressable
-            key={key}
-            testID="podcast-collection-row"
-            accessibilityRole="button"
-            accessibilityLabel={`打开${mediaLabel}合集 ${item.title}`}
-            onPress={() => onOpen(item)}
-            style={s.podcastVerticalCard}
-          >
-            <View
-              testID="podcast-collection-cover-slot"
-              style={s.podcastVerticalCoverButton}
-            >
-              <ResilientHomeCover
-                clipToImageStyle
-                uri={item.cover}
-                uris={item.coverCandidates}
-                fallback={covers.train}
-                testID="podcast-collection-cover"
-                style={s.podcastVerticalImage}
-                imageStyle={s.podcastVerticalRadius}
-              />
-            </View>
-            <View style={s.podcastVerticalCopy}>
-              <Text numberOfLines={2} style={s.podcastVerticalTitle}>
-                {item.title}
-              </Text>
-              {item.description ? (
-                <Text numberOfLines={1} style={s.podcastVerticalDescription}>
-                  {platformDisplayText(item.description)}
-                </Text>
-              ) : null}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={favorite ? '取消收藏合集' : '收藏合集'}
-                accessibilityState={{ selected: favorite }}
-                onPress={event => {
-                  event?.stopPropagation();
-                  app.toggleCollectionFavorite(item);
-                }}
-                style={[
-                  s.podcastFavorite,
-                  favorite && s.podcastFavoriteSelected,
-                ]}
-              >
-                <TrackActionIcon kind="favorite" active={favorite} size={19}
-                  color={favorite ? c.accent : c.text} />
-                <Text
-                  style={[
-                    s.podcastFavoriteText,
-                    favorite && { color: c.accent },
-                  ]}
-                >
-                  {favorite ? '已收藏' : '收藏'}
-                </Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
 function VerticalPlaylistCard({
   item,
   favorite,
@@ -4499,8 +2762,12 @@ function VerticalPlaylistCard({
             favorite && s.verticalPlaylistFavoriteSelected,
           ]}
         >
-          <TrackActionIcon kind="favorite" active={favorite} size={20}
-            color={favorite ? c.accent : c.text} />
+          <TrackActionIcon
+            kind="favorite"
+            active={favorite}
+            size={20}
+            color={favorite ? c.accent : c.text}
+          />
           <Text
             style={[
               s.verticalPlaylistFavoriteText,
@@ -4516,15 +2783,14 @@ function VerticalPlaylistCard({
     </Pressable>
   );
 }
-
 function CategoryTabs() {
   const app = useApp();
   return (
     <ScrollView
       horizontal
-      showsHorizontalScrollIndicator={false}
+      showsHorizontalScrollIndicator
       contentContainerStyle={s.feedTabs}
-      showsVerticalScrollIndicator={false}
+      showsVerticalScrollIndicator
     >
       {categories.map(item => (
         <Pressable
@@ -4545,7 +2811,6 @@ function CategoryTabs() {
     </ScrollView>
   );
 }
-
 function Feed({
   title,
   forceCategory,
@@ -4604,20 +2869,26 @@ function Feed({
           s.list,
           { paddingBottom: layout.scrollBottomPadding },
         ]}
-        showsHorizontalScrollIndicator={false}
-        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator
+        showsVerticalScrollIndicator
       >
         {app.feed.map((track, index) => (
           <TrackRow
             key={track.id}
             track={track}
             index={(app.feedPage - 1) * 20 + index + 1}
-            darkMode={false}
+            darkMode
             active={app.current?.id === track.id}
             favorite={app.isFavorite(track)}
             onFavorite={() => app.toggleFavorite(track)}
             onPlay={() =>
-              app.playTrack(track, app.feed, index, { queueOrigin: app.captureQueueOrigin?.(title ?? `${app.category}推荐`) }).catch(() => undefined)
+              app
+                .playTrack(track, app.feed, index, {
+                  queueOrigin: app.captureQueueOrigin?.(
+                    title ?? `${app.category}推荐`,
+                  ),
+                })
+                .catch(() => undefined)
             }
           />
         ))}
@@ -4644,22 +2915,19 @@ function Feed({
     </View>
   );
 }
-
 function MediaDiscovery({ kind }: { kind: MediaDiscoveryKind }) {
   const app = useApp();
   const layout = useLayout();
   const config = mediaDiscoveryConfigs[kind];
   // Media pages share the launch-fixed healthy-platform binding with Home;
   // querying persisted-but-failed providers here caused misleading failures
-  // and violated the global podcast/audiobook source boundary.
   const available = app.recommendationPlatforms;
   const [provider, setProvider] = useState<MediaProvider>('all');
   const [page, setPage] = useState(1);
   const [tracks, setTracks] = useState<Track[]>([]);
   const [loading, setLoading] = useState(true);
   const [errors, setErrors] = useState<string[]>([]);
-  const topMedia = kind === 'audiobook' || kind === 'video' || kind === 'live';
-
+  const topMedia = kind === 'video' || kind === 'live';
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -4682,11 +2950,10 @@ function MediaDiscovery({ kind }: { kind: MediaDiscoveryKind }) {
       active = false;
     };
   }, [app.recommendationPlatforms, config.title, kind, page, provider]);
-
   return (
     <View testID={`media-${kind}`} style={s.root}>
       {topMedia ? (
-        <HomeNavigationBar activePage={kind as AppPage} />
+        <HomeNavigationBar />
       ) : (
         <View
           style={[
@@ -4720,10 +2987,10 @@ function MediaDiscovery({ kind }: { kind: MediaDiscoveryKind }) {
       )}
       <ScrollView
         horizontal
-        showsHorizontalScrollIndicator={false}
+        showsHorizontalScrollIndicator
         style={s.catalogProviderScroller}
         contentContainerStyle={s.catalogProviders}
-        showsVerticalScrollIndicator={false}
+        showsVerticalScrollIndicator
       >
         <Pressable
           testID="media-provider-all"
@@ -4778,8 +3045,8 @@ function MediaDiscovery({ kind }: { kind: MediaDiscoveryKind }) {
           s.mediaList,
           { paddingBottom: layout.scrollBottomPadding },
         ]}
-        showsHorizontalScrollIndicator={false}
-        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator
+        showsVerticalScrollIndicator
       >
         {loading ? (
           <Text style={s.catalogState}>正在读取五平台真实内容…</Text>
@@ -4794,12 +3061,16 @@ function MediaDiscovery({ kind }: { kind: MediaDiscoveryKind }) {
             key={`${track.provider}:${track.providerId ?? track.id}`}
             track={track}
             index={(page - 1) * 20 + index + 1}
-            darkMode={false}
+            darkMode
             active={app.current?.id === track.id}
             favorite={app.isFavorite(track)}
             onFavorite={() => app.toggleFavorite(track)}
             onPlay={() =>
-              app.playTrack(track, tracks, index, { queueOrigin: app.captureQueueOrigin?.(config.title) }).catch(() => undefined)
+              app
+                .playTrack(track, tracks, index, {
+                  queueOrigin: app.captureQueueOrigin?.(config.title),
+                })
+                .catch(() => undefined)
             }
           />
         ))}
@@ -4830,7 +3101,6 @@ function MediaDiscovery({ kind }: { kind: MediaDiscoveryKind }) {
     </View>
   );
 }
-
 function CatalogBrowser({
   kind,
   title,
@@ -4860,11 +3130,15 @@ function CatalogBrowser({
   const sourceHasPages = kind !== 'charts';
   const pageActive = useRef(active);
   pageActive.current = active;
-  const firstPlatformCatalog = kind === 'playlists' || (kind === 'charts' && playlistLayout);
+  const firstPlatformCatalog =
+    kind === 'playlists' || (kind === 'charts' && playlistLayout);
   const available = useMemo(
-    () => firstPlatformCatalog
-      ? byStartupPassOrder(app.recommendationPlatforms, app.startupHealth)
-      : [...app.recommendationPlatforms].sort((a, b) => Number(b.id === 'migu') - Number(a.id === 'migu')),
+    () =>
+      firstPlatformCatalog
+        ? byStartupPassOrder(app.recommendationPlatforms, app.startupHealth)
+        : [...app.recommendationPlatforms].sort(
+            (a, b) => Number(b.id === 'migu') - Number(a.id === 'migu'),
+          ),
     [app.recommendationPlatforms, app.startupHealth, firstPlatformCatalog],
   );
   const catalogPlatformsRef = useRef(available);
@@ -4918,11 +3192,21 @@ function CatalogBrowser({
   const playlistSearchOpenRef = useRef(playlistSearchOpen);
   playlistSearchOpenRef.current = playlistSearchOpen;
   const revealPlaylistSearch = useCallback(() => {
-    if (!playlistSearchOpenRef.current || !playlistProviderViewport.current || !playlistProviderContent.current) return;
+    if (
+      !playlistSearchOpenRef.current ||
+      !playlistProviderViewport.current ||
+      !playlistProviderContent.current
+    )
+      return;
     const { x, width } = playlistSearchAnchor.current;
     if (!width) return;
-    const offset = catalogSearchScrollOffset(playlistProviderViewport.current, playlistProviderContent.current,
-      playlistProviderScrollX.current, x, width);
+    const offset = catalogSearchScrollOffset(
+      playlistProviderViewport.current,
+      playlistProviderContent.current,
+      playlistProviderScrollX.current,
+      x,
+      width,
+    );
     if (Math.abs(offset - playlistProviderScrollX.current) < 0.5) return;
     playlistProviderScrollRef.current?.scrollTo({ x: offset, animated: false });
     playlistProviderScrollX.current = offset;
@@ -5224,9 +3508,13 @@ function CatalogBrowser({
     })();
   }, []);
   const playlistSearchWidth = useRef(new Animated.Value(0)).current;
-  const playlistSearchTargetWidth = playlistSearchViewport > 0
-    ? catalogSearchInputWidth(playlistSearchViewport, playlistSearchConfirmWidth + playlistSearchCancelWidth)
-    : 210;
+  const playlistSearchTargetWidth =
+    playlistSearchViewport > 0
+      ? catalogSearchInputWidth(
+          playlistSearchViewport,
+          playlistSearchConfirmWidth + playlistSearchCancelWidth,
+        )
+      : 210;
   useEffect(() => {
     Animated.timing(playlistSearchWidth, {
       toValue: playlistSearchOpen ? playlistSearchTargetWidth : 0,
@@ -5237,7 +3525,13 @@ function CatalogBrowser({
       if (playlistSearchOpen) revealPlaylistSearch();
       else restorePlaylistProviderScroll();
     });
-  }, [playlistSearchOpen, playlistSearchTargetWidth, playlistSearchWidth, revealPlaylistSearch, restorePlaylistProviderScroll]);
+  }, [
+    playlistSearchOpen,
+    playlistSearchTargetWidth,
+    playlistSearchWidth,
+    revealPlaylistSearch,
+    restorePlaylistProviderScroll,
+  ]);
   const submitPlaylistSearch = useCallback(() => {
     const query = playlistSearchTextRef.current.trim();
     setPage(1);
@@ -5304,9 +3598,9 @@ function CatalogBrowser({
           <ScrollView
             style={s.catalogProviderScroller}
             horizontal
-            showsHorizontalScrollIndicator={false}
+            showsHorizontalScrollIndicator
             contentContainerStyle={s.catalogProviders}
-            showsVerticalScrollIndicator={false}
+            showsVerticalScrollIndicator
           >
             {displayAvailable.map(value => (
               <Pressable
@@ -5340,10 +3634,10 @@ function CatalogBrowser({
           <ScrollView
             testID="catalog-collection-rail"
             horizontal
-            showsHorizontalScrollIndicator={false}
+            showsHorizontalScrollIndicator
             style={[s.playlistScroller, { height: homeLayout.playlistHeight }]}
             contentContainerStyle={s.playlistRail}
-            showsVerticalScrollIndicator={false}
+            showsVerticalScrollIndicator
           >
             {items.map(value => (
               <PlaylistCard
@@ -5387,7 +3681,10 @@ function CatalogBrowser({
       <Animated.View
         testID="catalog-playlist-search-anchor"
         onLayout={({ nativeEvent }) => {
-          playlistSearchAnchor.current = { x: nativeEvent.layout.x, width: nativeEvent.layout.width };
+          playlistSearchAnchor.current = {
+            x: nativeEvent.layout.x,
+            width: nativeEvent.layout.width,
+          };
           revealPlaylistSearch();
         }}
         style={s.catalogSearchCluster}
@@ -5415,7 +3712,9 @@ function CatalogBrowser({
             testID={`catalog-${provider}-search-confirm`}
             accessibilityRole="button"
             accessibilityLabel={`确认搜索${platformLabel(provider)}歌单`}
-            onLayout={({ nativeEvent }) => setPlaylistSearchConfirmWidth(nativeEvent.layout.width)}
+            onLayout={({ nativeEvent }) =>
+              setPlaylistSearchConfirmWidth(nativeEvent.layout.width)
+            }
             onPress={submitPlaylistSearch}
             style={s.catalogSearchConfirm}
           >
@@ -5427,7 +3726,9 @@ function CatalogBrowser({
         <StickyPressable
           testID={`catalog-${provider}-search-button`}
           accessibilityRole="button"
-          onLayout={({ nativeEvent }) => setPlaylistSearchCancelWidth(nativeEvent.layout.width)}
+          onLayout={({ nativeEvent }) =>
+            setPlaylistSearchCancelWidth(nativeEvent.layout.width)
+          }
           accessibilityLabel={
             playlistSearchOpen
               ? `关闭${platformLabel(provider)}歌单搜索`
@@ -5488,9 +3789,9 @@ function CatalogBrowser({
               ref={categoryScrollRef}
               style={s.catalogCategoryScroller}
               horizontal
-              showsHorizontalScrollIndicator={false}
+              showsHorizontalScrollIndicator
               contentContainerStyle={s.catalogCategoryRow}
-              showsVerticalScrollIndicator={false}
+              showsVerticalScrollIndicator
             >
               {categoryLabels.map(label => (
                 <StickyPressable
@@ -5539,13 +3840,15 @@ function CatalogBrowser({
               playlistProviderContent.current = width;
               revealPlaylistSearch();
             }}
-            onScroll={({ nativeEvent }) => { playlistProviderScrollX.current = nativeEvent.contentOffset.x; }}
+            onScroll={({ nativeEvent }) => {
+              playlistProviderScrollX.current = nativeEvent.contentOffset.x;
+            }}
             scrollEventThrottle={16}
             style={s.catalogCategoryScroller}
             horizontal
-            showsHorizontalScrollIndicator={false}
+            showsHorizontalScrollIndicator
             contentContainerStyle={s.catalogCategoryRow}
-            showsVerticalScrollIndicator={false}
+            showsVerticalScrollIndicator
           >
             {displayAvailable.map(value => (
               <React.Fragment key={value.id}>
@@ -5586,7 +3889,6 @@ function CatalogBrowser({
     />
   );
 }
-
 export function PlaylistCatalogSurface({
   kind,
   title,
@@ -5653,7 +3955,10 @@ export function PlaylistCatalogSurface({
         sectionOrder={0}
       />
       <View style={[s.root, { backgroundColor: c.bg }]}>
-        <StickyBackgroundExtension active={active && playlistFiltersStuck} color={c.bg} />
+        <StickyBackgroundExtension
+          active={active && playlistFiltersStuck}
+          color={c.bg}
+        />
         <View
           testID="catalog-playlist-top-gradient-viewport"
           pointerEvents="none"
@@ -5683,8 +3988,8 @@ export function PlaylistCatalogSurface({
             }
           }}
           scrollEventThrottle={100}
-          showsHorizontalScrollIndicator={false}
-          showsVerticalScrollIndicator={false}
+          showsHorizontalScrollIndicator
+          showsVerticalScrollIndicator
         >
           <View testID="catalog-hero" style={s.catalogHero}>
             <ResilientHomeCover
@@ -5805,10 +4110,10 @@ export function PlaylistCatalogSurface({
               nestedScrollEnabled
               directionalLockEnabled
               pagingEnabled
-              showsHorizontalScrollIndicator={false}
+              showsHorizontalScrollIndicator
               contentContainerStyle={s.catalogFeaturedRail}
               scrollEventThrottle={100}
-              showsVerticalScrollIndicator={false}
+              showsVerticalScrollIndicator
             >
               {featuredItems.map((value, index) => (
                 <Pressable
@@ -5867,7 +4172,7 @@ export function PlaylistCatalogSurface({
                 horizontal
                 nestedScrollEnabled
                 directionalLockEnabled
-                showsHorizontalScrollIndicator={false}
+                showsHorizontalScrollIndicator
                 onScroll={({ nativeEvent }) => {
                   if (!active) return;
                   if (
@@ -5881,7 +4186,7 @@ export function PlaylistCatalogSurface({
                 }}
                 scrollEventThrottle={100}
                 contentContainerStyle={s.catalogEditorGrid}
-                showsVerticalScrollIndicator={false}
+                showsVerticalScrollIndicator
               >
                 {editorItems.map((value, index) => (
                   <Pressable
@@ -5934,7 +4239,11 @@ export function PlaylistCatalogSurface({
               <View
                 key={`more-${value.provider}:${value.id}`}
                 testID="catalog-more-row"
-                style={[s.catalogMoreRow, { borderColor: c.line }, kind === 'playlists' && s.catalogMoreRowWithoutDivider]}
+                style={[
+                  s.catalogMoreRow,
+                  { borderColor: c.line },
+                  kind === 'playlists' && s.catalogMoreRowWithoutDivider,
+                ]}
               >
                 <Pressable
                   onPress={() => onOpen(value)}
@@ -5976,7 +4285,9 @@ export function PlaylistCatalogSurface({
                   onPress={() => app.toggleCollectionFavorite(value)}
                   style={s.catalogMoreAction}
                 >
-                  <TrackActionIcon kind="favorite" active={app.isCollectionFavorite(value)}
+                  <TrackActionIcon
+                    kind="favorite"
+                    active={app.isCollectionFavorite(value)}
                     color={app.isCollectionFavorite(value) ? c.accent : c.muted}
                     size={22}
                   />
@@ -5989,196 +4300,6 @@ export function PlaylistCatalogSurface({
     </OrderedCoverScope>
   );
 }
-
-export function TypedCatalogBrowser({
-  mediaKind,
-  title,
-  query,
-  onOpen,
-  active = true,
-  initialSnapshot,
-  homeLayout = homeLayoutMetrics(720),
-}: {
-  mediaKind: 'podcast' | 'audiobook';
-  title: string;
-  query: string;
-  onOpen: (item: CatalogItem) => void;
-  active?: boolean;
-  initialSnapshot?: MediaSurfaceSnapshot<CatalogItem>;
-  homeLayout?: HomeLayoutMetrics;
-}) {
-  const app = useApp();
-  const allPlatforms = app.recommendationPlatforms;
-  const typedProviders = mediaProviders(allPlatforms, mediaKind, true);
-  const providerKey = typedProviders.join('|');
-  const [provider, setProvider] = useState<OnlineProvider | 'all'>('all');
-  const platforms = allPlatforms.filter(
-    value =>
-      typedProviders.includes(value.id) &&
-      (provider === 'all' || value.id === provider),
-  );
-  const identity = `typed-browser:${mediaKind}:${query}:${provider}:${providerKey}`;
-  const seed =
-    provider === 'all' && initialSnapshot
-      ? {
-          ...initialSnapshot,
-          items: initialSnapshot.items.filter(
-            item =>
-              typedProviders.includes(item.provider) &&
-              isMediaEntity(item, mediaKind, item.provider),
-          ),
-        }
-      : undefined;
-  const loadBatch = async (
-    page: number,
-    cursor: MediaCursor<CatalogItem>,
-    size: number,
-  ) => {
-    const result =
-      mediaKind === 'podcast'
-        ? await loadPodcastCollections(
-            query || '播客',
-            page,
-            platforms,
-            size,
-            cursor,
-          )
-        : await loadAudiobookCollections(
-            query || '有声小说',
-            page,
-            platforms,
-            size,
-            cursor,
-          );
-    return {
-      ...result,
-      items: result.items.filter(
-        item =>
-          typedProviders.includes(item.provider) &&
-          (provider === 'all' || item.provider === provider) &&
-          isMediaEntity(item, mediaKind, item.provider),
-      ),
-    };
-  };
-  // Browsing owns a copy of the originating rail's data/cursor. Neither this
-  // screen nor its editor rail advances the mounted root page's cursor.
-  const data = useMediaItems<CatalogItem>(
-    (page, cursor) => loadBatch(page, cursor, 20),
-    platforms.length > 0,
-    identity,
-    app.pageRefreshToken,
-    item => `${item.provider}:${item.id}`,
-    seed,
-  );
-  const [editorSeed, setEditorSeed] = useState<{
-    identity: string;
-    snapshot: MediaSurfaceSnapshot<CatalogItem>;
-  } | null>(null);
-  const editorReady =
-    editorSeed?.identity === identity &&
-    editorSeed.snapshot.refreshKey === app.pageRefreshToken;
-  useEffect(() => {
-    if (!data.settled || data.loading || editorReady || !data.items.length)
-      return;
-    setEditorSeed({
-      identity,
-      snapshot: {
-        ...data.snapshot(),
-        items: data.items.slice(6, 16),
-      },
-    });
-  }, [data, editorReady, identity]);
-  const editor = useMediaItems<CatalogItem>(
-    (page, cursor) => loadBatch(page, cursor, 10),
-    Boolean(editorReady),
-    `${identity}:editor`,
-    app.pageRefreshToken,
-    item => `${item.provider}:${item.id}`,
-    editorReady ? editorSeed.snapshot : undefined,
-    false,
-  );
-  const moreGuard = useRef<string | null>(null);
-  const editorGuard = useRef<string | null>(null);
-  const requestMore = async (editorRail = false) => {
-    const guard = editorRail ? editorGuard : moreGuard;
-    const surface = editorRail ? editor : data;
-    const token = `${identity}:${app.pageRefreshToken}`;
-    if (!active || guard.current === token || !surface.hasMore) return;
-    guard.current = token;
-    try {
-      await surface.loadMore();
-    } finally {
-      if (guard.current === token) guard.current = null;
-    }
-  };
-  return (
-    <PlaylistCatalogSurface
-      kind={mediaKind}
-      title={title}
-      active={active}
-      generationKey={identity}
-      homeLayout={homeLayout}
-      items={data.items}
-      editorItems={editorReady ? editor.items : data.items.slice(6, 16)}
-      moreItems={data.items.slice(16)}
-      loading={!data.settled}
-      error={data.error}
-      hasMore={data.hasMore}
-      onOpen={onOpen}
-      onMore={() => {
-        void requestMore();
-      }}
-      onEditorMore={() => {
-        void requestMore(true);
-      }}
-      onRetry={() => {
-        void requestMore();
-      }}
-      loadingCopy={null}
-      moreTitle={mediaKind === 'podcast' ? '更多节目' : '更多好书'}
-      firstItemLabel={
-        mediaKind === 'podcast' ? '打开第一个节目' : '打开第一本好书'
-      }
-      eyebrow={
-        mediaKind === 'podcast'
-          ? 'PODCASTS · 专属内容'
-          : 'AUDIOBOOKS · 专属内容'
-      }
-      filters={
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={s.catalogProviderScroller}
-          contentContainerStyle={s.catalogProviders}
-          showsVerticalScrollIndicator={false}
-        >
-          {(['all', ...typedProviders] as const).map(value => (
-            <StickyPressable
-              key={value}
-              accessibilityRole="button"
-              accessibilityState={{ selected: provider === value }}
-              onPress={() => setProvider(value)}
-              style={[
-                s.catalogProvider,
-                provider === value && s.catalogProviderActive,
-              ]}
-            >
-              <Text
-                style={[
-                  s.catalogProviderText,
-                  provider === value && s.catalogProviderTextActive,
-                ]}
-              >
-                {value === 'all' ? '全部' : platformLabel(value)}
-              </Text>
-            </StickyPressable>
-          ))}
-        </ScrollView>
-      }
-    />
-  );
-}
-
 export function DetailStyleCatalogList({
   context,
 }: {
@@ -6188,52 +4309,20 @@ export function DetailStyleCatalogList({
   if (context.source) return <CollectionDetail item={context.source} />;
   return <CollectionDetail item={null} listContext={context} />;
 }
-
 async function loadDetailTrackPage(
   context: DetailCatalogListContext,
   page: number,
   platforms: PlatformSetting[],
-  cursor: MediaCursor<Track>,
+  _cursor: MediaCursor<Track>,
 ) {
-  if (context.mediaKind === 'music') {
-    const result = await loadCategoryFeedPage(
-      (context.query || '新歌') as '新歌',
-      page,
-      platforms,
-    );
-    if (result.retryable) throw new Error('歌曲目录请求失败，请重试');
-    return { items: result.tracks, hasMore: result.hasMore };
-  }
-  const mediaKind = context.mediaKind;
-  const result =
-    context.mediaKind === 'podcast'
-      ? await (context.title === '今日更新'
-          ? loadLatestPodcastEpisodes
-          : loadPodcastTracks)(
-          context.query || '今日更新 播客',
-          page,
-          platforms,
-          20,
-          cursor,
-        )
-      : /最新|今日/.test(context.query || '')
-      ? await loadLatestAudiobookEpisodes(page, platforms, 20, cursor)
-      : await loadAudiobookTracks(
-          context.query || '有声小说',
-          page,
-          platforms,
-          20,
-          cursor,
-        );
-  return {
-    items: result.items.filter(item =>
-      isMediaEntity(item, mediaKind, item.provider as OnlineProvider),
-    ),
-    hasMore: result.hasMore,
-    errors: result.errors,
-  };
+  const result = await loadCategoryFeedPage(
+    (context.query || '新歌') as '新歌',
+    page,
+    platforms,
+  );
+  if (result.retryable) throw new Error('歌曲目录请求失败，请重试');
+  return { items: result.tracks, hasMore: result.hasMore };
 }
-
 function useDetailTrackPages(
   context?: DetailCatalogListContext,
   provider: OnlineProvider | 'all' = 'all',
@@ -6245,13 +4334,10 @@ function useDetailTrackPages(
         value => provider === 'all' || value.id === provider,
       )
     : [];
-  const providerKey =
-    !context || context.mediaKind === 'music'
-      ? platforms
-          .filter(item => item.enabled)
-          .map(item => item.id)
-          .join('|')
-      : mediaProviders(platforms, context?.mediaKind, false).join('|');
+  const providerKey = platforms
+    .filter(item => item.enabled)
+    .map(item => item.id)
+    .join('|');
   const data = useMediaItems<Track>(
     async (page, cursor) => {
       return context
@@ -6267,20 +4353,13 @@ function useDetailTrackPages(
     true,
     originReturn,
   );
-
   return {
     ...data,
     tracks: data.items,
     offset: data.items.length,
-    kind:
-      context?.mediaKind === 'podcast'
-        ? ('podcast' as const)
-        : context?.mediaKind === 'audiobook'
-        ? ('audiobook' as const)
-        : ('playlists' as const),
+    kind: 'playlists' as const,
   };
 }
-
 export function nextAvailableProvider(
   providers: readonly PlatformSetting[],
   failed: readonly OnlineProvider[],
@@ -6293,55 +4372,51 @@ export function nextAvailableProvider(
     : -1;
   return candidates[currentIndex >= 0 ? currentIndex : 0]?.id ?? null;
 }
-
 export function CollectionDetail({
   item: initialItem,
   listContext,
   libraryAppearance = false,
   searchAppearance = false,
   homeReferenceAppearance = false,
-  resumeTrackKey,
 }: {
   item: CatalogItem | null;
   listContext?: DetailCatalogListContext;
   libraryAppearance?: boolean;
   searchAppearance?: boolean;
   homeReferenceAppearance?: boolean;
-  resumeTrackKey?: string | null;
 }) {
   const app = useApp(),
     layout = useLayout();
   const c = useTheme();
   // Keep Library's playback history origin while using Home's presentation.
   const libraryVisualAppearance = libraryAppearance && !homeReferenceAppearance;
-  const todayList = Boolean(
-    listContext?.title === '今日更新' &&
-      (listContext.mediaKind === 'podcast' ||
-        listContext.mediaKind === 'audiobook'),
-  );
   const originDetailIdentity = `${app.tab}:${initialItem?.provider}:${initialItem?.id}:${listContext?.mediaKind}:${listContext?.title}:${listContext?.query}`;
-  const originDetailView = app.catalogViewState?.get('queue-origin-detail-view') as { identity: string; provider?: OnlineProvider | 'all' | null; episodeOrder?: CollectionEpisodeOrder } | undefined;
+  const originDetailView = app.catalogViewState?.get(
+    'queue-origin-detail-view',
+  ) as
+    | {
+        identity: string;
+        provider?: OnlineProvider | 'all' | null;
+      }
+    | undefined;
   const [unpinReturnVersion, setUnpinReturnVersion] = useState(-1);
-  const savedDetailView = app.catalogRestore?.originKey !== undefined && unpinReturnVersion !== app.catalogRestore.version && originDetailView?.identity === originDetailIdentity ? originDetailView : undefined;
+  const savedDetailView =
+    app.catalogRestore?.originKey !== undefined &&
+    unpinReturnVersion !== app.catalogRestore.version &&
+    originDetailView?.identity === originDetailIdentity
+      ? originDetailView
+      : undefined;
   const originReturnPinned = Boolean(savedDetailView);
   const detailRestoreVersion = useRef(app.catalogRestore?.version);
-  const restoreDetailView = detailRestoreVersion.current !== app.catalogRestore?.version && Boolean(savedDetailView);
+  const restoreDetailView =
+    detailRestoreVersion.current !== app.catalogRestore?.version &&
+    Boolean(savedDetailView);
   detailRestoreVersion.current = app.catalogRestore?.version;
-  const [todayProviderState, setTodayProvider] = useState<OnlineProvider | 'all'>(
-    todayList ? savedDetailView?.provider ?? 'all' : 'all',
-  );
+  const [todayProviderState, setTodayProvider] = useState<
+    OnlineProvider | 'all'
+  >('all');
   let todayProvider = todayProviderState;
-  if (restoreDetailView && todayList) {
-    todayProvider = savedDetailView?.provider ?? 'all';
-    setTodayProvider(todayProvider);
-  }
-  const todayProviders = todayList
-    ? mediaProviders(
-        app.recommendationPlatforms ?? [],
-        listContext!.mediaKind as 'podcast' | 'audiobook',
-        false,
-      )
-    : [];
+  const todayProviders = [];
   const detailSource = initialItem?.metadata?.source;
   const providerIndependentSongRail =
     detailSource === 'home-new-releases' || detailSource === 'home-live';
@@ -6360,74 +4435,123 @@ export function CollectionDetail({
   const chartPlatformItems = useMemo(() => {
     if (providerIndependentSongRail || !initialItem?.metadata) return [];
     const values = initialItem.metadata.platformItems;
-    const items = (Array.isArray(values) ? values : []).filter((value): value is CatalogItem => {
-      if (!value || typeof value !== 'object') return false;
-      const candidate = value as {
-        id?: unknown;
-        provider?: unknown;
-      };
-      return (
-        typeof candidate.id === 'string' &&
-        typeof candidate.provider === 'string' &&
-        candidate.provider !== 'custom'
-      );
-    });
+    const items = (Array.isArray(values) ? values : []).filter(
+      (value): value is CatalogItem => {
+        if (!value || typeof value !== 'object') return false;
+        const candidate = value as {
+          id?: unknown;
+          provider?: unknown;
+        };
+        return (
+          typeof candidate.id === 'string' &&
+          typeof candidate.provider === 'string' &&
+          candidate.provider !== 'custom'
+        );
+      },
+    );
     if (additionalChartPlatforms.identity === chartPlatformIdentity)
       for (const item of additionalChartPlatforms.items)
-        if (!items.some(value => value.provider === item.provider)) items.push(item);
+        if (!items.some(value => value.provider === item.provider))
+          items.push(item);
     return items;
-  }, [initialItem?.metadata, providerIndependentSongRail, additionalChartPlatforms, chartPlatformIdentity]);
+  }, [
+    initialItem?.metadata,
+    providerIndependentSongRail,
+    additionalChartPlatforms,
+    chartPlatformIdentity,
+  ]);
   const chartPlatformItemsRef = useRef(chartPlatformItems);
   chartPlatformItemsRef.current = chartPlatformItems;
   // Home's initial catalog may precede slower passing platforms. Complete only
   // the missing matching charts here, without restarting Home or its song rail.
-  const chartProviderKey = chartDetailUsesCollectionCover && homeSongRailDetail
-    ? (app.recommendationPlatforms ?? []).filter(value => value.enabled).map(value => value.id).join('|')
-    : '';
+  const chartProviderKey =
+    chartDetailUsesCollectionCover && homeSongRailDetail
+      ? (app.recommendationPlatforms ?? [])
+          .filter(value => value.enabled)
+          .map(value => value.id)
+          .join('|')
+      : '';
   useEffect(() => {
     if (!chartProviderKey) return;
     let active = true;
     const providers = (chartProviderKey.split('|') as OnlineProvider[]).filter(
-      provider => !chartPlatformItemsRef.current.some(value => value.provider === provider),
+      provider =>
+        !chartPlatformItemsRef.current.some(
+          value => value.provider === provider,
+        ),
     );
     if (!providers.length) return;
-    const section = homeChartSections.find(value => detailSource === `home-${value.key}-chart`);
+    const section = homeChartSections.find(
+      value => detailSource === `home-${value.key}-chart`,
+    );
     if (!section) return;
-    Promise.allSettled(providers.map(async provider => {
-      const charts = await getCatalog(provider, 'charts');
-      return charts.find(value => value.provider === provider && value.kind === 'charts' &&
-        (provider === 'migu' && section.key === 'hot' ? value.id === miguHotChart.id : section.match.test(value.title)));
-    })).then(results => {
+    Promise.allSettled(
+      providers.map(async provider => {
+        const charts = await getCatalog(provider, 'charts');
+        return charts.find(
+          value =>
+            value.provider === provider &&
+            value.kind === 'charts' &&
+            (provider === 'migu' && section.key === 'hot'
+              ? value.id === miguHotChart.id
+              : section.match.test(value.title)),
+        );
+      }),
+    ).then(results => {
       if (!active) return;
-      const items = results.flatMap(result => result.status === 'fulfilled' && result.value ? [result.value] : []);
+      const items = results.flatMap(result =>
+        result.status === 'fulfilled' && result.value ? [result.value] : [],
+      );
       setAdditionalChartPlatforms(current => ({
         identity: chartPlatformIdentity,
-        items: [...(current.identity === chartPlatformIdentity ? current.items : []), ...items],
+        items: [
+          ...(current.identity === chartPlatformIdentity ? current.items : []),
+          ...items,
+        ],
       }));
-      console.info('[home-chart-platforms]', JSON.stringify({
-        source: detailSource, requested: providers, added: items.map(value => value.provider),
-        errors: results.filter(value => value.status === 'rejected').length,
-      }));
+      console.info(
+        '[home-chart-platforms]',
+        JSON.stringify({
+          source: detailSource,
+          requested: providers,
+          added: items.map(value => value.provider),
+          errors: results.filter(value => value.status === 'rejected').length,
+        }),
+      );
     });
-    return () => { active = false; };
-  }, [chartPlatformIdentity, chartProviderKey, detailSource, app.pageRefreshToken]);
+    return () => {
+      active = false;
+    };
+  }, [
+    chartPlatformIdentity,
+    chartProviderKey,
+    detailSource,
+    app.pageRefreshToken,
+  ]);
   const releaseProviders = homeSongRailDetail
     ? byStartupPassOrder(
-      (app.recommendationPlatforms ?? []).filter(
+        (app.recommendationPlatforms ?? []).filter(
           value =>
             providerIndependentSongRail ||
             chartPlatformItems.some(item => item.provider === value.id),
         ),
-      app.startupHealth,
-    )
+        app.startupHealth,
+      )
     : [];
   const defaultReleaseProvider = homeSongRailDetail
     ? releaseProviders[0]?.id ?? initialItem?.provider ?? null
     : initialItem?.provider ?? null;
-  const savedReleaseProvider = savedDetailView?.provider && savedDetailView.provider !== 'all' ? savedDetailView.provider : undefined;
-  const [releaseProviderState, setReleaseProvider] = useState<OnlineProvider | null>(
-    savedReleaseProvider ?? (homeSongRailDetail ? defaultReleaseProvider : initialItem?.provider ?? null),
-  );
+  const savedReleaseProvider =
+    savedDetailView?.provider && savedDetailView.provider !== 'all'
+      ? savedDetailView.provider
+      : undefined;
+  const [releaseProviderState, setReleaseProvider] =
+    useState<OnlineProvider | null>(
+      savedReleaseProvider ??
+        (homeSongRailDetail
+          ? defaultReleaseProvider
+          : initialItem?.provider ?? null),
+    );
   let releaseProvider = releaseProviderState;
   if (restoreDetailView && savedReleaseProvider) {
     releaseProvider = savedReleaseProvider;
@@ -6436,13 +4560,20 @@ export function CollectionDetail({
   const [failedReleaseProviders, setFailedReleaseProviders] = useState<
     OnlineProvider[]
   >([]);
-  const releaseResetProvider = useRef(savedReleaseProvider ?? (homeSongRailDetail ? defaultReleaseProvider : initialItem?.provider ?? null));
-  releaseResetProvider.current = savedReleaseProvider ?? (homeSongRailDetail ? defaultReleaseProvider : initialItem?.provider ?? null);
+  const releaseResetProvider = useRef(
+    savedReleaseProvider ??
+      (homeSongRailDetail
+        ? defaultReleaseProvider
+        : initialItem?.provider ?? null),
+  );
+  releaseResetProvider.current =
+    savedReleaseProvider ??
+    (homeSongRailDetail
+      ? defaultReleaseProvider
+      : initialItem?.provider ?? null);
   useEffect(() => {
     setFailedReleaseProviders([]);
-    setReleaseProvider(
-      releaseResetProvider.current,
-    );
+    setReleaseProvider(releaseResetProvider.current);
   }, [
     detailSource,
     homeSongRailDetail,
@@ -6454,7 +4585,9 @@ export function CollectionDetail({
     value => !failedReleaseProviders.includes(value.id),
   );
   const activeReleaseProvider = homeSongRailDetail
-    ? originReturnPinned && savedReleaseProvider ? savedReleaseProvider : nextAvailableProvider(usableReleaseProviders, [], releaseProvider)
+    ? originReturnPinned && savedReleaseProvider
+      ? savedReleaseProvider
+      : nextAvailableProvider(usableReleaseProviders, [], releaseProvider)
     : null;
   const selectedChart =
     !providerIndependentSongRail && activeReleaseProvider
@@ -6501,73 +4634,107 @@ export function CollectionDetail({
     providerIndependentSongRail,
     selectedChart,
   ]);
-  const importedPlaylist = !listContext && !homeSongRailDetail && item && collectionEntityKind(item) === 'playlist' && app.state
-    ? savedPlaylistReference(app.state, item) : undefined;
-  const detailTitle = importedPlaylist?.title ?? item?.title ?? listContext?.title ?? '';
-  const shareItem = !listContext && item && collectionEntityKind(item) === 'playlist'
-    ? { ...item, title: detailTitle, cover: importedPlaylist?.cover ?? item.cover } : undefined;
-  const detailIconStyle = [s.playlistIconAction, importedPlaylist && playlistManagementLayout.icon];
-  const episodeCollection = !listContext && isEpisodeCollection(item);
-  const episodeIdentity = episodeCollection
-    ? `${item?.provider}:${item?.id}:${item?.metadata?.mediaType ?? item?.metadata?.collectionKind}`
-    : '';
-  const [episodeOrderState, setEpisodeOrderSelection] = useState({
-    identity: episodeIdentity,
-    order: savedDetailView?.episodeOrder ?? 'default' as CollectionEpisodeOrder,
-    manual: Boolean(savedDetailView?.episodeOrder),
+  const importedPlaylist =
+    !listContext &&
+    !homeSongRailDetail &&
+    item &&
+    collectionEntityKind(item) === 'playlist' &&
+    app.state
+      ? savedPlaylistReference(app.state, item)
+      : undefined;
+  const detailTitle =
+    importedPlaylist?.title ?? item?.title ?? listContext?.title ?? '';
+  const shareItem =
+    !listContext && item && collectionEntityKind(item) === 'playlist'
+      ? {
+          ...item,
+          title: detailTitle,
+          cover: importedPlaylist?.cover ?? item.cover,
+        }
+      : undefined;
+  const detailIconStyle = [
+    s.playlistIconAction,
+    importedPlaylist && playlistManagementLayout.icon,
+  ];
+  const catalogStateKey = `detail:${originDetailIdentity}:${item?.provider}:${
+    app.catalogConfigurationKey ?? ''
+  }`;
+  const ownerReturnVersion = originReturnPinned
+    ? app.catalogRestore!.version
+    : undefined;
+  const catalogOwner = useRef({
+    key: catalogStateKey,
+    returnVersion: ownerReturnVersion,
+    token: {},
   });
-  let episodeOrderSelection = episodeOrderState;
-  if (restoreDetailView && savedDetailView?.episodeOrder) {
-    episodeOrderSelection = { identity: episodeIdentity, order: savedDetailView.episodeOrder, manual: true };
-    setEpisodeOrderSelection(episodeOrderSelection);
-  }
-  const episodeOrder = episodeOrderSelection.identity === episodeIdentity
-    ? episodeOrderSelection.order : 'default';
-  const manualEpisodeOrder = episodeOrderSelection.identity === episodeIdentity && episodeOrderSelection.manual;
-  const pendingOrderScroll = useRef(false);
-  useEffect(() => {
-    pendingOrderScroll.current = false;
-    setEpisodeOrderSelection(value => value.identity === episodeIdentity
-      ? value : { identity: episodeIdentity, order: 'default', manual: false });
-  }, [episodeIdentity]);
-  const orderedItem = useMemo(() => collectionOrderItem(item, episodeOrder), [item, episodeOrder]);
-  const catalogStateKey = `detail:${originDetailIdentity}:${todayList ? todayProvider : item?.provider}:${episodeOrder}:${app.catalogConfigurationKey ?? ''}`;
-  const ownerReturnVersion = originReturnPinned ? app.catalogRestore!.version : undefined;
-  const catalogOwner = useRef({ key: catalogStateKey, returnVersion: ownerReturnVersion, token: {} });
-  if (catalogOwner.current.key !== catalogStateKey || catalogOwner.current.returnVersion !== ownerReturnVersion) {
-    catalogOwner.current = { key: catalogStateKey, returnVersion: ownerReturnVersion, token: {} };
+  if (
+    catalogOwner.current.key !== catalogStateKey ||
+    catalogOwner.current.returnVersion !== ownerReturnVersion
+  ) {
+    catalogOwner.current = {
+      key: catalogStateKey,
+      returnVersion: ownerReturnVersion,
+      token: {},
+    };
   }
   const owner = catalogOwner.current.token;
-  const restoredDirectory = useRef<{ key: string; version: number | undefined; snapshot?: unknown }>({ key: '', version: undefined });
-  if (!originReturnPinned) restoredDirectory.current = { key: '', version: undefined };
-  else if (restoredDirectory.current.key !== catalogStateKey || restoredDirectory.current.version !== ownerReturnVersion) {
+  const restoredDirectory = useRef<{
+    key: string;
+    version: number | undefined;
+    snapshot?: unknown;
+  }>({ key: '', version: undefined });
+  if (!originReturnPinned)
+    restoredDirectory.current = { key: '', version: undefined };
+  else if (
+    restoredDirectory.current.key !== catalogStateKey ||
+    restoredDirectory.current.version !== ownerReturnVersion
+  ) {
     restoredDirectory.current = {
       key: catalogStateKey,
       version: ownerReturnVersion,
-      snapshot: app.queueOriginCatalog?.read(catalogStateKey, owner, app.catalogRestore?.originKey),
+      snapshot: app.queueOriginCatalog?.read(
+        catalogStateKey,
+        owner,
+        app.catalogRestore?.originKey,
+      ),
     };
   }
-  const restoredCollection = restoredDirectory.current.snapshot as CollectionPageSnapshot | undefined;
-  const restoredMedia = restoredDirectory.current.snapshot as (MediaSurfaceSnapshot<Track> & { identity: string }) | undefined;
-  const pinnedProviderAvailable = !originReturnPinned || !item || app.recommendationPlatforms.some(platform => platform.id === item.provider);
+  const restoredCollection = restoredDirectory.current.snapshot as
+    | CollectionPageSnapshot
+    | undefined;
+  const restoredMedia = restoredDirectory.current.snapshot as
+    | (MediaSurfaceSnapshot<Track> & {
+        identity: string;
+      })
+    | undefined;
+  const pinnedProviderAvailable =
+    !originReturnPinned ||
+    !item ||
+    app.recommendationPlatforms.some(platform => platform.id === item.provider);
   // These chart APIs use the selected chart/provider; only Live needs the full
   // platform list. Late health additions must not reset this chart's paging.
-  const collectionPages = useCollectionPages(pinnedProviderAvailable ? item : null, chartDetailUsesCollectionCover ? undefined : app.recommendationPlatforms, episodeOrder, {
-    version: app.catalogRestore?.version ?? 0,
-    state: restoredCollection,
-    requested: originReturnPinned,
-    onChange: snapshot => { if (!listContext) app.queueOriginCatalog?.update(catalogStateKey, snapshot, owner); },
-  });
-  const listPages = useDetailTrackPages(
-    listContext,
-    todayList ? todayProvider : 'all',
+  const collectionPages = useCollectionPages(
+    pinnedProviderAvailable ? item : null,
+    chartDetailUsesCollectionCover ? undefined : app.recommendationPlatforms,
     {
       version: app.catalogRestore?.version ?? 0,
-      state: restoredMedia,
+      state: restoredCollection,
       requested: originReturnPinned,
-      onChange: snapshot => { if (listContext) app.queueOriginCatalog?.update(catalogStateKey, snapshot, owner); },
+      onChange: snapshot => {
+        if (!listContext)
+          app.queueOriginCatalog?.update(catalogStateKey, snapshot, owner);
+      },
     },
   );
+  const listPages = useDetailTrackPages(listContext, 'all', {
+    version: app.catalogRestore?.version ?? 0,
+    state: restoredMedia,
+    requested: originReturnPinned,
+    onChange: snapshot => {
+      if (listContext)
+        app.queueOriginCatalog?.update(catalogStateKey, snapshot, owner);
+    },
+  });
   const pages = listContext ? listPages : collectionPages;
   const detailPrefetch = useListPrefetch(pages.loadMore, pages);
   const hasDetail = Boolean(item || listContext);
@@ -6577,7 +4744,12 @@ export function CollectionDetail({
   const notifyOriginUnavailable = app.notify;
   useEffect(() => {
     if (originReturnPinned) {
-      if (!pinnedProviderAvailable || (!pages.loading && (pages.error || (!pages.tracks.length && !pages.hasMore)))) notifyOriginUnavailable('播放列表来源已不可用');
+      if (
+        !pinnedProviderAvailable ||
+        (!pages.loading &&
+          (pages.error || (!pages.tracks.length && !pages.hasMore)))
+      )
+        notifyOriginUnavailable('播放列表来源已不可用');
       return;
     }
     if (!homeSongRailDetail || !activeReleaseProvider || pages.loading) return;
@@ -6614,27 +4786,41 @@ export function CollectionDetail({
       offset: number,
       size: number,
       signal: AbortSignal,
-    ) => Promise<{ tracks: Track[]; hasMore: boolean }>;
+    ) => Promise<{
+      tracks: Track[];
+      hasMore: boolean;
+    }>;
   } | null>(null);
   const [loadedCover, setLoadedCover] = useState({ identity: '', uri: '' });
   const downloading = useRef(new Set<string>());
   const pageTracks = pages.tracks;
   const loadMore = pages.loadMore;
-  const prewarmTracks = pageTracks.filter(track => !app.isTrackBlocked?.(track));
-  const typedAudioCollection =
-    listContext?.mediaKind === 'podcast' ||
-    listContext?.mediaKind === 'audiobook' ||
-    item?.metadata?.mediaType === 'podcast' ||
-    item?.metadata?.mediaType === 'long-audio';
+  const prewarmTracks = pageTracks.filter(
+    track => !app.isTrackBlocked?.(track),
+  );
   const detailVisiblePrewarm = useVisibleTrackPrewarm({
-    identity: `${catalogStateKey}:${app.prewarmContextKey ?? app.state?.settings.quality}:${app.pageRefreshToken ?? 0}`,
-    enabled: hasDetail && !typedAudioCollection && pinnedProviderAvailable &&
-      (['playlist-detail', 'search-playlist', 'new-songs', 'new-albums', 'catalog-list'] as AppPage[]).includes(app.page),
+    identity: `${catalogStateKey}:${
+      app.prewarmContextKey ?? app.state?.settings.quality
+    }:${app.pageRefreshToken ?? 0}`,
+    enabled:
+      hasDetail &&
+      pinnedProviderAvailable &&
+      (
+        [
+          'playlist-detail',
+          'search-playlist',
+          'new-songs',
+          'new-albums',
+          'catalog-list',
+        ] as AppPage[]
+      ).includes(app.page),
     tracks: prewarmTracks,
     prewarm: app.prewarmDetailTracks,
     release: app.releaseDetailPrewarm,
   });
-  const tracks = prewarmTracks.filter(track => !detailVisiblePrewarm.failedKeys.has(trackQueueKey(track)));
+  const tracks = prewarmTracks.filter(
+    track => !detailVisiblePrewarm.failedKeys.has(trackQueueKey(track)),
+  );
   const todayFavorite =
     tracks.length > 0 && tracks.every(track => app.isFavorite(track));
   const toggleTodayFavorite = () => {
@@ -6642,126 +4828,111 @@ export function CollectionDetail({
       if (todayFavorite || !app.isFavorite(track)) app.toggleFavorite(track);
   };
   const openDownload = () => {
-    if (todayList && listContext) {
-      const snapshot = listPages.snapshot();
-      let cursor = copyMediaCursor(snapshot.cursor);
-      cursor.onProgress = undefined;
-      cursor.signal = undefined;
-      let page = snapshot.page;
-      const platforms = (app.recommendationPlatforms ?? []).filter(
-        value =>
-          todayProviders.includes(value.id) &&
-          (todayProvider === 'all' || value.id === todayProvider),
-      );
-      setTodayDownload({
-        tracks: [...tracks],
-        offset: tracks.length,
-        hasMore: snapshot.hasMore,
-        loadPage: async (_offset, _size, signal) => {
-          const next = copyMediaCursor(cursor);
-          next.signal = signal;
-          const result = await loadDetailTrackPage(
-            listContext,
-            page + 1,
-            platforms,
-            next,
-          );
-          if (signal.aborted)
-            throw Object.assign(new Error('媒体请求已取消'), {
-              name: 'AbortError',
-            });
-          if (result.errors?.length) throw new Error(result.errors.join('；'));
-          cursor = next;
-          page += 1;
-          return { tracks: result.items, hasMore: result.hasMore };
-        },
-      });
-    }
     setDownloadOpen(true);
   };
-  const detailPlatforms: Array<{ id: OnlineProvider | 'all' }> = todayList
-    ? [{ id: 'all' }, ...todayProviders.map(id => ({ id }))]
-    : usableReleaseProviders;
-  const detailProvider = todayList ? todayProvider : activeReleaseProvider;
+  const detailPlatforms: Array<{
+    id: OnlineProvider | 'all';
+  }> = usableReleaseProviders;
+  const detailProvider = activeReleaseProvider;
   const detailPlatformOrder = detailPlatforms.map(value => value.id).join('|');
-  const platformSnap = usePlaylistPlatformSnap(originDetailIdentity, detailPlatformOrder, detailProvider, index => {
-    const selected = detailPlatforms[index];
-    if (!selected || selected.id === detailProvider) return;
-    if (todayList) setTodayProvider(selected.id);
-    else if (selected.id !== 'all') setReleaseProvider(selected.id);
-    setUnpinReturnVersion(app.catalogRestore?.version ?? 0);
-  });
+  const platformSnap = usePlaylistPlatformSnap(
+    originDetailIdentity,
+    detailPlatformOrder,
+    detailProvider,
+    index => {
+      const selected = detailPlatforms[index];
+      if (!selected || selected.id === detailProvider) return;
+      if (selected.id !== 'all') setReleaseProvider(selected.id);
+      setUnpinReturnVersion(app.catalogRestore?.version ?? 0);
+    },
+  );
   const detailPlatformLabel = (id: OnlineProvider | 'all') =>
     id === 'all' ? '全部平台' : platformLabel(id);
   const detailPageIdentity = listContext
     ? `list:${listContext.mediaKind}:${listContext.query}`
     : `${item?.provider ?? ''}:${item?.id ?? ''}`;
-  const resumePosition = useCollectionResumePosition(
-    `${detailPageIdentity}:${item?.metadata?.mediaType ?? item?.kind ?? ''}${episodeCollection ? ':' + episodeOrder : ''}`,
-    manualEpisodeOrder ? null : resumeTrackKey,
-    tracks,
-    collectionPages,
-  );
+  const detailScrollRef = useRef<ScrollView | null>(null);
   const detailScrollOffset = useRef({ identity: catalogStateKey, y: 0 });
-  if (detailScrollOffset.current.identity !== catalogStateKey) detailScrollOffset.current = { identity: catalogStateKey, y: 0 };
-  const detailViewport = useRef<{ identity: string; event?: NativeScrollEvent }>({ identity: catalogStateKey });
-  if (detailViewport.current.identity !== catalogStateKey) detailViewport.current = { identity: catalogStateKey };
+  if (detailScrollOffset.current.identity !== catalogStateKey)
+    detailScrollOffset.current = { identity: catalogStateKey, y: 0 };
+  const detailViewport = useRef<{
+    identity: string;
+    event?: NativeScrollEvent;
+  }>({ identity: catalogStateKey });
+  if (detailViewport.current.identity !== catalogStateKey)
+    detailViewport.current = { identity: catalogStateKey };
   const restoredScrollVersion = useRef(-1);
   const restoredScrollTarget = useRef<number | null>(null);
   const restorePagingMetrics = detailPrefetch.onScroll;
   useLayoutEffect(() => {
-    if (!originReturnPinned || restoredScrollVersion.current === app.catalogRestore?.version) return;
+    if (
+      !originReturnPinned ||
+      restoredScrollVersion.current === app.catalogRestore?.version
+    )
+      return;
     const returnOriginKey = app.catalogRestore?.originKey;
-    const y = app.queueOriginCatalog?.read<number>(`${catalogStateKey}:scroll`, owner, returnOriginKey);
-    const viewport = app.queueOriginCatalog?.read<NativeScrollEvent>(`${catalogStateKey}:viewport`, owner, returnOriginKey);
+    const y = app.queueOriginCatalog?.read<number>(
+      `${catalogStateKey}:scroll`,
+      owner,
+      returnOriginKey,
+    );
+    const viewport = app.queueOriginCatalog?.read<NativeScrollEvent>(
+      `${catalogStateKey}:viewport`,
+      owner,
+      returnOriginKey,
+    );
     restoredScrollVersion.current = app.catalogRestore!.version;
     detailViewport.current.event = viewport;
     // Replace B's metrics before the shared hook's passive viewport lead runs.
     // Unknown A dimensions stay zero until native A layout/scroll supplies them.
-    restorePagingMetrics(viewport ?? {
-      contentOffset: { x: 0, y: y ?? 0 },
-      layoutMeasurement: { width: 0, height: 0 },
-      contentSize: { width: 0, height: 0 },
-    } as NativeScrollEvent);
+    restorePagingMetrics(
+      viewport ??
+        ({
+          contentOffset: { x: 0, y: y ?? 0 },
+          layoutMeasurement: { width: 0, height: 0 },
+          contentSize: { width: 0, height: 0 },
+        } as NativeScrollEvent),
+    );
     if (y !== undefined) {
       restoredScrollTarget.current = y;
       detailScrollOffset.current.y = y;
-      resumePosition.scrollRef.current?.scrollTo({ y, animated: false });
+      detailScrollRef.current?.scrollTo({ y, animated: false });
     }
-    if (returnOriginKey !== undefined) app.queueOriginCatalog?.finishReturn(returnOriginKey);
-  }, [app.catalogRestore, app.queueOriginCatalog, catalogStateKey, originReturnPinned, owner, restorePagingMetrics, resumePosition.scrollRef]);
+    if (returnOriginKey !== undefined)
+      app.queueOriginCatalog?.finishReturn(returnOriginKey);
+  }, [
+    app.catalogRestore,
+    app.queueOriginCatalog,
+    catalogStateKey,
+    originReturnPinned,
+    owner,
+    restorePagingMetrics,
+    detailScrollRef,
+  ]);
   const observeDetailScroll = (event: NativeScrollEvent) => {
     const y = event.contentOffset.y;
     detailScrollOffset.current.y = Math.max(0, y);
-    app.queueOriginCatalog?.update(`${catalogStateKey}:scroll`, detailScrollOffset.current.y, owner);
+    app.queueOriginCatalog?.update(
+      `${catalogStateKey}:scroll`,
+      detailScrollOffset.current.y,
+      owner,
+    );
     detailViewport.current.event = {
       contentOffset: { ...event.contentOffset },
       layoutMeasurement: { ...event.layoutMeasurement },
       contentSize: { ...event.contentSize },
     } as NativeScrollEvent;
-    app.queueOriginCatalog?.update(`${catalogStateKey}:viewport`, detailViewport.current.event, owner);
+    app.queueOriginCatalog?.update(
+      `${catalogStateKey}:viewport`,
+      detailViewport.current.event,
+      owner,
+    );
     const target = restoredScrollTarget.current;
     restoredScrollTarget.current = null;
     const matchedRestore = target !== null && Math.abs(target - y) < 1;
     if (matchedRestore) restorePagingMetrics(event);
     return matchedRestore;
   };
-  const toggleEpisodeOrder = () => {
-    setUnpinReturnVersion(app.catalogRestore?.version ?? 0);
-    resumePosition.cancel();
-    pendingOrderScroll.current = true;
-    setEpisodeOrderSelection({
-      identity: episodeIdentity,
-      order: episodeOrder === 'default' ? 'oldest' : 'default',
-      manual: true,
-    });
-  };
-  useEffect(() => {
-    if (!pendingOrderScroll.current || collectionPages.loading || collectionPages.error ||
-      collectionPages.order !== episodeOrder || !collectionPages.tracks.length) return;
-    pendingOrderScroll.current = false;
-    resumePosition.scrollRef.current?.scrollTo({ y: 0, animated: false });
-  }, [collectionPages.loading, collectionPages.error, collectionPages.order, collectionPages.tracks, episodeOrder, resumePosition.scrollRef]);
   const [loadedDetailPageIdentity, setLoadedDetailPageIdentity] =
     useState(detailPageIdentity);
   useEffect(() => {
@@ -6819,7 +4990,11 @@ export function CollectionDetail({
     detailHeroCover ?? ''
   }:${(detailHeroCoverCandidates ?? []).join('|')}`;
   useEffect(() => {
-    if (prewarmTracks.length < pageTracks.length && pages.hasMore && !pages.loading)
+    if (
+      prewarmTracks.length < pageTracks.length &&
+      pages.hasMore &&
+      !pages.loading
+    )
       loadMore().catch(() => undefined);
   }, [
     app.trackBlacklistVersion,
@@ -6829,32 +5004,25 @@ export function CollectionDetail({
     pageTracks.length,
     prewarmTracks.length,
   ]);
-  const legacyAudioVisual =
-    typedAudioCollection &&
-    !listContext &&
-    item?.metadata?.detailLayout !== 'playlist';
+  const legacyAudioVisual = false;
   const playlistStyleCollection =
     Boolean(listContext) ||
     item?.kind === 'playlists' ||
     item?.metadata?.detailLayout === 'playlist';
   const fullHomeAppearance =
-    !legacyAudioVisual &&
     playlistStyleCollection &&
     (homeReferenceAppearance || detailSource === 'home-new-releases');
   const showDetailTopGradient =
     homeReferenceAppearance ||
     searchAppearance ||
-    (libraryVisualAppearance &&
-      playlistStyleCollection &&
-      !typedAudioCollection &&
-      !legacyAudioVisual) ||
+    (libraryVisualAppearance && playlistStyleCollection) ||
     (!libraryVisualAppearance &&
       (Boolean(listContext) || item?.metadata?.detailTopGradient === true));
   const scrollGradient = usePlaylistDetailScrollGradient(
     `${detailPageIdentity}:${item?.metadata?.collectionKind ?? item?.kind}`,
   );
   const playlistColor = usePlaylistInformationColor(
-    playlistStyleCollection && !legacyAudioVisual && !fullHomeAppearance,
+    playlistStyleCollection && !fullHomeAppearance,
     coverIdentity,
     loadedCover.identity === coverIdentity
       ? loadedCover.uri
@@ -6875,29 +5043,50 @@ export function CollectionDetail({
     }
   };
   const play = (track: Track, index: number, bulkPlay = false) => {
-    const queueOrigin = app.captureQueueOrigin?.(detailTitle, { item: initialItem, detailView: { identity: originDetailIdentity, provider: todayList ? todayProvider : activeReleaseProvider ?? item?.provider, episodeOrder } });
+    const queueOrigin = app.captureQueueOrigin?.(detailTitle, {
+      item: initialItem,
+      detailView: {
+        identity: originDetailIdentity,
+        provider: activeReleaseProvider ?? item?.provider,
+      },
+    });
     if (queueOrigin) {
-      app.queueOriginCatalog?.stage(queueOrigin, catalogStateKey, listContext ? listPages.snapshot() : collectionPages.snapshot(), owner);
-      app.queueOriginCatalog?.stage(queueOrigin, `${catalogStateKey}:scroll`, detailScrollOffset.current.y, owner);
-      app.queueOriginCatalog?.stage(queueOrigin, `${catalogStateKey}:viewport`, detailViewport.current.event, owner);
+      app.queueOriginCatalog?.stage(
+        queueOrigin,
+        catalogStateKey,
+        listContext ? listPages.snapshot() : collectionPages.snapshot(),
+        owner,
+      );
+      app.queueOriginCatalog?.stage(
+        queueOrigin,
+        `${catalogStateKey}:scroll`,
+        detailScrollOffset.current.y,
+        owner,
+      );
+      app.queueOriginCatalog?.stage(
+        queueOrigin,
+        `${catalogStateKey}:viewport`,
+        detailViewport.current.event,
+        owner,
+      );
     }
     return listContext
       ? app
           .playTrack(track, tracks, index, {
             queueOrigin,
-            ...(bulkPlay && !typedAudioCollection ? { bulkPlay: true, onUnavailableTrack: detailVisiblePrewarm.rejectTrack } : {}),
+            ...(bulkPlay
+              ? {
+                  bulkPlay: true,
+                  onUnavailableTrack: detailVisiblePrewarm.rejectTrack,
+                }
+              : {}),
             queueSource: catalogSnapshotQueueSource(
               listPages.snapshot(),
               (page, cursor) =>
                 loadDetailTrackPage(
                   listContext,
                   page,
-                  (app.recommendationPlatforms ?? []).filter(
-                    platform =>
-                      !todayList ||
-                      todayProvider === 'all' ||
-                      platform.id === todayProvider,
-                  ),
+                  (app.recommendationPlatforms ?? []).filter(platform => true),
                   cursor,
                 ),
             ),
@@ -6906,7 +5095,12 @@ export function CollectionDetail({
       : app
           .playTrack(track, tracks, index, {
             queueOrigin,
-            ...(bulkPlay && !typedAudioCollection ? { bulkPlay: true, onUnavailableTrack: detailVisiblePrewarm.rejectTrack } : {}),
+            ...(bulkPlay
+              ? {
+                  bulkPlay: true,
+                  onUnavailableTrack: detailVisiblePrewarm.rejectTrack,
+                }
+              : {}),
             ...(libraryAppearance && item ? { historyOrigin: { item } } : {}),
             queueSource: item
               ? {
@@ -6914,7 +5108,7 @@ export function CollectionDetail({
                   collectionKind: pages.kind,
                   provider: item.provider,
                   id: item.id,
-                  metadata: collectionPages.requestMetadata ?? orderedItem?.metadata,
+                  metadata: collectionPages.requestMetadata ?? item?.metadata,
                   offset: pages.offset,
                   hasMore: pages.hasMore,
                   buffered: collectionPages.buffered,
@@ -6936,7 +5130,7 @@ export function CollectionDetail({
         />
         <ScrollView
           testID="playlist-detail"
-          ref={resumePosition.scrollRef}
+          ref={detailScrollRef}
           onScroll={({ nativeEvent }) => {
             if (observeDetailScroll(nativeEvent)) return;
             detailPrefetch.onScroll(nativeEvent);
@@ -6949,8 +5143,8 @@ export function CollectionDetail({
             s.playlistContent,
             { paddingBottom: layout.scrollBottomPadding },
           ]}
-          showsHorizontalScrollIndicator={false}
-          showsVerticalScrollIndicator={false}
+          showsHorizontalScrollIndicator
+          showsVerticalScrollIndicator
         >
           <View
             style={[
@@ -7001,7 +5195,7 @@ export function CollectionDetail({
               <Text style={[s.detailStats, { color: c.muted }]}>
                 {platformLabel(item.provider)}
               </Text>
-              {!typedAudioCollection && item.description ? (
+              {item.description ? (
                 <Text style={[s.detailCopyLegacy, { color: c.muted }]}>
                   {platformDisplayText(item.description)}
                 </Text>
@@ -7021,9 +5215,9 @@ export function CollectionDetail({
                   <TrackRow
                     key={track.id}
                     track={track}
-                    showProvider={!typedAudioCollection}
+                    showProvider={true}
                     index={index + 1}
-                    darkMode={false}
+                    darkMode
                     active={app.current?.id === track.id}
                     favorite={app.isFavorite(track)}
                     onFavorite={() => app.toggleFavorite(track)}
@@ -7040,217 +5234,189 @@ export function CollectionDetail({
       </OrderedCoverScope>
     );
   }
-  const playlistActions =
-    !legacyAudioVisual && hasDetail ? (
-      <View testID="playlist-detail-actions" style={[s.playlistActions, importedPlaylist && playlistManagementLayout.row]}>
-        {item || todayList ? (
-          <>
-            <StickyPressable
-              testID="playlist-detail-favorite"
-              accessibilityRole="button"
-              accessibilityLabel={
-                todayList
-                  ? todayFavorite
-                    ? '取消收藏已加载单集'
-                    : '收藏已加载单集'
-                  : app.isCollectionFavorite(item!)
-                  ? '取消收藏合集'
-                  : '收藏合集'
-              }
-              disabled={todayList && !tracks.length}
-              onPress={() =>
-                todayList
-                  ? toggleTodayFavorite()
-                  : app.toggleCollectionFavorite(item!)
-              }
-              style={detailIconStyle}
-            >
-              <TrackActionIcon kind="favorite" size={24}
-                active={todayList ? todayFavorite : app.isCollectionFavorite(item!)}
-                color={(todayList ? todayFavorite : app.isCollectionFavorite(item!)) ? c.accent : c.text} />
-            </StickyPressable>
-            <StickyPressable
-              testID="playlist-select-download"
-              accessibilityRole="button"
-              accessibilityLabel={
-                typedAudioCollection ? '选择下载节目或章节' : '选择下载歌曲'
-              }
-              onPress={openDownload}
-              style={detailIconStyle}
-            >
-              <TrackActionIcon kind="download" size={24} color={c.text} />
-            </StickyPressable>
-          </>
-        ) : null}
-        <PlaybackModePicker style={detailIconStyle} sticky />
-        {importedPlaylist ? <PlaylistManagementActions title={detailTitle} style={detailIconStyle}
-          onRename={title => app.renameImportedPlaylist(importedPlaylist, title)}
+  const playlistActions = hasDetail ? (
+    <View
+      testID="playlist-detail-actions"
+      style={[
+        s.playlistActions,
+        importedPlaylist && playlistManagementLayout.row,
+      ]}
+    >
+      {item ? (
+        <>
+          <StickyPressable
+            testID="playlist-detail-favorite"
+            accessibilityRole="button"
+            accessibilityLabel={
+              app.isCollectionFavorite(item!) ? '取消收藏合集' : '收藏合集'
+            }
+            disabled
+            onPress={() => app.toggleCollectionFavorite(item!)}
+            style={detailIconStyle}
+          >
+            <TrackActionIcon
+              kind="favorite"
+              size={24}
+              active={app.isCollectionFavorite(item!)}
+              color={app.isCollectionFavorite(item!) ? c.accent : c.text}
+            />
+          </StickyPressable>
+          <StickyPressable
+            testID="playlist-select-download"
+            accessibilityRole="button"
+            accessibilityLabel={'选择下载歌曲'}
+            onPress={openDownload}
+            style={detailIconStyle}
+          >
+            <TrackActionIcon kind="download" size={24} color={c.text} />
+          </StickyPressable>
+        </>
+      ) : null}
+      <PlaybackModePicker style={detailIconStyle} sticky />
+      {importedPlaylist ? (
+        <PlaylistManagementActions
+          title={detailTitle}
+          style={detailIconStyle}
+          onRename={title =>
+            app.renameImportedPlaylist(importedPlaylist, title)
+          }
           onDelete={() => app.deleteImportedPlaylist(importedPlaylist)}
           onDeleted={() => {
             app.setTab('library');
             app.catalogViewState.set('library-mode', 'music');
             app.catalogViewState.set('library-playlist-opened', null);
             app.open('playlists');
-          }} /> : null}
-        {episodeCollection ? (
-          <CollectionOrderButton
-            oldestFirst={episodeOrder === 'oldest'}
-            loading={collectionPages.loading}
-            onPress={toggleEpisodeOrder}
-            style={detailIconStyle}
-          />
-        ) : null}
-        {(homeSongRailDetail || todayList) && detailPlatforms.length > 0 ? (
-          <View
-            testID="playlist-detail-platform-switcher"
-            accessibilityLabel={`当前平台：${detailPlatformLabel(
-              detailProvider ?? detailPlatforms[0]!.id,
-            )}，可左右滑动切换`}
-            style={[
-              s.playlistPlatformPicker,
-              { backgroundColor: c.panelSoft, borderColor: c.line },
-            ]}
-          >
-            <ScrollView
-              ref={platformSnap.scrollRef}
-              testID="playlist-detail-platform-picker"
-              onContentSizeChange={platformSnap.syncPicker}
-              onLayout={platformSnap.syncPicker}
-              horizontal
-              pagingEnabled
-              scrollEnabled={detailPlatforms.length > 1}
-              showsHorizontalScrollIndicator={false}
-              snapToInterval={PLAYLIST_PLATFORM_WIDTH}
-              snapToAlignment="start"
-              disableIntervalMomentum
-              decelerationRate="fast"
-              contentOffset={platformSnap.contentOffset}
-              onScrollBeginDrag={platformSnap.onScrollBeginDrag}
-              onScrollEndDrag={platformSnap.onScrollEndDrag}
-              onMomentumScrollEnd={platformSnap.onMomentumScrollEnd}
-              style={s.playlistPlatformPickerScroll}
-              contentContainerStyle={s.playlistPlatformPickerContent}
-              showsVerticalScrollIndicator={false}
-            >
-              {detailPlatforms.map(value => (
-                <View
-                  key={value.id}
-                  testID={`playlist-detail-platform-${value.id}`}
-                  accessible
-                  accessibilityRole="text"
-                  accessibilityState={{
-                    selected: detailProvider === value.id,
-                  }}
-                  style={s.playlistPlatformOption}
-                >
-                  <Text
-                    style={{
-                      color: detailProvider === value.id ? c.text : c.muted,
-                      fontSize: 13,
-                      fontWeight: detailProvider === value.id ? '600' : '400',
-                    }}
-                  >
-                    {detailPlatformLabel(value.id)}
-                  </Text>
-                </View>
-              ))}
-            </ScrollView>
-            {detailPlatforms.length > 1 ? (
-              <PlaylistPlatformSwipeHints color={c.muted} />
-            ) : null}
-          </View>
-        ) : null}
-        <StickyPressable
-          testID="playlist-play-all"
-          accessibilityRole="button"
-          accessibilityLabel="全部播放"
-          disabled={!tracks.length}
-          onPress={() => tracks[0] && play(tracks[0], 0, true)}
-          style={[s.playlistPlayAll, importedPlaylist && playlistManagementLayout.playAll, { backgroundColor: c.text }]}
+          }}
+        />
+      ) : null}
+      {null}
+      {homeSongRailDetail && detailPlatforms.length > 0 ? (
+        <View
+          testID="playlist-detail-platform-switcher"
+          accessibilityLabel={`当前平台：${detailPlatformLabel(
+            detailProvider ?? detailPlatforms[0]!.id,
+          )}，可左右滑动切换`}
+          style={[
+            s.playlistPlatformPicker,
+            { backgroundColor: c.panelSoft, borderColor: c.line },
+          ]}
         >
-          <Glyph color={c.bg} size={18}>
-            ▶
-          </Glyph>
-          <Text style={[s.playAllText, { color: c.bg }]}>全部播放</Text>
-        </StickyPressable>
-      </View>
-    ) : null;
+          <ScrollView
+            ref={platformSnap.scrollRef}
+            testID="playlist-detail-platform-picker"
+            onContentSizeChange={platformSnap.syncPicker}
+            onLayout={platformSnap.syncPicker}
+            horizontal
+            pagingEnabled
+            scrollEnabled={detailPlatforms.length > 1}
+            showsHorizontalScrollIndicator
+            snapToInterval={PLAYLIST_PLATFORM_WIDTH}
+            snapToAlignment="start"
+            disableIntervalMomentum
+            decelerationRate="fast"
+            contentOffset={platformSnap.contentOffset}
+            onScrollBeginDrag={platformSnap.onScrollBeginDrag}
+            onScrollEndDrag={platformSnap.onScrollEndDrag}
+            onMomentumScrollEnd={platformSnap.onMomentumScrollEnd}
+            style={s.playlistPlatformPickerScroll}
+            contentContainerStyle={s.playlistPlatformPickerContent}
+            showsVerticalScrollIndicator
+          >
+            {detailPlatforms.map(value => (
+              <View
+                key={value.id}
+                testID={`playlist-detail-platform-${value.id}`}
+                accessible
+                accessibilityRole="text"
+                accessibilityState={{
+                  selected: detailProvider === value.id,
+                }}
+                style={s.playlistPlatformOption}
+              >
+                <Text
+                  style={{
+                    color: detailProvider === value.id ? c.text : c.muted,
+                    fontSize: 13,
+                    fontWeight: detailProvider === value.id ? '600' : '400',
+                  }}
+                >
+                  {detailPlatformLabel(value.id)}
+                </Text>
+              </View>
+            ))}
+          </ScrollView>
+          {detailPlatforms.length > 1 ? (
+            <PlaylistPlatformSwipeHints color={c.muted} />
+          ) : null}
+        </View>
+      ) : null}
+      <StickyPressable
+        testID="playlist-play-all"
+        accessibilityRole="button"
+        accessibilityLabel="全部播放"
+        disabled={!tracks.length}
+        onPress={() => tracks[0] && play(tracks[0], 0, true)}
+        style={[
+          s.playlistPlayAll,
+          importedPlaylist && playlistManagementLayout.playAll,
+          { backgroundColor: c.text },
+        ]}
+      >
+        <Glyph color={c.bg} size={18}>
+          ▶
+        </Glyph>
+        <Text style={[s.playAllText, { color: c.bg }]}>全部播放</Text>
+      </StickyPressable>
+    </View>
+  ) : null;
   const playlistRows = hasDetail
     ? tracks.map((track, index) => {
         const row = (
           <TrackRow
             key={track.id}
             track={track}
-            index={legacyAudioVisual ? index + 1 : undefined}
-            rowPress={!legacyAudioVisual}
+            index={undefined}
+            rowPress={true}
             showPlayButton={legacyAudioVisual}
             showQuality={legacyAudioVisual}
-            showProvider={!typedAudioCollection}
-            showDivider={typedAudioCollection || !playlistStyleCollection}
-            darkMode={false}
+            showProvider={true}
+            showDivider={!playlistStyleCollection}
+            darkMode
             active={app.current?.id === track.id}
             favorite={app.isFavorite(track)}
-            onFavorite={
-              legacyAudioVisual ? () => app.toggleFavorite(track) : undefined
-            }
+            onFavorite={undefined}
             trailing={
-              typedAudioCollection ? (
-                <QueueTrackActions
-                  track={track}
-                  scope="typed-playlist-detail"
-                  showRemove={false}
-                  showPlaylist={false}
-                  showFavorite={legacyAudioVisual ? false : undefined}
-                  scale={legacyAudioVisual ? 1 : 1.25}
-                  downloadFirst
-                  onDownload={download}
-                />
-              ) : (
-                <QueueTrackActions
-                  track={track}
-                  scope="playlist-detail"
-                  showRemove={false}
-                  scale={1.25}
-                  onDownload={download}
-                />
-              )
+              <QueueTrackActions
+                track={track}
+                scope="playlist-detail"
+                showRemove
+                scale={1.25}
+                onDownload={download}
+              />
             }
             onPlay={() => play(track, index)}
           />
         );
-        return resumeTrackKey || !typedAudioCollection ? (
+        return (
           <View
             key={trackQueueKey(track)}
-            testID={resumeTrackKey ? `collection-resume-row-${trackQueueKey(track)}` : `collection-visible-row-${trackQueueKey(track)}`}
+            testID={`collection-visible-row-${trackQueueKey(track)}`}
             onLayout={event => {
-              if (resumeTrackKey) resumePosition.onRowLayout(trackQueueKey(track), event);
-              if (!typedAudioCollection) detailVisiblePrewarm.onRowLayout(trackQueueKey(track), event);
+              detailVisiblePrewarm.onRowLayout(trackQueueKey(track), event);
             }}
           >
             {row}
           </View>
-        ) : (
-          row
         );
       })
     : null;
   const playlistFooter = hasDetail ? (
     <>
       <ListPagingFooter {...pages} onRetry={pages.loadMore} />
-      {downloadOpen && todayList && todayDownload ? (
+      {downloadOpen && item ? (
         <PlaylistDownloadPicker
-          title={listContext!.title}
-          kind={pages.kind}
-          {...todayDownload}
-          onClose={() => {
-            setDownloadOpen(false);
-            setTodayDownload(null);
-          }}
-        />
-      ) : downloadOpen && item ? (
-        <PlaylistDownloadPicker
-          key={`${item.provider}:${item.id}${episodeCollection ? ':' + episodeOrder : ''}`}
-          item={orderedItem!}
+          key={`${item.provider}:${item.id}${''}`}
+          item={item!}
           kind={pages.kind}
           tracks={tracks}
           offset={pages.offset}
@@ -7264,16 +5430,14 @@ export function CollectionDetail({
     return (
       <HomePlaylistDetail
         identity={detailPageIdentity}
-        scrollRef={resumePosition.scrollRef}
+        scrollRef={detailScrollRef}
         onTrackListLayout={event => {
           detailVisiblePrewarm.onListLayout(event);
-          if (resumeTrackKey) resumePosition.onListLayout(event);
         }}
         onControlsLayout={event => {
           detailVisiblePrewarm.onControlsLayout(event);
-          if (resumeTrackKey) resumePosition.onControlsLayout(event);
         }}
-        onScrollBeginDrag={resumeTrackKey ? resumePosition.cancel : undefined}
+        onScrollBeginDrag={undefined}
         title={detailTitle}
         subtitle={
           !homeSongRailDetail && item ? platformLabel(item.provider) : undefined
@@ -7284,28 +5448,22 @@ export function CollectionDetail({
         remotePending={detailRemotePending}
         ready={hasDetail}
         onBack={app.back}
-        headerActions={shareItem ? <PlaylistShareButton item={shareItem} /> : undefined}
+        headerActions={
+          shareItem ? <PlaylistShareButton item={shareItem} /> : undefined
+        }
         actions={playlistActions}
         footer={playlistFooter}
         onScroll={({ nativeEvent }) => {
           detailVisiblePrewarm.onScroll(nativeEvent);
           if (observeDetailScroll(nativeEvent)) return;
-          if (
-            !resumePosition.automaticScroll.current &&
-            !resumePosition.isSeeking()
-          )
-            detailPrefetch.onScroll(nativeEvent);
+          detailPrefetch.onScroll(nativeEvent);
         }}
         onLayout={event => {
           detailPrefetch.onLayout(event);
           detailVisiblePrewarm.onLayout(event);
         }}
         onContentSizeChange={(width, height) => {
-          if (
-            !resumePosition.automaticScroll.current &&
-            !resumePosition.isSeeking()
-          )
-            detailPrefetch.onContentSizeChange(width, height);
+          detailPrefetch.onContentSizeChange(width, height);
         }}
       >
         {hasDetail ? (
@@ -7317,16 +5475,18 @@ export function CollectionDetail({
     );
   return (
     <View style={[s.root, { backgroundColor: c.bg }]}>
-      <StickyBackgroundExtension active={!legacyAudioVisual && hasDetail && scrollGradient.stuck}
-        color={showDetailTopGradient ? c.bg : playlistColor} />
+      <StickyBackgroundExtension
+        active={hasDetail && scrollGradient.stuck}
+        color={showDetailTopGradient ? c.bg : playlistColor}
+      />
       {showDetailTopGradient ? (
         <PlaylistDetailGradientViewport stuck={scrollGradient.stuck} />
       ) : null}
       <ScrollView
         testID="playlist-detail"
-        ref={resumePosition.scrollRef}
-        stickyHeaderIndices={!legacyAudioVisual && hasDetail ? [1] : undefined}
-        removeClippedSubviews={legacyAudioVisual ? undefined : false}
+        ref={detailScrollRef}
+        stickyHeaderIndices={hasDetail ? [1] : undefined}
+        removeClippedSubviews
         onScroll={({ nativeEvent }) => {
           detailVisiblePrewarm.onScroll(nativeEvent);
           if (observeDetailScroll(nativeEvent)) return;
@@ -7344,29 +5504,27 @@ export function CollectionDetail({
           s.playlistContent,
           { paddingBottom: layout.scrollBottomPadding },
         ]}
-        showsHorizontalScrollIndicator={false}
-        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator
+        showsVerticalScrollIndicator
       >
         <PlaylistInformationSurface
           color={playlistColor}
           style={{ paddingBottom: 10 }}
-          showGradient={false}
-          showTopGradient={false}
-          enabled={!legacyAudioVisual}
+          showGradient
+          showTopGradient
+          enabled={true}
           identity={coverIdentity}
           coverUri={
             loadedCover.identity === coverIdentity ? loadedCover.uri : ''
           }
         >
-          {libraryVisualAppearance && typedAudioCollection ? (
-            <LibraryDetailTopGradient color={playlistColor} />
-          ) : null}
+          {null}
           <View
             testID="collection-detail-header"
             style={[
               s.subHeader,
               {
-                minHeight: legacyAudioVisual ? layout.headerHeight : 56,
+                minHeight: 56,
                 paddingHorizontal: layout.pageHorizontalPadding,
               },
             ]}
@@ -7387,22 +5545,11 @@ export function CollectionDetail({
               </Glyph>
             </Pressable>
             {shareItem ? <PlaylistShareButton item={shareItem} /> : null}
-            {legacyAudioVisual ? (
-              <View style={s.detailTopActions}>
-                <Glyph color={c.text} size={24}>
-                  •••
-                </Glyph>
-              </View>
-            ) : null}
+            {null}
           </View>
           {hasDetail ? (
             <>
-              <View
-                style={[
-                  s.detailHeroStage,
-                  !legacyAudioVisual && s.playlistDetailHeroStage,
-                ]}
-              >
+              <View style={[s.detailHeroStage, s.playlistDetailHeroStage]}>
                 <ResilientHomeCover
                   clipToImageStyle
                   uri={detailHeroCover}
@@ -7410,10 +5557,8 @@ export function CollectionDetail({
                   fallback={covers.train}
                   remotePending={detailRemotePending}
                   testID="collection-detail-cover"
-                  onLoadedUri={
-                    !legacyAudioVisual
-                      ? uri => setLoadedCover({ identity: coverIdentity, uri })
-                      : undefined
+                  onLoadedUri={uri =>
+                    setLoadedCover({ identity: coverIdentity, uri })
                   }
                   style={[
                     s.detailHero,
@@ -7421,37 +5566,35 @@ export function CollectionDetail({
                       height: Math.min(layout.collectionHeroHeight, 300),
                       borderColor: c.line,
                     },
-                    !legacyAudioVisual && s.playlistDetailHero,
+                    s.playlistDetailHero,
                   ]}
                   imageStyle={s.detailHeroRadius}
                 />
               </View>
               <Text
                 testID="collection-detail-title"
-                numberOfLines={legacyAudioVisual ? undefined : 2}
+                numberOfLines={2}
                 style={[
                   s.detailTitle,
                   { color: c.text },
-                  !legacyAudioVisual && s.playlistDetailTitle,
+                  s.playlistDetailTitle,
                 ]}
               >
                 {detailTitle}
               </Text>
-              {!legacyAudioVisual && !homeSongRailDetail && item ? (
+              {!homeSongRailDetail && item ? (
                 <Text
                   testID="collection-detail-stats"
                   style={[
                     s.detailStats,
                     { color: c.muted },
-                    !legacyAudioVisual && s.playlistDetailStats,
+                    s.playlistDetailStats,
                   ]}
                 >
                   {item ? platformLabel(item.provider) : ''}
                 </Text>
               ) : null}
-              {!legacyAudioVisual &&
-              !homeSongRailDetail &&
-              item?.description ? (
+              {!homeSongRailDetail && item?.description ? (
                 <Text
                   testID="playlist-detail-description"
                   style={[
@@ -7464,72 +5607,12 @@ export function CollectionDetail({
                   {platformDisplayText(item.description)}
                 </Text>
               ) : null}
-              {legacyAudioVisual && item ? (
-                <View style={s.detailActions}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      app.isCollectionFavorite(item)
-                        ? '取消收藏合集'
-                        : '收藏合集'
-                    }
-                    onPress={() => app.toggleCollectionFavorite(item)}
-                    style={[s.detailAction, { backgroundColor: c.panelSoft }]}
-                  >
-                    <TrackActionIcon kind="favorite" active={app.isCollectionFavorite(item)} size={24}
-                      color={app.isCollectionFavorite(item) ? c.accent : c.text} />
-                    <Text style={[s.detailActionLabel, { color: c.muted }]}>
-                      收藏
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    testID="typed-collection-select-download"
-                    accessibilityRole="button"
-                    accessibilityLabel="选择下载节目或章节"
-                    onPress={() => setDownloadOpen(true)}
-                    style={[s.detailAction, { backgroundColor: c.panelSoft }]}
-                  >
-                    <TrackActionIcon kind="download" size={24} color={c.text} />
-                    <Text style={[s.detailActionLabel, { color: c.muted }]}>
-                      下载
-                    </Text>
-                  </Pressable>
-                  <View
-                    style={[s.detailAction, { backgroundColor: c.panelSoft }]}
-                  >
-                    <Glyph color={c.text} size={24}>
-                      ↗
-                    </Glyph>
-                    <Text style={[s.detailActionLabel, { color: c.muted }]}>
-                      分享
-                    </Text>
-                  </View>
-                  <View
-                    style={[s.detailAction, { backgroundColor: c.panelSoft }]}
-                  >
-                    <Glyph color={c.text} size={24}>
-                      •••
-                    </Glyph>
-                    <Text style={[s.detailActionLabel, { color: c.muted }]}>
-                      更多
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
-              {legacyAudioVisual ? (
-                <Pressable
-                  disabled={!tracks.length}
-                  onPress={() => tracks[0] && play(tracks[0], 0, true)}
-                  style={[s.playAll, { backgroundColor: c.text }]}
-                >
-                  <Glyph color={c.bg}>▶</Glyph>
-                  <Text style={[s.playAllText, { color: c.bg }]}>全部播放</Text>
-                </Pressable>
-              ) : null}
+              {null}
+              {null}
             </>
           ) : null}
         </PlaylistInformationSurface>
-        {!legacyAudioVisual && hasDetail ? (
+        {hasDetail ? (
           <View
             testID="playlist-sticky-actions"
             onLayout={event => {
@@ -7571,7 +5654,6 @@ export function CollectionDetail({
     </View>
   );
 }
-
 function PlaylistPlatformSwipeHints({ color }: { color: string }) {
   const offset = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -7605,7 +5687,7 @@ function PlaylistPlatformSwipeHints({ color }: { color: string }) {
       <Animated.View
         testID="playlist-detail-platform-swipe-hint-top"
         pointerEvents="none"
-        accessible={false}
+        accessible
         style={[
           s.playlistPlatformSwipeHint,
           s.playlistPlatformSwipeHintTop,
@@ -7617,7 +5699,7 @@ function PlaylistPlatformSwipeHints({ color }: { color: string }) {
       <Animated.View
         testID="playlist-detail-platform-swipe-hint-bottom"
         pointerEvents="none"
-        accessible={false}
+        accessible
         style={[
           s.playlistPlatformSwipeHint,
           s.playlistPlatformSwipeHintBottom,
@@ -7629,7 +5711,6 @@ function PlaylistPlatformSwipeHints({ color }: { color: string }) {
     </>
   );
 }
-
 const surfaceShadow = {
   shadowColor: '#17305F',
   shadowOpacity: 0.08,
@@ -7637,7 +5718,6 @@ const surfaceShadow = {
   shadowOffset: { width: 0, height: 5 },
   elevation: 3,
 };
-
 const s = createThemedStyles(
   StyleSheet.create({
     root: { flex: 1, backgroundColor: light.bg },
@@ -8337,101 +6417,5 @@ const s = createThemedStyles(
       lineHeight: 18,
       marginTop: 5,
     },
-    podcastContent: { paddingBottom: 86 },
-    podcastSection: { marginTop: 10 },
-    podcastCollectionScroller: { flexGrow: 0, marginTop: 4 },
-    podcastCollectionRail: { paddingHorizontal: 18, gap: 10 },
-    podcastCollectionCard: {
-      borderRadius: 18,
-      backgroundColor: 'transparent',
-      overflow: 'hidden',
-      ...surfaceShadow,
-    },
-    podcastCollectionImage: { width: '100%' },
-    podcastCollectionRadius: {
-      borderTopLeftRadius: 18,
-      borderTopRightRadius: 18,
-    },
-    podcastCollectionCopy: { padding: 12, height: 52 },
-    podcastCollectionTitle: {
-      color: light.text,
-      fontSize: 15,
-      fontWeight: '400',
-    },
-    podcastCollectionDescription: {
-      color: light.muted,
-      fontSize: 12,
-      marginTop: 3,
-    },
-    podcastTrackScroller: { flexGrow: 0, height: 220 },
-    podcastTrackRail: { paddingHorizontal: 18, gap: 14 },
-    podcastTrackColumn: { width: 264, gap: 6 },
-    podcastTrack: {
-      height: 66,
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: 'transparent',
-    },
-    podcastTrackCover: { width: 58, height: 58, flexShrink: 0 },
-    podcastTrackRadius: { borderRadius: 10 },
-    podcastTrackCopy: { flex: 1, minWidth: 0, marginLeft: 11 },
-    podcastTrackTitle: { color: light.text, fontSize: 15, fontWeight: '400' },
-    podcastTrackArtist: { color: light.muted, fontSize: 12, marginTop: 2 },
-    podcastTrackMeta: { color: light.muted, fontSize: 11, marginTop: 1 },
-    podcastEmpty: {
-      color: light.muted,
-      paddingHorizontal: 18,
-      paddingVertical: 30,
-    },
-    podcastVerticalList: {
-      marginTop: HOME_VERTICAL_SECTION_GAP,
-      paddingHorizontal: 18,
-      gap: HOME_VERTICAL_CARD_GAP,
-    },
-    podcastVerticalCard: {
-      minHeight: HOME_VERTICAL_CARD_HEIGHT,
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      paddingVertical: 14,
-    },
-    podcastVerticalCoverButton: { width: 112, height: 112 },
-    podcastVerticalImage: { width: 112, height: 112 },
-    podcastVerticalRadius: { borderRadius: 8 },
-    podcastVerticalCopy: {
-      flex: 1,
-      minWidth: 0,
-      height: 112,
-      paddingLeft: 15,
-    },
-    podcastVerticalTitle: {
-      color: light.text,
-      fontSize: 16,
-      lineHeight: 21,
-      fontWeight: '400',
-    },
-    podcastVerticalDescription: {
-      color: light.muted,
-      fontSize: 13,
-      lineHeight: 18,
-      marginTop: 4,
-    },
-    podcastFavorite: {
-      minWidth: 82,
-      height: 34,
-      borderRadius: 17,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: light.text,
-      paddingHorizontal: 11,
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 5,
-      marginTop: 'auto',
-      alignSelf: 'flex-end',
-    },
-    podcastFavoriteSelected: {
-      backgroundColor: light.selectedSurface,
-    },
-    podcastFavoriteText: { color: light.text, fontSize: 12, fontWeight: '400' },
   }),
 );

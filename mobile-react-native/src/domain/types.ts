@@ -16,7 +16,6 @@ export type ProviderId =
   | 'qishui'
   | 'custom';
 export type CoverKey = 'train' | 'cat' | 'ocean' | 'vinyl';
-
 export interface Track {
   id: string;
   title: string;
@@ -37,7 +36,6 @@ export interface Track {
   reason?: string;
   metadata?: Record<string, unknown>;
 }
-
 /** Stable identity for one queue entry. Titles are presentation data and may repeat. */
 export function trackQueueKey(track: {
   provider: string;
@@ -47,7 +45,6 @@ export function trackQueueKey(track: {
   const sourceId = String(track.providerId ?? track.id).trim();
   return `${track.provider}:${sourceId}`;
 }
-
 export type CatalogKind = 'playlists' | 'new-songs' | 'new-albums' | 'charts';
 export interface CatalogItem {
   id: string;
@@ -66,7 +63,6 @@ export interface CatalogItem {
 export interface CatalogDetail extends CatalogItem {
   tracks: Track[];
 }
-
 export interface HistoryEntry {
   track: Track;
   playedAt: number;
@@ -77,16 +73,13 @@ export interface HistoryEntry {
   positionSeconds?: number;
   playbackDurationSeconds?: number;
 }
-export interface MediaCollectionPlayback {
-  provider: CatalogItem['provider'];
-  kind: 'podcast' | 'audiobook';
-  collectionId: string;
-  trackKey: string;
-  playedAt: number;
-}
 export type MusicEntityKind = 'playlist' | 'album' | 'artist';
 export type MusicEntityHistoryEntry =
-  | { kind: MusicEntityKind; item: CatalogItem; playedAt: number }
+  | {
+      kind: MusicEntityKind;
+      item: CatalogItem;
+      playedAt: number;
+    }
   | {
       kind: 'playlist';
       playlistId: string;
@@ -94,7 +87,13 @@ export type MusicEntityHistoryEntry =
       coverKey: CoverKey;
       playedAt: number;
     };
-export type MusicHistoryOrigin = { item: CatalogItem } | { playlistId: string };
+export type MusicHistoryOrigin =
+  | {
+      item: CatalogItem;
+    }
+  | {
+      playlistId: string;
+    };
 export interface DownloadEntry {
   id: string;
   track: Track;
@@ -106,20 +105,7 @@ export interface DownloadEntry {
   /** Tier classified from this download's native audio evidence, independent of preferences. */
   quality?: PlaybackQuality;
 }
-export type LibraryMediaKind = 'music' | 'podcast' | 'audiobook';
-export interface MediaLibraryBucket {
-  /** Recent playback for this media type, capped by storage normalization. */
-  history: HistoryEntry[];
-  savedTracks: Track[];
-  savedCollections: CatalogItem[];
-  favorites: string[];
-  favoriteCollections: string[];
-  downloads: DownloadEntry[];
-  /** User-selected local audio and completed downloads for this media type. */
-  localTracks?: Track[];
-  /** One real last-played audio identity per collection, independent of the 100-entry history. */
-  collectionPlayback?: Record<string, MediaCollectionPlayback>;
-}
+export type LibraryMediaKind = 'music';
 export interface Playlist {
   id: string;
   title: string;
@@ -129,7 +115,10 @@ export interface Playlist {
   updatedAt: number;
   cover?: string;
   description?: string;
-  importOrigin?: { provider: PlatformSetting['id']; id: string };
+  importOrigin?: {
+    provider: PlatformSetting['id'];
+    id: string;
+  };
   /** Stable identity of an explicitly imported six-six playlist share. */
   shareOrigin?: string;
 }
@@ -148,9 +137,20 @@ export interface SourceSetting {
   fileName?: string;
   script?: string;
   capabilities?: string[];
-  sourceCapabilities?: Record<string, { qualitys?: string[] }>;
+  sourceCapabilities?: Record<
+    string,
+    {
+      qualitys?: string[];
+    }
+  >;
   /** Per-platform manual playback-chain result for this imported script. */
-  manualPlatformHealth?: Record<string, { passed: boolean; checkedAt: number }>;
+  manualPlatformHealth?: Record<
+    string,
+    {
+      passed: boolean;
+      checkedAt: number;
+    }
+  >;
   /** Launch-scoped backend selected by the platform health probe. */
   pinnedBackend?: string;
   statusMessage?: string;
@@ -174,7 +174,12 @@ export interface MusicProfile {
   /** Current favorites captured only for a menu queue; recomputed from the saved favorite set. */
   favoriteStatistics?: MusicPreferenceStatistics;
 }
-export type MusicPreferenceDimension = 'genres' | 'styles' | 'languages' | 'moods' | 'artists';
+export type MusicPreferenceDimension =
+  | 'genres'
+  | 'styles'
+  | 'languages'
+  | 'moods'
+  | 'artists';
 export interface MusicPreferenceStatistics {
   version: 1;
   /** Effective sample weight, saturating at 100 for the 1% update rule. */
@@ -193,23 +198,25 @@ export const playbackQualityOptions: ReadonlyArray<{
   { value: 'flac24bit', settingsLabel: '至臻', playerLabel: '至臻' },
   { value: 'hires', settingsLabel: '母带', playerLabel: '母带' },
 ];
-
 /** A display label; the stored/requested quality always remains the original value. */
 export const settingsQualityLabel = (quality: PlaybackQuality): string =>
   returnedQualityLabel(quality);
-
 /** Only explicit platform response tiers can become a result label. */
-export function normalizeReturnedQuality(value: unknown): PlaybackQuality | undefined {
+export function normalizeReturnedQuality(
+  value: unknown,
+): PlaybackQuality | undefined {
   if (typeof value !== 'string') return undefined;
   const raw = value.trim().toLowerCase();
-  return playbackQualityOptions.find(option =>
-    option.value === raw || option.playerLabel === raw,
+  return playbackQualityOptions.find(
+    option => option.value === raw || option.playerLabel === raw,
   )?.value;
 }
-
 export function returnedQualityLabel(value: unknown): string {
   const quality = normalizeReturnedQuality(value);
-  return playbackQualityOptions.find(option => option.value === quality)?.playerLabel ?? '';
+  return (
+    playbackQualityOptions.find(option => option.value === quality)
+      ?.playerLabel ?? ''
+  );
 }
 export interface AppSettings {
   theme:
@@ -273,19 +280,22 @@ export interface AppSettings {
   headphoneData?: import('../services/headphones').HeadphoneUserData;
   effectIsolation?: import('../services/effectIsolation').EffectIsolation;
   effectSceneId?: string;
-  effectUserOverrides?: Record<string, { gains: number[]; advanced: import('../services/audioEffectState').AdvancedEffects }>;
+  effectUserOverrides?: Record<
+    string,
+    {
+      gains: number[];
+      advanced: import('../services/audioEffectState').AdvancedEffects;
+    }
+  >;
   shuffle: boolean;
   repeat: 'off' | 'all' | 'one';
 }
-
 export type PlaybackMode = 'sequence' | 'shuffle' | 'repeat-one';
-
 export const playbackModeLabels: Record<PlaybackMode, string> = {
   sequence: '顺序播放',
   shuffle: '随机播放',
   'repeat-one': '单曲循环',
 };
-
 export function playbackModeFromSettings(
   settings: Pick<AppSettings, 'shuffle' | 'repeat'>,
 ): PlaybackMode {
@@ -293,7 +303,6 @@ export function playbackModeFromSettings(
   if (settings.shuffle) return 'shuffle';
   return 'sequence';
 }
-
 export function playbackModeSettings(
   mode: PlaybackMode,
 ): Pick<AppSettings, 'shuffle' | 'repeat'> {
@@ -301,7 +310,6 @@ export function playbackModeSettings(
   if (mode === 'shuffle') return { shuffle: true, repeat: 'all' };
   return { shuffle: false, repeat: 'off' };
 }
-
 export const equalizerPresets = [
   'Flat',
   'Pop',
@@ -326,7 +334,11 @@ export const equalizerPresets = [
   'Custom',
 ] as const;
 export type EqualizerPreset = (typeof equalizerPresets)[number];
-export type EqualizerPresetCategory = '银河音效' | 'DTS 音效' | '调音台' | '自定义';
+export type EqualizerPresetCategory =
+  | '银河音效'
+  | 'DTS 音效'
+  | '调音台'
+  | '自定义';
 export const equalizerPresetLabels: Record<EqualizerPreset, string> = {
   Flat: '标准',
   Pop: '流行律动',
@@ -357,7 +369,10 @@ export interface SavedEqualizerPreset {
   category: EqualizerPresetCategory;
   advanced?: import('../services/audioEffectState').AdvancedEffects;
   headphone?: import('../services/audioEffectState').HeadphoneCalibration;
-  effectScope?: Exclude<import('../services/effectIsolation').EffectScope, string>;
+  effectScope?: Exclude<
+    import('../services/effectIsolation').EffectScope,
+    string
+  >;
 }
 export interface PersistedState {
   version: 2;
@@ -383,20 +398,27 @@ export interface PersistedState {
   profile: MusicProfile;
   localTracks: Track[];
   downloads: DownloadEntry[];
-  /** Podcast records are deliberately isolated from ordinary music records. */
-  podcastLibrary: MediaLibraryBucket;
-  /** Audiobook records are deliberately isolated from ordinary music records. */
-  audiobookLibrary: MediaLibraryBucket;
 }
-
 export interface HomeMenuProgressEntry {
   revision: number;
   round?: number;
-  queries: Record<string, { page: number; hasMore: boolean; limit?: number }>;
-  collections: Record<string, { offset: number; hasMore: boolean }>;
+  queries: Record<
+    string,
+    {
+      page: number;
+      hasMore: boolean;
+      limit?: number;
+    }
+  >;
+  collections: Record<
+    string,
+    {
+      offset: number;
+      hasMore: boolean;
+    }
+  >;
   recentTrackKeys: string[];
 }
-
 export interface NativePlayerState {
   audioEffectWarning?: string | null;
   playing: boolean;

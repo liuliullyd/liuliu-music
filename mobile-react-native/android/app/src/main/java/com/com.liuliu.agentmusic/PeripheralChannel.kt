@@ -21,7 +21,7 @@ internal class PeripheralChannel(private val context: Context) : AutoCloseable {
     val secure: Boolean, val protocol: String, val writeType: Int) {
     companion object {
       fun parse(json: String): Profile { val v = JSONObject(json)
-        val protocol = v.optString("protocol", "liuliu-json-v1"); require(protocol in listOf("liuliu-json-v1", "raw")) { "未知外设协议" }
+        val protocol = v.optString("protocol", "liuliu-car-v1"); require(protocol in listOf("liuliu-car-v1", "raw")) { "未知外设协议" }
         return Profile(UUID.fromString(v.getString("service")), UUID.fromString(v.getString("write")),
           UUID.fromString(v.getString("notify")), UUID.fromString(v.optString("read", v.getString("notify"))),
           UUID.fromString(v.getString("spp")), v.optBoolean("secure", true), protocol,
@@ -228,7 +228,7 @@ internal class PeripheralChannel(private val context: Context) : AutoCloseable {
   private fun accept(bytes: ByteArray) {
     received = bytes.take(128).joinToString("") { "%02x".format(it.toInt() and 255) }
     CarConnectionState.changed()
-    if (profile?.protocol != "liuliu-json-v1") return
+    if (profile?.protocol != "liuliu-car-v1") return
     try { frames.accept(bytes) { text ->
         val token = generation
         val commands = router

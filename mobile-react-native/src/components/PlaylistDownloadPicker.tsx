@@ -12,13 +12,12 @@ import {
   loadCollectionTrackBatch,
   type CollectionKind,
 } from '../services/collectionPaging';
+import { isTrackDownloaded } from '../services/trackActionState';
 import { useApp } from '../state/AppContext';
 import { useTheme } from '../theme';
+import { DownloadConfirmationDialog } from './DownloadConfirmationDialog';
 import { reachedListBottom } from './ListPaging';
 import { TrackPlatformDuration } from './UI';
-import { DownloadConfirmationDialog } from './DownloadConfirmationDialog';
-import { isTrackDownloaded } from '../services/trackActionState';
-
 // This picker owns metadata and a cursor only. It never publishes a playback
 // queue, warms song URLs or mounts covers for its not-yet-visible candidates.
 export function PlaylistDownloadPicker({
@@ -49,20 +48,17 @@ export function PlaylistDownloadPicker({
         offset: number,
         size: number,
         signal: AbortSignal,
-      ) => Promise<{ tracks: Track[]; hasMore: boolean }>;
+      ) => Promise<{
+        tracks: Track[];
+        hasMore: boolean;
+      }>;
     }
 )) {
   const app = useApp(),
     c = useTheme();
-  const noun =
-    kind === 'podcast' ? '单集' : kind === 'audiobook' ? '章节' : '歌曲';
-  const unit = kind === 'podcast' ? '集' : kind === 'audiobook' ? '章' : '首';
-  const collection =
-    kind === 'podcast'
-      ? '整档节目'
-      : kind === 'audiobook'
-      ? '整本书'
-      : '整张歌单';
+  const noun = '歌曲';
+  const unit = '首';
+  const collection = '整张歌单';
   const appRef = useRef(app);
   appRef.current = app;
   const active = useRef(true),
@@ -85,16 +81,7 @@ export function PlaylistDownloadPicker({
   const [error, setError] = useState('');
   const [confirmTracks, setConfirmTracks] = useState<Track[] | null>(null);
   const submitted = new Set(
-    (app.downloadsFor
-      ? app.downloadsFor(
-          kind === 'podcast'
-            ? 'podcast'
-            : kind === 'audiobook'
-            ? 'audiobook'
-            : 'music',
-        )
-      : app.state.downloads
-    )
+    (app.downloadsFor ? app.downloadsFor('music') : app.state.downloads)
       .filter(entry => entry.status !== 'failed')
       .map(entry => trackQueueKey(entry.track)),
   );
@@ -119,7 +106,6 @@ export function PlaylistDownloadPicker({
   const selection = items.filter(
     track => selected.has(trackQueueKey(track)) && eligible(track),
   );
-
   const readPage = async () => {
     if (!active.current || !cursor.current.hasMore) return;
     const current = cursor.current;
@@ -144,9 +130,7 @@ export function PlaylistDownloadPicker({
     const emptyPages = additions.length ? 0 : current.emptyPages + 1;
     if (result.hasMore && emptyPages >= 3)
       throw new Error(
-        `连续分页未返回新${noun}，请稍后重试；尚未读取完整${
-          kind === 'podcast' ? '节目' : kind === 'audiobook' ? '书籍' : '歌单'
-        }`,
+        `连续分页未返回新${noun}，请稍后重试；尚未读取完整${'歌单'}`,
       );
     cursor.current = {
       tracks: [...current.tracks, ...additions],
@@ -173,15 +157,7 @@ export function PlaylistDownloadPicker({
     } catch (err) {
       if (active.current)
         setError(
-          err instanceof Error
-            ? err.message
-            : `读取${
-                kind === 'podcast'
-                  ? '节目'
-                  : kind === 'audiobook'
-                  ? '书籍'
-                  : '歌单'
-              }失败，请重试`,
+          err instanceof Error ? err.message : `读取${'歌单'}失败，请重试`,
         );
     } finally {
       locked.current = false;
@@ -206,13 +182,7 @@ export function PlaylistDownloadPicker({
             style={[s.sheet, { backgroundColor: c.bg }]}
           >
             <View style={s.header}>
-              <Text style={[s.title, { color: c.text }]}>
-                {kind === 'podcast'
-                  ? '选择下载单集'
-                  : kind === 'audiobook'
-                  ? '选择下载章节'
-                  : '选择下载歌曲'}
-              </Text>
+              <Text style={[s.title, { color: c.text }]}>{'选择下载歌曲'}</Text>
               <Pressable
                 testID="playlist-download-close"
                 accessibilityLabel="关闭下载选择"
@@ -233,15 +203,7 @@ export function PlaylistDownloadPicker({
                 style={s.smallButton}
               >
                 <Text style={{ color: c.accent }}>
-                  {loadPage
-                    ? kind === 'audiobook'
-                      ? '全选列表章节'
-                      : '全选列表单集'
-                    : kind === 'podcast'
-                    ? '全选整档节目'
-                    : kind === 'audiobook'
-                    ? '全选整本书'
-                    : '全选整张歌单'}
+                  {loadPage ? '全选列表单集' : '全选整张歌单'}
                 </Text>
               </Pressable>
               <Pressable
@@ -403,7 +365,10 @@ export function PlaylistDownloadPicker({
           tracks={confirmTracks}
           onClose={() => setConfirmTracks(null)}
           onDownload={(track, resolved) =>
-            appRef.current.downloadTrack(track, { useLaunchBinding: true, resolved })
+            appRef.current.downloadTrack(track, {
+              useLaunchBinding: true,
+              resolved,
+            })
           }
         />
       ) : null}

@@ -13,7 +13,6 @@ import android.widget.*
 import androidx.media3.common.Player
 import com.google.common.util.concurrent.MoreExecutors
 import org.json.JSONObject
-import java.util.concurrent.Executors
 
 /** Host-launchable UI. It observes the existing Player and never constructs a playback service. */
 @Suppress("MissingPermission")
@@ -43,7 +42,7 @@ class CarPlayerActivity : Activity() {
   private var previousReady = false
   private var colorKey = ""
   private val dialogs = linkedSetOf<android.app.Dialog>()
-  private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "LiuliuCarUI").apply { isDaemon = true } }
+  private val localSearch = CarLibrarySearch()
   private val ticker = object : Runnable { override fun run() { if (alive) { update(); CarConnectionState.main.postDelayed(this, 750) } } }
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState); CarConnections.initialize(applicationContext)
@@ -82,7 +81,7 @@ class CarPlayerActivity : Activity() {
     favorite = button(extra, "收藏") { action("favorite") }
     mode = button(extra, "顺序播放") {
       val current = CarConnectionState.snapshot.optString("mode")
-      action("mode", JSONObject().put("mode", CarUcarMode.next(current)))
+      action("mode", JSONObject().put("mode", CarPlaybackMode.next(current)))
     }
     button(extra, "整首歌词") { android.app.AlertDialog.Builder(this).setTitle("歌词").setMessage(
       MediaNotificationState.lyrics.whole(CarConnectionState.player?.currentMediaItem?.mediaId).ifBlank { "暂无有效歌词" }).setPositiveButton("关闭", null).show() }
@@ -107,7 +106,7 @@ class CarPlayerActivity : Activity() {
   @Deprecated("Android Activity callback") override fun onBackPressed() { back() }
   private fun back() { if (searchQuery != null) { searchQuery = null; browse() }
     else if (history.isNotEmpty()) { val previous = history.removeLast(); parent = previous.first; page = previous.second; browse() } else finish() }
-  override fun onDestroy() { dialogs.toList().forEach { it.dismiss() }; dialogs.clear(); remove?.invoke(); remove = null; browseGeneration++; worker.shutdownNow(); if (CarConnectionState.player == null && !isChangingConfigurations) CarConnections.close(); super.onDestroy() }
+  override fun onDestroy() { dialogs.toList().forEach { it.dismiss() }; dialogs.clear(); remove?.invoke(); remove = null; browseGeneration++; localSearch.clear(); if (CarConnectionState.player == null && !isChangingConfigurations) CarConnections.close(); super.onDestroy() }
   private fun action(name: String, args: JSONObject = JSONObject()) {
     val id = CarConnectionState.player?.currentMediaItem?.mediaId
     if (id != null) args.put("mediaId", id)
@@ -122,8 +121,7 @@ class CarPlayerActivity : Activity() {
     previousReady = ready
     val same = player?.currentMediaItem?.mediaId == s.optString("mediaId")
     title.text = if (s.optString("title").isBlank()) "六六音乐 · 车载" else "${s.optString("title")}\n${s.optString("artist") }"
-    val songMark = when (s.optString("vip")) { "1" -> "是"; "0" -> "否"; else -> "未知" }
-    status.text = if (s.optBoolean("ready")) "歌曲VIP标记：$songMark · 试听：未知\n${CarConnections.network.status}"
+    status.text = if (s.optBoolean("ready")) "六六音乐 · ${"Android MediaSession / A2DP"}"
       else "请在手机应用完成原启动检测，再返回车载界面"
     lyrics.text = if (same) MediaNotificationState.lyrics.textAt(s.optString("mediaId"), player?.currentPosition ?: 0) else ""
     val position = player?.currentPosition?.coerceAtLeast(0) ?: 0; val duration = player?.duration?.coerceAtLeast(0) ?: 0
@@ -180,24 +178,21 @@ class CarPlayerActivity : Activity() {
     searchQuery = query; searchBusy = true
     val token = ++browseGeneration
     directory.removeAllViews(); text(directory, "正在在线搜索…", 18f)
-    worker.execute { val result = runCatching { CarConnections.command("LiuliuSearch", JSONObject().put("Key", query)
-        .put("PageFlag", if (reset) 0 else 1).put("LiuliuPageIndex", requestedPage)) }
-      runOnUiThread { if (!isDestroyed && token == browseGeneration) {
-        searchBusy = false; directory.removeAllViews(); val response = result.getOrNull(); val rows = response?.optJSONArray("Lists")
-        if (rows == null) { if (reset) searchHasMore = false
-          text(directory, result.exceptionOrNull()?.message ?: response?.optString("ErrorMessage", "搜索失败，请重试") ?: "搜索失败，请重试", 18f)
-          button(directory, "重试本页") { search(query, reset, requestedPage) }
-        }
-        else {
-          searchResultPage = requestedPage; searchHasMore = response?.optBoolean("LiuliuHasMore") == true
-          text(directory, "在线搜索 · 第 ${requestedPage + 1} 页 · 返回可恢复曲库", 18f)
-          if (rows.length() == 0) text(directory, if (searchHasMore) "本页没有可用结果，可继续下一页" else "没有更多匹配歌曲", 18f)
-        else for (i in 0 until rows.length()) { val item = rows.getJSONObject(i); button(directory, item.optString("Name")) {
-          CarLibraryState.item(item.optString("ID"))?.let { select(it) }
-        } }
-        }
-      } }
-    }
+    val future = localSearch.request(query, requestedPage, 20, reset)
+    future.addListener({ runOnUiThread { if (!isDestroyed && token == browseGeneration) {
+      searchBusy = false; directory.removeAllViews()
+      val result = runCatching { future.get() }
+      if (result.isFailure) {
+        text(directory, result.exceptionOrNull()?.cause?.message ?: "搜索失败，请重试", 18f)
+        button(directory, "重试本页") { search(query, reset, requestedPage) }
+      } else {
+        val window = result.getOrThrow()
+        searchResultPage = requestedPage; searchHasMore = window.hasMore
+        text(directory, "在线搜索 · 第 " + (requestedPage + 1) + " 页", 18f)
+        if (window.items.isEmpty()) text(directory, "本页没有匹配歌曲", 18f)
+        window.items.forEach { item -> button(directory, item.mediaMetadata.title?.toString().orEmpty()) { select(item) } }
+      }
+    } } }, MoreExecutors.directExecutor())
   }
   private fun select(item: androidx.media3.common.MediaItem) {
     val future = CarLibraryState.selectResult(item)
@@ -223,21 +218,11 @@ class CarPlayerActivity : Activity() {
     val info = text(content, "", 16f)
     val deviceList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }; content.addView(deviceList)
     fun refresh() {
-      info.text = "${CarConnections.network.status}\n蓝牙：${CarConnections.bluetooth?.status}\n外设：${CarConnections.peripheral?.status}\n收包：${CarConnections.peripheral?.received}"
+      info.text = "六六音乐 · 标准媒体控制\n蓝牙：${CarConnections.bluetooth?.status}\n外设：${CarConnections.peripheral?.status}\n收包：${CarConnections.peripheral?.received}"
       deviceList.removeAllViews()
-      CarConnections.network.devices.values.forEach { device -> button(deviceList, "连接局域网：${device.name}") { CarConnections.network.connect(device.id) } }
     }
     dialogs.add(dialog)
     val unsubscribe = CarConnectionState.observe { refresh() }; dialog.setOnDismissListener { unsubscribe(); dialogs.remove(dialog) }
-    button(content, "启动局域网发现") { CarConnections.startNetwork() }
-    button(content, "停止网络会话") { CarConnections.stopNetwork() }
-    val pcm = CheckBox(this).apply { text = "PCM 远端输出时静音手机（远端负责音量）"; isChecked = CarPcmBuffer.remoteOnly
-      setOnCheckedChangeListener { _, checked -> CarPcmBuffer.remoteOnly = checked } }; content.addView(pcm)
-    button(content, "从头采集当前歌曲PCM（最多256MiB）") {
-      CarPcmBuffer.enabled = true; CarPcmBuffer.origin(0); CarPcmBuffer.reset()
-      val capture = CarConnectionState.request("seek", JSONObject().put("seconds", 0).put("mediaId", CarConnectionState.player?.currentMediaItem?.mediaId))
-      capture.addListener({ if (capture.get().optBoolean("ok")) CarConnectionState.request("play") else CarPcmBuffer.enabled = false }, MoreExecutors.directExecutor())
-    }
     button(content, "授权并监测 A2DP") { requestBluetooth() }
     button(content, "关闭蓝牙监测") { CarConnections.bluetooth?.stop() }
     button(content, "系统蓝牙配对与音频连接") { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
@@ -251,7 +236,7 @@ class CarPlayerActivity : Activity() {
       CarConnections.bluetooth?.devices?.forEach { device -> android.app.AlertDialog.Builder(this).setTitle(device.name ?: device.address).setMessage("将此设备标记为车载设备？")
         .setPositiveButton("车载") { _, _ -> CarConnections.bluetooth?.mark(device, true) }.setNegativeButton("非车载") { _, _ -> CarConnections.bluetooth?.mark(device, false) }.show() }
     }
-    text(content, "外设 profile 必须与对端匹配。liuliu-json-v1 是六六控制协议；raw 仅收发字节。未知厂商协议需要厂家资料。", 16f)
+    text(content, "外设 profile 必须与对端匹配。liuliu-car-v1 是六六控制协议；raw 仅收发字节。未知厂商协议需要厂家资料。", 16f)
     val prefs = getSharedPreferences("liuliu_car", MODE_PRIVATE)
     val profile = EditText(this).apply { minLines = 4; setText(prefs.getString("peripheral_profile", DEFAULT_PROFILE)) }; content.addView(profile)
     fun selected() = PeripheralChannel.Profile.parse(profile.text.toString()).also { prefs.edit().putString("peripheral_profile", profile.text.toString()).apply() }
@@ -265,7 +250,7 @@ class CarPlayerActivity : Activity() {
     button(content, "取消扫描 / 断开外设") { CarConnections.peripheral?.disconnect() }
     button(content, "重新连接上次外设") { CarConnections.peripheral?.reconnect() }
     button(content, "读取 profile 特征") { CarConnections.peripheral?.read() }
-    val outgoing = EditText(this).apply { hint = "发送 UTF-8 文本；六六协议每行一条 JSON" }; content.addView(outgoing)
+    val outgoing = EditText(this).apply { hint = "发送 UTF-8 文本；liuliu-car-v1 每行一条 JSON" }; content.addView(outgoing)
     button(content, "发送") { CarConnections.peripheral?.send((outgoing.text.toString() + "\n").toByteArray(Charsets.UTF_8)) }
     refresh(); dialog.show()
   }
@@ -282,6 +267,6 @@ class CarPlayerActivity : Activity() {
   companion object {
     @Volatile var phoneForeground = false
     @Volatile var carForeground = false
-    const val DEFAULT_PROFILE = "{\"service\":\"71372400-7485-4c12-a155-1030e1e62120\",\"write\":\"71372401-7485-4c12-a155-1030e1e62120\",\"notify\":\"71372402-7485-4c12-a155-1030e1e62120\",\"spp\":\"71372403-7485-4c12-a155-1030e1e62120\",\"secure\":true,\"protocol\":\"liuliu-json-v1\"}"
+    const val DEFAULT_PROFILE = "{\"service\":\"71372400-7485-4c12-a155-1030e1e62120\",\"write\":\"71372401-7485-4c12-a155-1030e1e62120\",\"notify\":\"71372402-7485-4c12-a155-1030e1e62120\",\"spp\":\"71372403-7485-4c12-a155-1030e1e62120\",\"secure\":true,\"protocol\":\"liuliu-car-v1\"}"
   }
 }

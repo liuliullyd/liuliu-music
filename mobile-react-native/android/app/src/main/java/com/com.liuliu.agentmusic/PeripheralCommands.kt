@@ -15,8 +15,9 @@ internal class PeripheralCommands(private val business: (String, JSONObject) -> 
       completed[id]?.let { cached ->
         return if (cached.first == text) cached.second else encode(JSONObject().put("id", id).put("error", "请求ID冲突"))
       }
+      require(input.optString("protocol") == PROTOCOL) { "不支持的六六车载协议版本" }
       val action = input.getString("command")
-      require(action !in listOf("RegisterPlayState", "UnRegisterPlayState", "PlayState", "MediaInfo", "LiuliuLiveMediaInfo", "StopSendData")) { "该命令仅适用于局域网会话" }
+      require(action in COMMANDS) { "未知六六车载命令" }
       val args = input.optJSONObject("args") ?: JSONObject()
       decorate(args)
       JSONObject().put("id", id).put("result", business(action, args))
@@ -25,5 +26,9 @@ internal class PeripheralCommands(private val business: (String, JSONObject) -> 
     }
     return encode(result).also { bytes -> id?.takeIf { it >= 0 }?.let { completed[it] = text to bytes } }
   }
-  private fun encode(value: JSONObject) = (value.toString() + "\n").toByteArray(Charsets.UTF_8)
+  companion object {
+    const val PROTOCOL = "liuliu-car-v1"
+    val COMMANDS = setOf("state", "library", "search", "select", "play", "pause", "stop", "next", "previous", "seek", "favorite", "mode")
+  }
+  private fun encode(value: JSONObject) = (value.put("protocol", PROTOCOL).toString() + "\n").toByteArray(Charsets.UTF_8)
 }

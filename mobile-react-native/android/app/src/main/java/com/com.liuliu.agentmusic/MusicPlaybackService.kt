@@ -152,7 +152,7 @@ class MusicPlaybackService : MediaLibraryService() {
           // Keep decoded PCM on the existing processor chain for all effect switches.
           .setEnableFloatOutput(false)
           .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParameters)
-          .setAudioProcessors(arrayOf(tuningProcessor, CarPcmProcessor()))
+          .setAudioProcessors(arrayOf(tuningProcessor))
           .build()) {
             override fun getFormatSupport(format: Format): Int =
               if(format.sampleMimeType==MimeTypes.AUDIO_RAW) super.getFormatSupport(format) else AudioSink.SINK_FORMAT_UNSUPPORTED
@@ -170,8 +170,6 @@ class MusicPlaybackService : MediaLibraryService() {
       repeatMode = Player.REPEAT_MODE_OFF
       addListener(object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
-          CarPcmBuffer.origin(-1)
-          CarPcmBuffer.reset()
           if (mediaItem?.mediaId != urlRecovery?.mediaId) urlRecovery = null
           failures = 0
           if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO &&
@@ -194,8 +192,6 @@ class MusicPlaybackService : MediaLibraryService() {
         }
         override fun onVolumeChanged(volume: Float) { updateEffectVolume() }
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-          CarPcmBuffer.reset()
-          CarPcmBuffer.origin(newPosition.positionMs)
         }
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
           if (!playWhenReady && urlRecovery?.status != "failed") urlRecovery = null
@@ -213,7 +209,6 @@ class MusicPlaybackService : MediaLibraryService() {
     }
     val intent = packageManager.getLaunchIntentForPackage(packageName)
     CarConnectionState.player = player
-    CarPcmBuffer.initialize(cacheDir)
     CarConnections.initialize(applicationContext)
     CarConnections.bluetooth?.restore()
     val pending = intent?.let { PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT) }
@@ -384,7 +379,6 @@ class MusicPlaybackService : MediaLibraryService() {
   }
   override fun onDestroy() {
     CarConnections.close()
-    CarPcmBuffer.release()
     CarConnectionState.player = null
     stopLibraryChanges?.invoke()
     stopLibraryChanges = null

@@ -24,7 +24,6 @@ class LiuliuCarConnectionModule(private val react: ReactApplicationContext) : Re
   @ReactMethod fun isSearchSessionActive(session: String, promise: Promise) { CarConnectionState.main.post {
     val valid = when {
       session == "local" -> true
-      session.startsWith("network:") -> session == "network:${CarConnections.network.connectionGeneration()}"
       session.startsWith("peripheral:") -> session == "peripheral:${CarConnections.peripheral?.connectionGeneration()}"
       else -> false
     }

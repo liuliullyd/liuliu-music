@@ -6,8 +6,6 @@ import type {
   Track,
 } from '../domain/types';
 import { constituentArtists } from './recommendation';
-import { trackMediaKind } from './mediaLibrary';
-
 const dimensions: MusicPreferenceDimension[] = [
   'genres',
   'styles',
@@ -28,7 +26,6 @@ export const emptyMusicStatistics = (): MusicPreferenceStatistics => ({
   samples: 0,
   distributions: emptyDimensions(),
 });
-
 const aliases: Record<string, string> = {
   rock: '摇滚',
   pop: '流行',
@@ -104,13 +101,15 @@ const labels = (...values: unknown[]): string[] => [
     }),
   ),
 ];
-
 /** Source metadata only: onlineCatalog's presentation defaults are not evidence. */
 export function musicFeatures(
   track: Track,
 ): Record<MusicPreferenceDimension, string[]> {
   const metadata = track.metadata ?? {};
-  const trans = metadata.trans_param && typeof metadata.trans_param === 'object' ? metadata.trans_param as Record<string, unknown> : {};
+  const trans =
+    metadata.trans_param && typeof metadata.trans_param === 'object'
+      ? (metadata.trans_param as Record<string, unknown>)
+      : {};
   const genre = labels(
     metadata.genre,
     metadata.Genre,
@@ -135,9 +134,12 @@ export function musicFeatures(
     ],
     styles: [
       ...new Set(
-        labels(metadata.style, metadata.Style, metadata.styles, trans.style).map(value =>
-          value.toLowerCase(),
-        ),
+        labels(
+          metadata.style,
+          metadata.Style,
+          metadata.styles,
+          trans.style,
+        ).map(value => value.toLowerCase()),
       ),
     ],
     languages: [...new Set(language.map(explicitLanguage).filter(Boolean))],
@@ -165,19 +167,16 @@ export function musicFeatures(
     ],
   };
 }
-
 function featureWeights(track: Track, dimension: MusicPreferenceDimension) {
   const values = musicFeatures(track)[dimension];
   return values.length
     ? Object.fromEntries(values.map(value => [value, 1 / values.length]))
     : { [unknown]: 1 };
 }
-
 export function accumulateMusicStatistics(
   previous: MusicPreferenceStatistics,
   track: Track,
 ): MusicPreferenceStatistics {
-  if (trackMediaKind(track) !== 'music') return previous;
   const samples = Math.min(100, previous.samples + 1);
   const weight = 1 / samples;
   const distributions = emptyDimensions();
@@ -190,12 +189,11 @@ export function accumulateMusicStatistics(
   }
   return { version: 1, samples, distributions };
 }
-
 /** Exact current-set percentages, also used once to seed legacy unique history. */
 export function statisticsFromTracks(
   tracks: Track[],
 ): MusicPreferenceStatistics {
-  const music = tracks.filter(track => trackMediaKind(track) === 'music');
+  const music = tracks.filter(track => true);
   if (!music.length) return emptyMusicStatistics();
   const distributions = emptyDimensions();
   for (const track of music)
@@ -210,7 +208,6 @@ export function statisticsFromTracks(
       distributions[dimension][key] /= music.length;
   return { version: 1, samples: Math.min(100, music.length), distributions };
 }
-
 export function normalizeMusicStatistics(
   value: unknown,
 ): MusicPreferenceStatistics | undefined {
@@ -251,7 +248,6 @@ export function normalizeMusicStatistics(
   }
   return { version: 1, samples: candidate.samples, distributions };
 }
-
 export function memoryStatisticsFor(
   profile: MusicProfile,
   history: HistoryEntry[],
@@ -260,11 +256,7 @@ export function memoryStatisticsFor(
     normalizeMusicStatistics(profile.memoryStatistics) ??
     statisticsFromTracks(
       [...history]
-        .filter(
-          entry =>
-            trackMediaKind(entry.track) === 'music' &&
-            Number.isFinite(entry.playedAt),
-        )
+        .filter(entry => Number.isFinite(entry.playedAt))
         .sort((a, b) => b.playedAt - a.playedAt)
         .slice(0, 100)
         .map(entry => entry.track),
@@ -283,7 +275,6 @@ export function favoriteStatisticsFor(state: {
   );
   return statisticsFromTracks([...unique.values()]);
 }
-
 export function preferenceQueries(statistics: MusicPreferenceStatistics) {
   const routes = dimensions.map(dimension =>
     Object.entries(statistics.distributions[dimension])
@@ -300,7 +291,6 @@ export function preferenceQueries(statistics: MusicPreferenceStatistics) {
     ),
   ];
 }
-
 export interface PreferenceSelection {
   statistics: MusicPreferenceStatistics;
   count: number;
@@ -364,7 +354,6 @@ export function acceptPreferenceTrack(
       state.counts[dimension][key] =
         (state.counts[dimension][key] ?? 0) + weight;
 }
-
 /** No fallback to Track.releaseYear: onlineCatalog supplies a default current year. */
 export function confirmedReleaseDate(track: Track): number | undefined {
   const metadata = track.metadata ?? {};
@@ -398,8 +387,8 @@ export function confirmedReleaseDate(track: Track): number | undefined {
         (typeof value === 'string' && /^(?:\d{10}|\d{13})$/.test(value))
           ? Number(value)
           : NaN;
-      if (numeric >= 1_000_000_000)
-        timestamp = numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+      if (numeric >= 1000000000)
+        timestamp = numeric < 10000000000 ? numeric * 1000 : numeric;
       else if (typeof value === 'string') {
         const parts = value.match(
           /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s].*)?$/,
@@ -426,7 +415,6 @@ export function isRecentRelease(track: Track, now = Date.now()) {
   cutoff.setUTCFullYear(cutoff.getUTCFullYear() - 1);
   return date !== undefined && date >= cutoff.getTime() && date <= now;
 }
-
 export function confirmedReleaseYear(track: Track): number | undefined {
   const date = confirmedReleaseDate(track);
   if (date !== undefined) return new Date(date).getUTCFullYear();
@@ -445,7 +433,6 @@ export function confirmedReleaseYear(track: Track): number | undefined {
     ? track.releaseYear
     : undefined;
 }
-
 export const isChineseLanguage = (language: string) =>
   /^(?:国语|粤语|闽南语|客家话|台语|吴语|潮汕话|四川话)$/.test(language);
 export function exploreLanguage(

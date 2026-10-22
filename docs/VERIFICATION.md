@@ -1,18 +1,32 @@
 # Public-edition verification
 
-Checked on 2026-10-22 against this standalone Android source edition:
+Checked on 2026-10-23 for the music-only V1.0.0 / Android code 1 release.
 
 | Check | Result |
 | --- | --- |
 | Production TypeScript typecheck | Passed |
-| Public-edition Jest suites | 13 suites, 237 assertions passed |
-| Source lifecycle integration | Empty install, no activation controls, picker cancellation, invalid metadata, failed initialization, successful import/persistence, duplicate rejection and deletion passed |
-| Publication hygiene | No bundled playback source, source distribution/activation module, signing key or private build dependency in the selected public files |
-| Release JavaScript bundle / Hermes | Built successfully |
-| Production Kotlin compilation | Passed; existing deprecation warnings retained |
-| x86_64 Release assembly | Passed with R8/Hermes; unsigned validation artifact |
-| Android package identity | com.liuliu.music.opensource, version 1.0.0 / code 1 |
+| Public-edition Jest suites | 13 suites, 235 tests passed |
+| Source lifecycle integration | Empty install, no activation controls, picker cancellation, invalid metadata, failed initialization, import/persistence, duplicate rejection and deletion passed |
+| Music-only UI and storage | Removed Home/Library/Search entry points; obsolete backup buckets are discarded while music playlists, albums, artists and history remain supported |
+| App-owned car protocol JVM contract | Passed: version, dispatch, duplicate/conflicting IDs, rejected input, segmented/coalesced frames, size limit and playback modes |
+| Publication hygiene | No bundled playback source, distribution/activation module, dedicated signing key, obsolete media implementation or vendor car protocol in the public source |
+| Release Kotlin compilation | Passed |
+| Four-ABI Release assembly | Passed, including Android Release lint |
+| Effective Release configuration | R8/ProGuard obfuscation, resource shrinking and Metro minification disabled; Hermes optimization flags empty |
+| Actual APK | Hermes bytecode; all four application ELF architectures verified; readable application class descriptors; removed media endpoints and old car protocol classes absent |
+| Package signing and alignment | Dedicated release certificate, APK signature schemes v2/v3 verified, 16 KB ZIP alignment passed |
+| Frozen application inputs | 6,432 files, zero drift through build and package verification |
 
-The unsigned x86_64 artifact is not an installable official release and is excluded from Git. Its SHA-256 was `3b8629b0bbf5c9be83c62e54cf8a04c5f44e6044ec68a09fbf237bb6576ecef9`. It contained no source-distribution assets or signing entries.
+The application ID is `com.liuliu.music.opensource`, version name `1.0.0`, version code `1`, minimum Android API 24. The actual native libraries cover `armeabi-v7a`, `arm64-v8a`, `x86` and `x86_64`.
 
-These results cover the exported source tree and its selected tests. They do not mean the old private repository's entire test history passed, nor do they establish device playback, all platforms, all ABIs, physical Bluetooth or commercial car-host compatibility. No device installation or user-data migration was performed for this public edition.
+The signed artifact `liuliu-music-V1.0.0-code1-release.apk` is 86,522,729 bytes. SHA-256:
+
+```text
+31a9ffc9cb9b42b61d3b94f8909cc4cadc5f01199bd2384efafaf84d5861a2ee
+```
+
+The dedicated signing certificate SHA-256 is `50a57b40c978d6c455a2c260b30a398fa4968701052f8dea01cff07256817250`. Signing keys and passwords are excluded from the repository. Subsequent official updates must use the same certificate.
+
+The car implementation uses Android MediaSession/MediaBrowser and the documented [app-owned peripheral protocol](CAR_INTEGRATION.md). The former vendor discovery, LAN audio/PCM, protocol state and vendor-specific metadata/mode files have been deleted. Ordinary QQ music catalog support is separate from those removed car protocols.
+
+These checks cover this public source edition and the signed package. No device installation was performed. Device startup, imported-source playback, physical BLE/SPP, A2DP/AVRCP and commercial car-host compatibility require separate device verification. They are not established by compiler, JVM or package checks. Older validation artifacts are superseded by this release.

@@ -2,7 +2,7 @@
 
 Use Node.js >=22.11, JDK 17, Android SDK/build tools 36 and NDK 27.1.12297006. Install the pinned JavaScript dependencies with `npm ci` in `mobile-react-native`.
 
-The build has no dependency on a private memory file, an E-drive path, a source server or an activation asset. `preBuild` runs the publication hygiene check. R8 and Hermes remain enabled for Release.
+The build has no dependency on a private memory file, an E-drive path, a source server or an activation asset. `preBuild` runs the publication hygiene check. Release disables R8/ProGuard minification/obfuscation, resource shrinking and Metro minification. Hermes remains the ordinary JavaScript runtime, with no `-O` compiler optimization flag or hardening/packing step. Normal APK signing remains enabled when configured.
 
 ## Release signing
 

@@ -1,40 +1,24 @@
+import type { CatalogItem, PlatformSetting, Track } from '../domain/types';
 import type { CatalogRequestBudget } from './catalogRequestBudget';
-import { getQishuiCollection } from './qishuiCatalog';
 import {
   loadChartTrackBatch,
   requestCatalogJson,
   type HomeReleasePage,
 } from './homeNewReleases';
+import { loadLiveTracks } from './mediaDiscovery';
 import {
   getCollection,
   normalizeKugouTrack,
   normalizeKuwoTrack,
   normalizeMiguTrack,
-  normalizeNeteaseTrack,
   providerNames,
   type OnlineProvider,
 } from './onlineCatalog';
-import { filterPlayableCandidates } from './trackPlaybackPolicy';
-import { hasExternalMediaOrigin } from './mediaDiscoveryPaging';
-import {
-  loadNeteaseRadioPrograms,
-  loadQqTypedMediaAlbumTracks,
-  loadMiguTypedMediaAlbumTracks,
-  getArtistTracks,
-  getAlbumDetail,
-} from './onlineMusic';
-import type { CatalogItem, PlatformSetting, Track } from '../domain/types';
-import { loadLiveTracks } from './mediaDiscovery';
+import { getAlbumDetail, getArtistTracks } from './onlineMusic';
 import { readPlaylistReferencePage } from './playlistImport';
-
-export type CollectionKind =
-  | 'charts'
-  | 'playlists'
-  | 'new-albums'
-  | 'artist'
-  | 'podcast'
-  | 'audiobook';
-
+import { getQishuiCollection } from './qishuiCatalog';
+import { filterPlayableCandidates } from './trackPlaybackPolicy';
+export type CollectionKind = 'charts' | 'playlists' | 'new-albums' | 'artist';
 /** UI/queue-only paging. The existing startup and catalog services are untouched. */
 export async function loadCollectionTrackBatch(
   provider: OnlineProvider,
@@ -48,8 +32,13 @@ export async function loadCollectionTrackBatch(
   _scenePage = false,
 ): Promise<HomeReleasePage> {
   if (provider === 'qishui' && (kind === 'charts' || kind === 'playlists')) {
-    const detail = await getQishuiCollection(kind, id, offset, size, { requestContext });
-    return { tracks: filterPlayableCandidates(detail.tracks), hasMore: detail.hasMore };
+    const detail = await getQishuiCollection(kind, id, offset, size, {
+      requestContext,
+    });
+    return {
+      tracks: filterPlayableCandidates(detail.tracks),
+      hasMore: detail.hasMore,
+    };
   }
   if (kind === 'artist' || (kind === 'new-albums' && metadata.entityTrack)) {
     const entityTrack = metadata.entityTrack as Track | undefined;
@@ -93,9 +82,20 @@ export async function loadCollectionTrackBatch(
     };
   }
   if (kind === 'charts' || (provider === 'netease' && kind === 'playlists'))
-    return loadChartTrackBatch(provider, id, offset, size, undefined, requestContext);
+    return loadChartTrackBatch(
+      provider,
+      id,
+      offset,
+      size,
+      undefined,
+      requestContext,
+    );
   if (provider === 'qq' && kind === 'playlists') {
-    const collection = await getCollection(provider, kind, id, { offset, size, requestContext });
+    const collection = await getCollection(provider, kind, id, {
+      offset,
+      size,
+      requestContext,
+    });
     return {
       tracks: filterPlayableCandidates(collection.tracks.slice(0, size)),
       hasMore: collection.hasMore ?? collection.tracks.length === size,
@@ -112,147 +112,29 @@ export async function loadCollectionTrackBatch(
       hasMore: offset + size < collection.tracks.length,
     };
   }
-  if (
-    (kind === 'podcast' || kind === 'audiobook') &&
-    (provider === 'qq' || (provider === 'migu' && kind === 'audiobook'))
-  ) {
-    const album = {
-      id,
-      title: id,
-      description: '',
-      cover: '',
-      provider,
-      kind: 'playlists' as const,
-      metadata: {
-        ...metadata,
-        mediaType: kind === 'audiobook' ? 'long-audio' : 'podcast',
-        albumid: id,
-      },
-    } as CatalogItem;
-    const page = Math.floor(offset / size) + 1;
-    const facts: { rawCount?: number; total?: number } = {};
-    const tracks =
-      provider === 'qq'
-        ? await loadQqTypedMediaAlbumTracks(album, page, size, kind, facts)
-        : await loadMiguTypedMediaAlbumTracks(album, page, size, kind, facts);
-    return {
-      tracks: filterPlayableCandidates(tracks),
-      hasMore: Number.isFinite(facts.total)
-        ? offset + size < Number(facts.total)
-        : (facts.rawCount ?? tracks.length) === size,
-    };
-  }
-  if (provider === 'migu' && kind === 'podcast')
-    throw new Error('迷谷当前没有可验证的播客目录接口');
-  if (provider === 'netease' && (kind === 'podcast' || kind === 'audiobook')) {
-    const radioId = id;
-    const body = metadata.collectionEpisodeOrder === 'oldest'
-      ? await loadNeteaseRadioPrograms(radioId, offset, size, { priority: 'foreground', oldestFirst: true })
-      : await loadNeteaseRadioPrograms(radioId, offset, size);
-    if (body.code !== 200)
-      throw new Error(
-        `${kind === 'audiobook' ? '听书' : '播客'}章节请求失败 ${
-          body.code ?? ''
-        }`,
-      );
-    const values = body.programs ?? [];
-    if (values.some(hasExternalMediaOrigin))
-      throw new Error('该合集包含不支持的平台内容');
-    return {
-      tracks: filterPlayableCandidates(
-        values.map((value: any, index: number) => {
-          const normalized = normalizeNeteaseTrack(value.mainSong ?? value);
-          return {
-            ...normalized,
-            title:
-              String(value.name ?? value.mainSong?.name ?? '') ||
-              normalized.title,
-            album:
-              String(
-                value.radio?.name ??
-                  value.dj?.nickname ??
-                  (kind === 'audiobook' ? '有声书' : '播客节目'),
-              ) || normalized.album,
-            duration:
-              Number(value.duration ?? value.mainSong?.dt ?? 0) /
-                (value.duration > 10000 ? 1000 : 1) ||
-              normalized.duration,
-            cover:
-              String(value.coverUrl ?? value.picUrl ?? '').trim() ||
-              normalized.cover ||
-              String(value.radio?.picUrl ?? '').trim(),
-            provider: 'netease',
-            providerId:
-              String(value.mainSong?.id ?? value.id ?? '') ||
-              normalized.providerId,
-            metadata: {
-              ...(value.mainSong ?? value),
-              ...value,
-              id: value.mainSong?.id ?? value.id,
-              songId: value.mainSong?.id,
-              programCoverUrl: value.coverUrl,
-              programHasLyric: value.existLyric === true,
-              mediaType: kind === 'audiobook' ? 'long-audio' : 'podcast',
-              discoveryEntity: 'episode',
-              radioId,
-              categoryId:
-                kind === 'audiobook' ? 10001 : value.radio?.categoryId,
-              programId: value.id,
-              ...(metadata.collectionEpisodeOrder === 'oldest'
-                ? { collectionEpisodeOffset: offset + index }
-                : {}),
-            },
-          };
-        }),
-      ),
-      hasMore: values.length === size,
-    };
-  }
-  if (kind === 'audiobook' && provider === 'kugou') {
-    const body = await requestCatalogJson(
-      `http://mobilecdn.kugou.com/api/v3/album/song?version=9108&albumid=${encodeURIComponent(
-        id,
-      )}&plat=0&pagesize=${size}&area_code=0&page=${
-        Math.floor(offset / size) + 1
-      }&with_res_tag=0`,
-      'https://www.kugou.com/ts/',
-    );
-    const values = body.data?.info ?? [];
-    if (body.status !== undefined && body.status !== 1)
-      throw new Error('听书章节请求失败，请重试');
-    if (values.some(hasExternalMediaOrigin))
-      throw new Error('该合集包含不支持的平台内容');
-    return {
-      tracks: filterPlayableCandidates(
-        values.map((value: any, index: number) => {
-          const track = normalizeKugouTrack(value);
-          return {
-            ...track,
-            metadata: {
-              ...track.metadata,
-              mediaType: 'long-audio',
-              discoveryEntity: 'episode',
-              albumid: id,
-              collectionEpisodeOffset: offset + index,
-            },
-          };
-        }),
-      ),
-      hasMore: values.length === size,
-    };
-  }
   if (provider === 'kugou') {
     if (kind === 'playlists' && id.startsWith('gcid_')) {
-      const page = await readPlaylistReferencePage({ provider, id }, offset, size, requestContext?.signal);
-      return { tracks: filterPlayableCandidates(page.tracks.slice(0, size)),
-        hasMore: page.total === undefined ? page.rawCount >= size : offset + size < page.total };
+      const page = await readPlaylistReferencePage(
+        { provider, id },
+        offset,
+        size,
+        requestContext?.signal,
+      );
+      return {
+        tracks: filterPlayableCandidates(page.tracks.slice(0, size)),
+        hasMore:
+          page.total === undefined
+            ? page.rawCount >= size
+            : offset + size < page.total,
+      };
     }
     const body = await requestCatalogJson(
       `http://mobilecdn.kugou.com/api/v3/special/song?specialid=${encodeURIComponent(
         id,
       )}&page=${Math.floor(offset / size) + 1}&pagesize=${size}`,
       'http://m.kugou.com/',
-      undefined, requestContext,
+      undefined,
+      requestContext,
     );
     const values = body.data?.info ?? [];
     return {
@@ -273,7 +155,8 @@ export async function loadCollectionTrackBatch(
         offset / size,
       )}&rn=${size}&encode=utf8&keyset=pl2012&identity=kuwo&pcmp4=1&vipver=MUSIC_9.0.5.0_W1&newver=1`,
       'http://www.kuwo.cn/',
-      undefined, requestContext,
+      undefined,
+      requestContext,
     );
     const values = body.musiclist ?? body.musicList ?? [];
     return {
@@ -291,7 +174,8 @@ export async function loadCollectionTrackBatch(
       Math.floor(offset / size) + 1
     }&pageSize=${size}&playlistId=${encodeURIComponent(id)}`,
     'https://m.music.migu.cn/',
-    undefined, requestContext,
+    undefined,
+    requestContext,
   );
   const values = body.data?.songList ?? [];
   return {

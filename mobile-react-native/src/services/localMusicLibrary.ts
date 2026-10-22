@@ -1,12 +1,5 @@
-import {
-  trackQueueKey,
-  type DownloadEntry,
-  type LibraryMediaKind,
-  type Track,
-} from '../domain/types';
+import { trackQueueKey, type DownloadEntry, type Track } from '../domain/types';
 import { isLocalAudioUri, localPlaybackReference } from './libraryPlayback';
-import { trackMediaKind } from './mediaLibrary';
-
 export function localMusicFileReferences(track: Track): string[] {
   const reference = localPlaybackReference(track);
   const identity = localMediaFileIdentity(track);
@@ -16,7 +9,6 @@ export function localMusicFileReferences(track: Track): string[] {
     ),
   ];
 }
-
 export function matchesLocalMusicFile(
   track: Track,
   reference: string,
@@ -28,7 +20,6 @@ export function matchesLocalMusicFile(
       Boolean(identities[value] && identities[value] === identities[reference]),
   );
 }
-
 export async function resolveLocalMusicArtwork(
   track: Track,
   downloads: DownloadEntry[],
@@ -54,7 +45,6 @@ export async function resolveLocalMusicArtwork(
   const candidates = await adapters.supplement(track).catch(() => []);
   return candidates[0] ?? null;
 }
-
 export function removeDownloadedMusic(
   localTracks: Track[],
   downloads: DownloadEntry[],
@@ -75,13 +65,14 @@ export function removeDownloadedMusic(
       : localTracks,
   };
 }
-
 /** Sync a completed download once, so removing a local listing stays removed. */
-export function syncDownloadedMusic(localTracks: Track[], downloads: DownloadEntry[]) {
+export function syncDownloadedMusic(
+  localTracks: Track[],
+  downloads: DownloadEntry[],
+) {
   let tracks = localTracks;
   const entries = downloads.map(entry => {
-    if (entry.localLibrarySynced || entry.status !== 'downloaded' || trackMediaKind(entry.track) !== 'music')
-      return entry;
+    if (entry.localLibrarySynced || entry.status !== 'downloaded') return entry;
     const reference = isLocalAudioUri(entry.track.playUrl)
       ? entry.track.playUrl
       : isLocalAudioUri(entry.id) || /^download:\d+$/.test(entry.id)
@@ -93,22 +84,30 @@ export function syncDownloadedMusic(localTracks: Track[], downloads: DownloadEnt
       playUrl: isLocalAudioUri(reference) ? reference : undefined,
       metadata: { ...entry.track.metadata, _libraryLocalFile: reference },
     };
-    const index = tracks.findIndex(track =>
-      trackQueueKey(track) === trackQueueKey(local) || localPlaybackReference(track) === reference,
+    const index = tracks.findIndex(
+      track =>
+        trackQueueKey(track) === trackQueueKey(local) ||
+        localPlaybackReference(track) === reference,
     );
-    tracks = index < 0
-      ? [...tracks, local]
-      : tracks.map((track, i) => i === index
-        ? trackQueueKey(track) === trackQueueKey(local)
-          ? { ...track, ...local, cover: track.cover || local.cover, metadata: { ...track.metadata, ...local.metadata } }
-          : { ...track, cover: track.cover || local.cover }
-        : track);
+    tracks =
+      index < 0
+        ? [...tracks, local]
+        : tracks.map((track, i) =>
+            i === index
+              ? trackQueueKey(track) === trackQueueKey(local)
+                ? {
+                    ...track,
+                    ...local,
+                    cover: track.cover || local.cover,
+                    metadata: { ...track.metadata, ...local.metadata },
+                  }
+                : { ...track, cover: track.cover || local.cover }
+              : track,
+          );
     return { ...entry, localLibrarySynced: true };
   });
   return { localTracks: tracks, downloads: entries };
 }
-
-type LocalMediaKind = Exclude<LibraryMediaKind, 'music'>;
 
 /** Android may confirm two granted content URIs refer to the same audio file. */
 export function localMediaFileIdentity(track: Track): string | null {
@@ -117,69 +116,4 @@ export function localMediaFileIdentity(track: Track): string | null {
     ? identity
     : localPlaybackReference(track);
 }
-
 /** Assign only user-selected local files; ordinary audio metadata cannot infer a media kind. */
-export function localMediaTrack(track: Track, kind: LocalMediaKind): Track | null {
-  const reference = localPlaybackReference(track);
-  if (!isLocalAudioUri(reference)) return null;
-  const identity = `local:${kind}:${localMediaFileIdentity(track)}`;
-  const artist = String(track.artist ?? '').trim();
-  return {
-    ...track,
-    id: identity,
-    provider: 'custom',
-    providerId: identity,
-    playUrl: reference,
-    artist: !artist || /^(<unknown>|未知艺术家|未知歌手|本地音乐)$/i.test(artist)
-      ? kind === 'podcast' ? '本地主播' : '本地朗读者'
-      : artist,
-    metadata: {
-      ...track.metadata,
-      mediaType: kind === 'podcast' ? 'podcast' : 'long-audio',
-      _libraryLocalFile: reference,
-    },
-  };
-}
-
-export function localMediaTracks(tracks: Track[], kind: LocalMediaKind): Track[] {
-  const selected = new Map<string, Track>();
-  for (const track of tracks) {
-    const local = localMediaTrack(track, kind);
-    if (local && !selected.has(trackQueueKey(local)))
-      selected.set(trackQueueKey(local), local);
-  }
-  return [...selected.values()];
-}
-
-/** Completed typed downloads enter their local bucket once without replacing provider identity. */
-export function syncDownloadedMedia(
-  localTracks: Track[],
-  downloads: DownloadEntry[],
-  kind: LocalMediaKind,
-) {
-  let tracks = localTracks;
-  const entries = downloads.map(entry => {
-    if (entry.localLibrarySynced || entry.status !== 'downloaded' || trackMediaKind(entry.track) !== kind)
-      return entry;
-    const reference = localPlaybackReference(entry.track) ??
-      (isLocalAudioUri(entry.id) || /^download:\d+$/.test(entry.id) ? entry.id : null);
-    if (!reference) return entry;
-    const local: Track = {
-      ...entry.track,
-      playUrl: isLocalAudioUri(reference) ? reference : undefined,
-      metadata: { ...entry.track.metadata, _libraryLocalFile: reference },
-    };
-    const index = tracks.findIndex(track =>
-      trackQueueKey(track) === trackQueueKey(local) || localMediaFileIdentity(track) === localMediaFileIdentity(local),
-    );
-    tracks = index < 0
-      ? [...tracks, local]
-      : tracks.map((track, i) => i === index
-        ? trackQueueKey(track) === trackQueueKey(local)
-          ? { ...track, ...local, cover: track.cover || local.cover, metadata: { ...track.metadata, ...local.metadata } }
-          : { ...track, cover: track.cover || local.cover }
-        : track);
-    return { ...entry, localLibrarySynced: true };
-  });
-  return { localTracks: tracks, downloads: entries };
-}

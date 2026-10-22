@@ -5,6 +5,12 @@ apply plugin: 'com.facebook.react'
 react {
     autolinkLibrariesWithApp()
     extraPackagerArgs = ['--max-workers', '1']
+    // Keep normal Hermes compilation, without its release optimization pass.
+    hermesFlags = []
+}
+
+tasks.withType(com.facebook.react.tasks.BundleHermesCTask).configureEach {
+    minifyEnabled.set(false)
 }
 
 def signingValue = { name -> providers.environmentVariable(name).orNull ?: project.findProperty(name) }
@@ -40,8 +46,8 @@ android {
         release {
             if (hasReleaseSigning) signingConfig signingConfigs.release
             debuggable false
-            minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            minifyEnabled false
+            shrinkResources false
         }
     }
     externalNativeBuild {
@@ -64,3 +70,25 @@ tasks.register('verifyPublicSource', Exec) {
     commandLine 'node', 'scripts/check-public.cjs'
 }
 tasks.named('preBuild').configure { dependsOn('verifyPublicSource') }
+
+tasks.register('verifyReleaseConfiguration') {
+    doLast {
+        def bundle = tasks.named('createBundleReleaseJsAndAssets').get()
+        if (android.buildTypes.release.minifyEnabled || android.buildTypes.release.shrinkResources || bundle.minifyEnabled.get() || !bundle.hermesFlags.get().isEmpty()) {
+            throw new GradleException('Public Release must remain free of obfuscation and shrinking')
+        }
+        def report = layout.buildDirectory.file('reports/public-release-configuration.json').get().asFile
+        report.parentFile.mkdirs()
+        report.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+            applicationId: android.defaultConfig.applicationId,
+            versionName: android.defaultConfig.versionName,
+            versionCode: android.defaultConfig.versionCode,
+            minifyEnabled: android.buildTypes.release.minifyEnabled,
+            shrinkResources: android.buildTypes.release.shrinkResources,
+            metroMinify: bundle.minifyEnabled.get(),
+            hermesEnabled: bundle.hermesEnabled.get(),
+            hermesFlags: bundle.hermesFlags.get(),
+        ]))
+    }
+}
+tasks.named('preBuild').configure { dependsOn('verifyReleaseConfiguration') }

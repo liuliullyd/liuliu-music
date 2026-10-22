@@ -63,11 +63,9 @@ internal class MediaNotificationSessionPlayer(private val context: Context, priv
     val id = actual.currentMediaItem?.mediaId
     val s = CarConnectionState.snapshot.takeIf { !id.isNullOrBlank() && it.optString("mediaId") == id }
     val extras = Bundle(metadata.extras ?: Bundle.EMPTY).apply {
-      putString("ucar.media.metadata.UCAR_TITLE", metadata.title?.toString().orEmpty())
-      putString("ucar.media.metadata.UCAR_ARTIST", metadata.artist?.toString().orEmpty())
-      putString("ucar.media.metadata.LYRICS_WHOLE", MediaNotificationState.lyrics.whole(id))
-      CarUcarMetadata.apply(this, s)
-      putString("com.liuliu.agentmusic.PLAY_MODE", s?.optString("mode") ?: "unknown")
+      putString("com.liuliu.music.opensource.car.LYRICS_WHOLE", MediaNotificationState.lyrics.whole(id))
+      CarAppMetadata.apply(this, s)
+      putString("com.liuliu.music.opensource.car.PLAY_MODE", s?.optString("mode") ?: "unknown")
     }
     val projection = bluetoothDisplay()
     val line = MediaNotificationState.lyrics.textAt(id, actual.currentPosition)

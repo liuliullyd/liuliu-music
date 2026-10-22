@@ -460,7 +460,7 @@ export const gtoScenes: EffectScene[] = [
     'GTO',
     '人声剧场',
     '提升对白清晰度',
-    '影视 · 播客',
+    '影视 · 人声',
     'gto-dialogue',
     [-2, -1, -1, 0, 1, 3, 3, 2, 0, -1],
     -4,

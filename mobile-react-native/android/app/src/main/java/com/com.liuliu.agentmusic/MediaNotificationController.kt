@@ -66,8 +66,8 @@ internal class MediaNotificationController(context: Context, private val actual:
   }
   private var session: MediaSession? = null
   private var previousState: MediaNotificationNavigation? = null
-  private val collectCommand = SessionCommand("ucar.media.action.COLLECT", Bundle.EMPTY)
-  private val modeCommand = SessionCommand("ucar.media.action.PLAY_MODE", Bundle.EMPTY)
+  private val collectCommand = SessionCommand("com.liuliu.music.opensource.car.FAVORITE", Bundle.EMPTY)
+  private val modeCommand = SessionCommand("com.liuliu.music.opensource.car.PLAY_MODE", Bundle.EMPTY)
   private val stopCarChanges = CarConnectionState.observe { refresh() }
   private val listener = object : Player.Listener { override fun onEvents(player: Player, events: Player.Events) { refresh() } }
   init { actual.addListener(listener); sessionPlayer.onTransportInterruption = { resumption.cancel() } }
@@ -91,11 +91,9 @@ internal class MediaNotificationController(context: Context, private val actual:
     val current = session ?: return
     if (CarConnectionState.hasSnapshot) current.setSessionExtras(Bundle().apply {
       // A boolean has no unknown value. Omit IS_TRIAL until a real entitlement model supplies it.
-      putString("com.liuliu.agentmusic.TRIAL_STATUS", "unknown")
-      putLong("ucar.media.bundle.TRIAL_BEGIN", -1)
-      putLong("ucar.media.bundle.TRIAL_END", -1)
+      putString("com.liuliu.music.opensource.car.TRIAL_STATUS", "unknown")
       val song = CarConnectionState.snapshot.takeIf { it.optString("mediaId") == actual.currentMediaItem?.mediaId }
-      putLong("ucar.media.bundle.TOTAL_DURATION", song?.optLong("catalogDurationMs")?.takeIf { it > 0 } ?: actual.duration.coerceAtLeast(0))
+      putLong("com.liuliu.music.opensource.car.TOTAL_DURATION_MS", song?.optLong("catalogDurationMs")?.takeIf { it > 0 } ?: actual.duration.coerceAtLeast(0))
     })
     val state = navigation()
     if (state == previousState) return
@@ -125,7 +123,7 @@ internal class MediaNotificationController(context: Context, private val actual:
     if (command.customAction == collectCommand.customAction || command.customAction == modeCommand.customAction) {
       val input = JSONObject().put("mediaId", actual.currentMediaItem?.mediaId ?: "")
       val action = if (command.customAction == collectCommand.customAction) "favorite" else "mode"
-      if (action == "mode") input.put("mode", CarUcarMode.next(CarConnectionState.snapshot.optString("mode")))
+      if (action == "mode") input.put("mode", CarPlaybackMode.next(CarConnectionState.snapshot.optString("mode")))
       return Futures.transform(CarConnectionState.request(action, input), { result ->
         SessionResult(if (result?.optBoolean("ok") == true) SessionResult.RESULT_SUCCESS else SessionError.ERROR_INVALID_STATE,
           Bundle().apply { putString("result", result?.toString()) })

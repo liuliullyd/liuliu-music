@@ -49,8 +49,7 @@
         android:taskAffinity="com.liuliu.music.opensource.car"
         android:resizeableActivity="true">
         <intent-filter>
-          <action android:name="com.ucar.intent.action.UCAR" />
-          <category android:name="com.ucar.intent.category.UCAR" />
+          <action android:name="com.liuliu.music.opensource.action.CAR_PLAYER" />
           <category android:name="android.intent.category.DEFAULT" />
         </intent-filter>
       </activity>
