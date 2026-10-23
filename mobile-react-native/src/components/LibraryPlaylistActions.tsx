@@ -65,6 +65,122 @@ export function LibraryPlaylistActions({
       onUnavailableTrack,
     });
   };
+  const hasLocalTools = Boolean(onScanLocal || onAddLocal || onDeleteAllLocal);
+  const primaryActions = (
+    <>
+      {showFavorite ? (
+        <Button
+          testID="library-action-favorite"
+          accessibilityRole="button"
+          accessibilityLabel={
+            allFavorite ? `取消收藏全部${'歌曲'}` : `收藏全部${'歌曲'}`
+          }
+          disabled={!first}
+          onPress={() =>
+            tracks.forEach(track => {
+              if (allFavorite || !app.isFavorite(track))
+                app.toggleFavorite(track);
+            })
+          }
+          style={iconStyle}
+        >
+          <TrackActionIcon
+            kind="favorite"
+            active={allFavorite}
+            color={allFavorite ? c.accent : c.text}
+            size={24}
+          />
+        </Button>
+      ) : null}
+      {showDownload ? (
+        <Button
+          testID="library-action-download"
+          accessibilityRole="button"
+          accessibilityLabel={'选择下载歌曲'}
+          disabled={!first}
+          onPress={() => setDownloadOpen(true)}
+          style={iconStyle}
+        >
+          <TrackActionIcon kind="download" color={c.text} size={24} />
+        </Button>
+      ) : null}
+      <PlaybackModePicker style={iconStyle} sticky={sticky} />
+      {personalPlaylist ? (
+        <PlaylistManagementActions
+          title={personalPlaylist.title}
+          style={iconStyle}
+          onRename={title => app.renamePlaylist(personalPlaylist.id, title)}
+          onDelete={() => app.deletePlaylist(personalPlaylist.id)}
+          onDeleted={personalPlaylist.onDeleted}
+        />
+      ) : null}
+      <Button
+        testID="library-list-play-all"
+        accessibilityRole="button"
+        accessibilityLabel="全部播放"
+        disabled={!first}
+        onPress={playAll}
+        style={[
+          s.playlistPlayAll,
+          personalPlaylist && playlistManagementLayout.playAll,
+          { backgroundColor: c.text },
+          !first && s.playAllDisabled,
+        ]}
+      >
+        <Glyph color={c.bg} size={18}>
+          ▶
+        </Glyph>
+        <Text style={[s.playAllText, { color: c.bg }]}>全部播放</Text>
+      </Button>
+    </>
+  );
+  const localActions = (
+    <>
+      {onScanLocal ? (
+        <Button
+          testID="library-scan-local"
+          accessibilityRole="button"
+          accessibilityLabel={`扫描本地${'音乐'}`}
+          onPress={onScanLocal}
+          style={s.localToolAction}
+        >
+          <Glyph color={c.text} size={21}>
+            ↻
+          </Glyph>
+          <Text style={[s.localToolLabel, { color: c.text }]}>扫描本地</Text>
+        </Button>
+      ) : null}
+      {onAddLocal ? (
+        <Button
+          testID="library-add-local"
+          accessibilityRole="button"
+          accessibilityLabel={`添加本地${'音乐'}`}
+          onPress={onAddLocal}
+          style={s.localToolAction}
+        >
+          <Glyph color={c.text} size={21}>
+            ＋
+          </Glyph>
+          <Text style={[s.localToolLabel, { color: c.text }]}>添加本地</Text>
+        </Button>
+      ) : null}
+      {onDeleteAllLocal ? (
+        <Button
+          testID="library-delete-all-local"
+          accessibilityRole="button"
+          accessibilityLabel={`全部删除本地${{ music: '音乐' }[mediaKind]}`}
+          disabled={deleteAllDisabled}
+          onPress={onDeleteAllLocal}
+          style={[s.localToolAction, deleteAllDisabled && s.playAllDisabled]}
+        >
+          <Glyph color={c.text} size={21}>
+            ×
+          </Glyph>
+          <Text style={[s.localToolLabel, { color: c.text }]}>全部删除</Text>
+        </Button>
+      ) : null}
+    </>
+  );
   return (
     <>
       <View
@@ -72,124 +188,31 @@ export function LibraryPlaylistActions({
         style={[
           s.playlistActions,
           personalPlaylist && playlistManagementLayout.row,
+          hasLocalTools && s.localPlaylistActions,
           {
             backgroundColor: surfaceColor ?? c.bg,
             marginHorizontal: contentInset,
           },
         ]}
       >
-        {showFavorite ? (
-          <Button
-            testID="library-action-favorite"
-            accessibilityRole="button"
-            accessibilityLabel={
-              allFavorite ? `取消收藏全部${'歌曲'}` : `收藏全部${'歌曲'}`
-            }
-            disabled={!first}
-            onPress={() =>
-              tracks.forEach(track => {
-                if (allFavorite || !app.isFavorite(track))
-                  app.toggleFavorite(track);
-              })
-            }
-            style={iconStyle}
-          >
-            <TrackActionIcon
-              kind="favorite"
-              active={allFavorite}
-              color={allFavorite ? c.accent : c.text}
-              size={24}
-            />
-          </Button>
-        ) : null}
-        {showDownload ? (
-          <Button
-            testID="library-action-download"
-            accessibilityRole="button"
-            accessibilityLabel={'选择下载歌曲'}
-            disabled={!first}
-            onPress={() => setDownloadOpen(true)}
-            style={iconStyle}
-          >
-            <TrackActionIcon kind="download" color={c.text} size={24} />
-          </Button>
-        ) : null}
-        {onScanLocal ? (
-          <Button
-            testID="library-scan-local"
-            accessibilityRole="button"
-            accessibilityLabel={`扫描本地${'音乐'}`}
-            onPress={onScanLocal}
-            style={[s.localToolAction, onDeleteAllLocal && s.localBulkTool]}
-          >
-            <Glyph color={c.text} size={21}>
-              ↻
-            </Glyph>
-            <Text style={[s.localToolLabel, { color: c.text }]}>扫描本地</Text>
-          </Button>
-        ) : null}
-        {onAddLocal ? (
-          <Button
-            testID="library-add-local"
-            accessibilityRole="button"
-            accessibilityLabel={`添加本地${'音乐'}`}
-            onPress={onAddLocal}
-            style={[s.localToolAction, onDeleteAllLocal && s.localBulkTool]}
-          >
-            <Glyph color={c.text} size={21}>
-              ＋
-            </Glyph>
-            <Text style={[s.localToolLabel, { color: c.text }]}>添加本地</Text>
-          </Button>
-        ) : null}
-        {onDeleteAllLocal ? (
-          <Button
-            testID="library-delete-all-local"
-            accessibilityRole="button"
-            accessibilityLabel={`全部删除本地${{ music: '音乐' }[mediaKind]}`}
-            disabled={deleteAllDisabled}
-            onPress={onDeleteAllLocal}
-            style={[
-              s.localToolAction,
-              s.localBulkTool,
-              deleteAllDisabled && s.playAllDisabled,
-            ]}
-          >
-            <Glyph color={c.text} size={21}>
-              ×
-            </Glyph>
-            <Text style={[s.localToolLabel, { color: c.text }]}>全部删除</Text>
-          </Button>
-        ) : null}
-        <PlaybackModePicker style={iconStyle} sticky={sticky} />
-        {personalPlaylist ? (
-          <PlaylistManagementActions
-            title={personalPlaylist.title}
-            style={iconStyle}
-            onRename={title => app.renamePlaylist(personalPlaylist.id, title)}
-            onDelete={() => app.deletePlaylist(personalPlaylist.id)}
-            onDeleted={personalPlaylist.onDeleted}
-          />
-        ) : null}
-        <Button
-          testID="library-list-play-all"
-          accessibilityRole="button"
-          accessibilityLabel="全部播放"
-          disabled={!first}
-          onPress={playAll}
-          style={[
-            s.playlistPlayAll,
-            personalPlaylist && playlistManagementLayout.playAll,
-            onDeleteAllLocal && s.localBulkPlayAll,
-            { backgroundColor: c.text },
-            !first && s.playAllDisabled,
-          ]}
-        >
-          <Glyph color={c.bg} size={18}>
-            ▶
-          </Glyph>
-          <Text style={[s.playAllText, { color: c.bg }]}>全部播放</Text>
-        </Button>
+        {hasLocalTools ? (
+          <>
+            <View
+              testID="library-playlist-primary-actions"
+              style={s.playlistActions}
+            >
+              {primaryActions}
+            </View>
+            <View
+              testID="library-playlist-local-actions"
+              style={s.playlistActions}
+            >
+              {localActions}
+            </View>
+          </>
+        ) : (
+          primaryActions
+        )}
       </View>
       {downloadOpen ? (
         <PlaylistDownloadPicker
@@ -231,8 +254,12 @@ const s = StyleSheet.create({
     gap: 2,
   },
   localToolLabel: { fontSize: 10, lineHeight: 14 },
-  localBulkTool: { flexShrink: 1, minWidth: 48 },
-  localBulkPlayAll: { flexShrink: 1, minWidth: 96 },
+  localPlaylistActions: {
+    height: 144,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 0,
+  },
   playlistPlayAll: {
     width: 132,
     minWidth: 132,

@@ -63,7 +63,7 @@ export function LibraryDetailHeader({
         coverUri={coverUri}
         color={color}
         style={{ marginHorizontal: -layout.pageHorizontalPadding }}
-        showGradient={showTopGradient}
+        showGradient={false}
         showTopGradient={false}
       >
         {showTopGradient ? <LibraryDetailTopGradient color={color} /> : null}

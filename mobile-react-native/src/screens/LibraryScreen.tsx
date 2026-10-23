@@ -1405,17 +1405,19 @@ function LibraryListDetail({
 function LibraryReferenceActions({
   color,
   stuck,
+  height = 72,
   children,
 }: {
   color: string;
   stuck: boolean;
+  height?: number;
   children: React.ReactNode;
 }) {
   const theme = useTheme();
   return (
     <View
       testID="library-reference-action-surface"
-      style={{ height: 72, backgroundColor: color }}
+      style={{ height, backgroundColor: color }}
     >
       <StickyBackgroundExtension active={stuck} color={theme.bg} />
       {stuck ? <PlaylistInformationTopGradient /> : null}
@@ -1475,6 +1477,7 @@ function LocalMusic() {
           style={[
             s.listControls,
             {
+              height: 144,
               marginHorizontal: -layout.pageHorizontalPadding,
               backgroundColor: detailColor,
               paddingHorizontal: 0,
@@ -1482,6 +1485,7 @@ function LocalMusic() {
           ]}
         >
           <LibraryReferenceActions
+            height={144}
             color={detailColor}
             stuck={scrollGradient.stuck}
           >

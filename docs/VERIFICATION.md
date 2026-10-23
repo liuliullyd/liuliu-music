@@ -1,5 +1,17 @@
 # Public-edition verification
 
+## V1.0.3 — continuous playlist gradients and two-row local controls
+
+Checked on 2026-10-23. Older collection details (including all-playlists, Roam and search entries) and the Library favorites/downloads/local headers applied a bottom fade before the toolbar, followed by another fade in the toolbar. Removing the header fade leaves the sampled color continuous across that boundary and preserves the toolbar fade, top treatment and sticky behavior. The already-correct shared HomePlaylistDetail implementation is unchanged.
+
+Local music now places favorite, download, playback mode and play-all in the first row, with scan, add and delete-all in the second. The action surface and sticky container both cover the full 144 logical-pixel height. Button sizes, original callbacks, empty-list disabled states and deletion confirmation are retained; the ordinary and personal-playlist single-row layouts remain intact. The obsolete local single-row compression styles were removed.
+
+The new component regression reproduced seven failures before the repair; all ten cases pass afterward. All 15 public Jest suites / 245 tests, production TypeScript and direct test TypeScript checks pass. The four changed production files introduce no ESLint errors or rule-count increases relative to the frozen V1.0.2 source; pre-existing screen lint findings remain. Four-ABI Release assembly, Kotlin compilation, Android vital Release lint, unobfuscated configuration, dedicated v2/v3 signing and 16 KB ZIP alignment pass. All 6,434 frozen application inputs have zero drift, the four UI sources match the fresh Metro source map, and both new row markers are present in the signed APK. All 32 packaged theme images retain their original dimensions and exact decoded RGBA pixels.
+
+Application ID: `com.liuliu.music.opensource`; version `1.0.3` / code `4`. Artifact: `liuliu-music-V1.0.3-code4-release.apk`, 124066665 bytes, SHA-256 `7bb8f41c06ff6004c75651f0ca0b093a7425270313dccb5daf9816eec6ec3411`. The dedicated signing certificate and no-obfuscation policy are unchanged. Startup, source handling, playback preparation/cache and pagination are outside this UI change; the separately diagnosed cached playlist selection issue remains open.
+
+No device installation or visual device acceptance is established by these checks. The existing shared emulators are occupied by a separate main-project validation task. Component and package evidence must not be represented as Android screenshot, physical-phone, font-scale or car compatibility acceptance.
+
 ## V1.0.2 — remove the peripheral configuration entry from My/settings
 
 Checked on 2026-10-23. Removed the “车载互联与蓝牙” button and its two unused styles from SettingsScreen. The native car/media integration is unchanged. Theme artwork, startup autoplay, playback settings, imported-source management and playlist code are unchanged in this release.

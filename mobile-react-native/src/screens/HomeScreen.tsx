@@ -5510,7 +5510,7 @@ export function CollectionDetail({
         <PlaylistInformationSurface
           color={playlistColor}
           style={{ paddingBottom: 10 }}
-          showGradient
+          showGradient={false}
           showTopGradient
           enabled={true}
           identity={coverIdentity}
