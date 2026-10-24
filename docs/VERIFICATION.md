@@ -1,5 +1,13 @@
 # Public-edition verification
 
+## V1.0.4 — upgrade cached song thumbnails on the player
+
+Checked on 2026-10-24. The player already requested larger provider artwork candidates, but a cached later thumbnail could become the current candidate and skip every earlier large image. Player-sized artwork now starts at the first candidate while using the cached image as a preview. A successful larger image replaces it; unavailable candidates retain the existing retries and fallback order. Preview display errors do not consume the independent larger-image request, and late preview errors cannot clear the accepted larger image. Ordinary thumbnail surfaces keep their existing cache behavior.
+
+Six component cases cover the cached-thumbnail upgrade, preview error isolation, exhausted large-image fallback, late preview callbacks, an already cached large cover and ordinary thumbnail behavior. All 16 public Jest suites / 251 tests pass. Production and direct regression-test TypeScript checks pass. ESLint introduces no new diagnostics (the component retains its two existing warnings). Four-ABI Release assembly, Android vital lint, dedicated v2/v3 signing and 16 KB ZIP alignment pass. All 6,435 frozen application inputs have zero drift; the changed component matches the fresh Metro map, and the generated Hermes bytes match the signed APK. All 6,700 ZIP entries pass length/CRC and directory checks. All 32 theme backgrounds retain their exact decoded RGBA pixels.
+
+Application ID: `com.liuliu.music.opensource`; version `1.0.4` / code `5`. Artifact: `liuliu-music-V1.0.4-code5-release.apk`, 124066665 bytes, SHA-256 `a6de4216a782e904cb0b1f4ed4c027b14622f3a908fcfe813d9b9ef7e75b0999`. The dedicated signing certificate and disabled obfuscation/minification policies are unchanged. This package check does not establish device visual acceptance or guarantee high-resolution originals from every provider. Audio preparation/cache, queue pagination, themes and layout are outside this change; the separately diagnosed playlist audio-cache issue remains open.
+
 ## V1.0.3 — continuous playlist gradients and two-row local controls
 
 Checked on 2026-10-23. Older collection details (including all-playlists, Roam and search entries) and the Library favorites/downloads/local headers applied a bottom fade before the toolbar, followed by another fade in the toolbar. Removing the header fade leaves the sampled color continuous across that boundary and preserves the toolbar fade, top treatment and sticky behavior. The already-correct shared HomePlaylistDetail implementation is unchanged.

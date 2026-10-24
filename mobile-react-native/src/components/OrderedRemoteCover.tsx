@@ -345,6 +345,7 @@ function OrderedRemoteCoverRequest({
   fallbackReady = true,
   fallbackWhileLoading = false,
   priority = 'visible',
+  resolution,
   renderImage = true,
 }: OrderedRemoteCoverProps & {
   candidates: string[];
@@ -375,7 +376,7 @@ function OrderedRemoteCoverRequest({
     ? candidates.findIndex(uri => getDecodedCover(uri))
     : -1;
   const [candidateIndex, setCandidateIndex] = useState(
-    Math.max(0, cachedIndex),
+    resolution === 'player' ? 0 : Math.max(0, cachedIndex),
   );
   const [attempt, setAttempt] = useState(0);
   const [loadedUri, setLoadedUri] = useState('');
@@ -385,6 +386,8 @@ function OrderedRemoteCoverRequest({
     cached ? candidates[cachedIndex]! : '',
   );
   const [displayUri, setDisplayUri] = useState(cached?.uri ?? '');
+  const currentDisplayUri = useRef(displayUri);
+  currentDisplayUri.current = displayUri;
   const [failed, setFailed] = useState(false);
   const settledImageKey = useRef('');
   const mounted = useRef(true);
@@ -398,6 +401,10 @@ function OrderedRemoteCoverRequest({
   const activeUri = candidates[candidateIndex] ?? '';
   // The native pipeline proves decoded readiness independently of the view.
   const ready = Boolean(activeUri && decodedUri === activeUri);
+  // A list thumbnail is a useful preview, but must not skip the player's
+  // earlier, larger candidates just because it was decoded on another page.
+  const cachedPreview =
+    resolution === 'player' && fallbackWhileLoading && Boolean(displayUri);
   const imageKey = `${activeUri}:${candidateIndex}:${attempt}`;
   const { started, complete, isCurrent } = useOrderedCoverStart(
     Boolean(activeUri && !ready && !failed),
@@ -550,9 +557,9 @@ function OrderedRemoteCoverRequest({
             resizeMode="cover"
           />
         )}
-      {activeUri && !failed && ready ? (
+      {activeUri && !failed && (ready || cachedPreview) ? (
         <Image
-          key={imageKey}
+          key={`${imageKey}:${displayUri}`}
           testID={testID ? `${testID}-remote` : undefined}
           source={{ uri: displayUri, cache: 'force-cache' }}
           fadeDuration={0}
@@ -561,6 +568,7 @@ function OrderedRemoteCoverRequest({
           resizeMode="cover"
           onLoad={() => {
             if (
+              !ready ||
               !mounted.current ||
               currentImageKey.current !== imageKey ||
               settledImageKey.current === imageKey ||
@@ -576,7 +584,19 @@ function OrderedRemoteCoverRequest({
             });
             loadedCallback.current?.(displayUri);
           }}
-          onError={failCurrentImage}
+          onError={() => {
+            if (ready) failCurrentImage();
+            else if (
+              mounted.current &&
+              currentImageKey.current === imageKey &&
+              currentDisplayUri.current === displayUri
+            ) {
+              // A preview display error belongs to the preview, not to the
+              // independent higher-resolution request currently in flight.
+              if (decodedUri) invalidateDecodedCover(decodedUri);
+              setDisplayUri('');
+            }
+          }}
         />
       ) : null}
     </View>
