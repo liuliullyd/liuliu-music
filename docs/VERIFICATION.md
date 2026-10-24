@@ -1,5 +1,13 @@
 # Public-edition verification
 
+## V1.0.5 — remove eight selected themes
+
+Checked on 2026-10-24. Removed 热血少年 and 月下幻想 (anime), 滑雪极境 and 街头滑板 (sports), 公路落日 and 深海奇境 (film), 玄月灵狐 and 星轨花园 (featured). Their catalog entries, palette tokens, theme IDs, artwork references and eight PNG files were removed together. The remaining 24 entries keep their exact order, labels, palettes and PNG hashes: classic 8, each other category 4. Persisted and native-startup selections of removed themes use the existing white/default-accent fallback.
+
+All 17 public Jest suites / 282 tests pass, including 31 theme cases. Production and direct-test TypeScript checks pass; the four changed sources and new test have zero ESLint errors or warnings. The independent app was cleaned before the four-ABI Release build to remove stale generated resources. The signed APK has exactly 24 theme drawables and zero resources for the removed IDs; all retained images have identical decoded RGBA pixels. All 6428 frozen application inputs have zero drift, the four theme sources match the fresh Metro map, and the APK Hermes bytes match the generated output. Full ZIP integrity, dedicated v2/v3 signing, 16 KB alignment and the existing no-obfuscation gates pass.
+
+Application ID: `com.liuliu.music.opensource`; version `1.0.5` / code `6`. Artifact: `liuliu-music-V1.0.5-code6-release.apk`, 114710953 bytes, SHA-256 `3c820a4c9f8060fead2a431ce29f70bfa780d1e574cb94fd081877c380528900`. No device installation or visual device acceptance was performed. Playback, image preloading, audio preparation/cache, queue pagination and the main project are unchanged. The existing playlist audio-cache issue remains open.
+
 ## V1.0.4 — upgrade cached song thumbnails on the player
 
 Checked on 2026-10-24. The player already requested larger provider artwork candidates, but a cached later thumbnail could become the current candidate and skip every earlier large image. Player-sized artwork now starts at the first candidate while using the cached image as a preview. A successful larger image replaces it; unavailable candidates retain the existing retries and fallback order. Preview display errors do not consume the independent larger-image request, and late preview errors cannot clear the accepted larger image. Ordinary thumbnail surfaces keep their existing cache behavior.

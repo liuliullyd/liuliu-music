@@ -19,10 +19,6 @@ export const themeBackgroundArtwork: Record<ThemeId, ImageSourcePropType> = {
     require('./theme-background/anime-ninja.png') as ImageSourcePropType,
   'anime-train':
     require('./theme-background/anime-train.png') as ImageSourcePropType,
-  'anime-youth':
-    require('./theme-background/anime-youth.png') as ImageSourcePropType,
-  'anime-moon':
-    require('./theme-background/anime-moon.png') as ImageSourcePropType,
   'sport-basketball':
     require('./theme-background/sport-basketball.png') as ImageSourcePropType,
   'sport-football':
@@ -31,10 +27,6 @@ export const themeBackgroundArtwork: Record<ThemeId, ImageSourcePropType> = {
     require('./theme-background/sport-tennis.png') as ImageSourcePropType,
   'sport-swimming':
     require('./theme-background/sport-swimming.png') as ImageSourcePropType,
-  'sport-ski':
-    require('./theme-background/sport-ski.png') as ImageSourcePropType,
-  'sport-skate':
-    require('./theme-background/sport-skate.png') as ImageSourcePropType,
   'film-space':
     require('./theme-background/film-space.png') as ImageSourcePropType,
   'film-cyber':
@@ -43,20 +35,12 @@ export const themeBackgroundArtwork: Record<ThemeId, ImageSourcePropType> = {
     require('./theme-background/film-wuxia.png') as ImageSourcePropType,
   'film-romance':
     require('./theme-background/film-romance.png') as ImageSourcePropType,
-  'film-road':
-    require('./theme-background/film-road.png') as ImageSourcePropType,
-  'film-ocean':
-    require('./theme-background/film-ocean.png') as ImageSourcePropType,
   'curated-dunhuang':
     require('./theme-background/curated-dunhuang.png') as ImageSourcePropType,
   'curated-deer':
     require('./theme-background/curated-deer.png') as ImageSourcePropType,
   'curated-butterfly':
     require('./theme-background/curated-butterfly.png') as ImageSourcePropType,
-  'curated-vinyl':
-    require('./theme-background/curated-vinyl.png') as ImageSourcePropType,
-  'curated-stars':
-    require('./theme-background/curated-stars.png') as ImageSourcePropType,
   'curated-rose':
     require('./theme-background/curated-rose.png') as ImageSourcePropType,
 };

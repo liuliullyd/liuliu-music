@@ -89,18 +89,6 @@ export const themeOptions: readonly ThemeOption[] = [
     category: 'anime',
   },
   {
-    id: 'anime-youth',
-    label: '热血少年',
-    copy: '奔赴热爱',
-    category: 'anime',
-  },
-  {
-    id: 'anime-moon',
-    label: '月下幻想',
-    copy: '银月奇境',
-    category: 'anime',
-  },
-  {
     id: 'sport-basketball',
     label: '篮球燃场',
     copy: '热血上场',
@@ -122,18 +110,6 @@ export const themeOptions: readonly ThemeOption[] = [
     id: 'sport-swimming',
     label: '泳池蔚蓝',
     copy: '自在畅游',
-    category: 'sports',
-  },
-  {
-    id: 'sport-ski',
-    label: '滑雪极境',
-    copy: '雪域自由',
-    category: 'sports',
-  },
-  {
-    id: 'sport-skate',
-    label: '街头滑板',
-    copy: '街头律动',
     category: 'sports',
   },
   {
@@ -161,18 +137,6 @@ export const themeOptions: readonly ThemeOption[] = [
     category: 'film',
   },
   {
-    id: 'film-road',
-    label: '公路落日',
-    copy: '旅途光影',
-    category: 'film',
-  },
-  {
-    id: 'film-ocean',
-    label: '深海奇境',
-    copy: '蔚蓝秘境',
-    category: 'film',
-  },
-  {
     id: 'curated-dunhuang',
     label: '敦煌飞天',
     copy: '飘带与壁画色',
@@ -188,18 +152,6 @@ export const themeOptions: readonly ThemeOption[] = [
     id: 'curated-butterfly',
     label: '赤霄凤舞',
     copy: '赤羽掠过金色云山',
-    category: 'featured',
-  },
-  {
-    id: 'curated-vinyl',
-    label: '玄月灵狐',
-    copy: '玄月映照九尾灵狐',
-    category: 'featured',
-  },
-  {
-    id: 'curated-stars',
-    label: '星轨花园',
-    copy: '夜花与弧形星轨',
     category: 'featured',
   },
   {
