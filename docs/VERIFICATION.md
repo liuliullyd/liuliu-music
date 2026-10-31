@@ -1,12 +1,14 @@
 # Public-edition verification
 
-## Unreleased — recover disconnected playback controllers
+## V1.0.6 — recover disconnected playback controllers
 
 Checked on 2026-11-01. A disconnected MediaController was retained for subsequent playback commands and state reads. The bridge now reconnects after disconnection or connection failure, shares pending connections, ignores stale callbacks and releases completed or pending connections when closed. An empty replacement session receives the process-local admitted queue, position, volume and playback modes; reconnecting itself does not start playback or replace an existing session's queue. Sleep timers use the active controller after reconnecting.
 
 All 17 public Jest suites / 282 tests and production TypeScript checks pass. The actual Gradle `:app:testReleaseUnitTest` task passes all 14 connection-recovery tests, including queued-command races, failed connection retry, stale disconnection isolation, close/release behavior and queue restoration. Release Kotlin compilation and publication hygiene checks pass. The helper and tests match the main project's connection patch; the public edition's existing `playIndex` implementation is preserved.
 
-This is a source update. The version remains `1.0.5` / code `6`, and the existing V1.0.5 APK is unchanged and does not contain this patch. No new APK was assembled or published, and no device installation or long-running phone playback was tested. The cause of the reported initial interruption after about thirty minutes remains unconfirmed. Source import rules, audio quality/cache policy, pagination, themes, package identity and the no-obfuscation policy are unchanged. Other open issues remain open.
+Application ID: `com.liuliu.music.opensource`; version `1.0.6` / code `7`. Artifact: `liuliu-music-V1.0.6-code7-release.apk`, 114710953 bytes, SHA-256 `9faca770593c5df96509a2ad7e8cdd2d2e187494075fdea59b60ad97f02b0c53`. The signed four-ABI Release retains the dedicated certificate, v2/v3 signatures, 16 KB alignment and no-obfuscation settings. All 6430 frozen application inputs have zero drift, all 186 mapped project sources match the fresh Metro map, the generated Hermes bytes match the APK, and all 24 packaged theme images retain their decoded pixels. Both new connection classes are present under their readable names in the actual DEX. ZIP integrity checks pass.
+
+No device installation or long-running phone playback was tested. The cause of the reported initial interruption after about thirty minutes remains unconfirmed. Source import rules, audio quality/cache policy, pagination, themes and package identity are unchanged. Other open issues remain open.
 
 ## V1.0.5 — remove eight selected themes
 
