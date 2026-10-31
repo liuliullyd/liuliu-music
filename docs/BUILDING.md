@@ -28,4 +28,13 @@ The public application ID is `com.liuliu.music.opensource`; Java/Kotlin namespac
 
 The source check and unit tests do not replace hardware testing of Bluetooth, A2DP, AVRCP or a commercial car host. Platform music endpoints may change independently of the app.
 
+Run the native connection-recovery regression tests with JDK 17 and the Android SDK configured:
+
+```sh
+cd mobile-react-native/android
+./gradlew :app:testReleaseUnitTest --tests com.liuliu.agentmusic.RecoverablePlayerConnectionTest
+```
+
+These JVM tests exercise reconnect scheduling, stale callbacks, command delivery, connection release and empty-session queue restoration. They do not establish long-running playback on a phone.
+
 On Windows, prefer a short checkout path. If CMake/Ninja reports paths longer than 260 characters, pass `-PliuliuNativeBuildDir=<short-absolute-build-directory>` to Gradle. This changes only the generated native build directory; it is not needed on most other systems.

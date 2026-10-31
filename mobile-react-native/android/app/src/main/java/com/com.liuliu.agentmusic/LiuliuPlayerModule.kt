@@ -23,7 +23,6 @@ import com.facebook.react.bridge.WritableMap
 import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.facebook.react.common.LifecycleState
-import com.google.common.util.concurrent.ListenableFuture
 import java.util.concurrent.TimeUnit
 import java.net.HttpURLConnection
 import java.util.concurrent.Executors
@@ -37,13 +36,27 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
   private data class PreviousItem(val sequence: Long, val mediaId: String, val position: Long, val duration: Long, val completed: Boolean)
   private var previousItem: PreviousItem? = null
   private val observedDurations = linkedMapOf<String, Long>()
-  private val future: ListenableFuture<MediaController> = MediaController.Builder(context, SessionToken(context, ComponentName(context, MusicPlaybackService::class.java)))
-    .setListener(object : MediaController.Listener {
-      override fun onDisconnected(controller: MediaController) {
-        diagnose("disconnected", controller)
-      }
-    }).buildAsync()
-  private var listenerAttached = false
+  private var attachedController: MediaController? = null
+  private var reconnectSnapshot: PlayerReconnectSnapshot? = null
+  private val connection = RecoverablePlayerConnection(
+    ContextCompat.getMainExecutor(context),
+    { MediaController.Builder(context, SessionToken(context, ComponentName(context, MusicPlaybackService::class.java)))
+      .setApplicationLooper(Looper.getMainLooper())
+      .setListener(object : MediaController.Listener {
+        override fun onDisconnected(controller: MediaController) {
+          diagnose("disconnected", controller)
+          connectionDisconnected(controller)
+        }
+      }).buildAsync() },
+    { it.isConnected },
+    { MediaController.releaseFuture(it) },
+    { controller ->
+      reconnectSnapshot?.restoreIfEmpty(controller)
+      attach(controller)
+      if (sleepMode == "track") { cancelTask(); scheduleTrackEnd(controller) }
+    },
+  )
+  private fun connectionDisconnected(controller: MediaController) { connection.disconnected(controller) }
   private var sleepMode = "off"
   private var sleepDeadline = 0L
   private var sleepTask: Runnable? = null
@@ -153,30 +166,33 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
 
   private fun withController(action: (MediaController) -> Unit, promise: Promise? = null, commandName: String? = null) {
     val command = commandName?.let { "$it#${commandSequence.incrementAndGet()}" }
-    if (command != null) Log.i("LiuliuPlayerDiagnostics", "$command received futureDone=${future.isDone} futureCancelled=${future.isCancelled}")
-    future.addListener({
-      try {
-        val controller = future.get()
+    if (command != null) Log.i("LiuliuPlayerDiagnostics", "$command received")
+    connection.execute({ controller ->
         if (command != null) diagnose("$command before", controller)
         action(controller)
+        rememberController(controller)
         if (command != null) diagnose("$command dispatched", controller)
         promise?.resolve(null)
-      } catch (error: Throwable) {
+    }, { error ->
         // Exception messages/cause strings can include signed media URLs.
         Log.w("LiuliuPlayerDiagnostics", "${command ?: "controller"} failed type=${error.javaClass.simpleName} causeType=${error.cause?.javaClass?.simpleName}")
         promise?.reject("PLAYER_ERROR", error.message, error)
-      }
-    }, ContextCompat.getMainExecutor(context))
+    })
+  }
+  private fun rememberController(controller: MediaController) {
+    if (controller.isConnected)
+      reconnectSnapshot = PlayerReconnectSnapshot.capture(controller, reconnectSnapshot)
   }
   private fun diagnose(stage: String, controller: MediaController) {
     Log.i("LiuliuPlayerDiagnostics", "$stage connected=${controller.isConnected} state=${controller.playbackState} playing=${controller.isPlaying} playWhenReady=${controller.playWhenReady} suppression=${controller.playbackSuppressionReason} index=${controller.currentMediaItemIndex} count=${controller.mediaItemCount} positionMs=${controller.currentPosition} durationMs=${controller.duration} errorCode=${controller.playerError?.errorCode ?: 0}")
   }
   private fun attach(controller: MediaController) {
-    if (listenerAttached) return
-    listenerAttached = true
+    if (attachedController === controller) return
+    attachedController = controller
     diagnose("attached", controller)
     controller.addListener(object : Player.Listener {
       override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+        if (attachedController !== controller || !controller.isConnected) return
         val oldId = oldPosition.mediaItem?.mediaId ?: return
         val naturalEnd = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
         if (naturalEnd || oldId != newPosition.mediaItem?.mediaId) {
@@ -187,6 +203,7 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
         }
       }
       override fun onEvents(player: Player, events: Player.Events) {
+        if (attachedController !== controller || !controller.isConnected) return
         val state = "${controller.isConnected}/${player.playbackState}/${player.isPlaying}/${player.playWhenReady}/${player.playbackSuppressionReason}/${player.currentMediaItemIndex}/${player.mediaItemCount}/${player.playerError?.errorCode ?: 0}"
         if (state != lastDiagnosticState) {
           lastDiagnosticState = state
@@ -198,6 +215,8 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     })
   }
   private fun emit(controller: MediaController) {
+    if (attachedController !== controller || !controller.isConnected) return
+    rememberController(controller)
     if (!context.hasActiveReactInstance() || listeners == 0) return
     observeDuration(controller)
     val map = Arguments.createMap().apply {
@@ -310,7 +329,13 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     emit(controller)
   }, promise)
   @ReactMethod fun playIndex(index: Int, position: Double, promise: Promise) = withController({ controller -> CarLibraryState.pendingSelection = null; MusicPlaybackService.cancelUrlRecovery();controller.stop();controller.seekTo(index.coerceIn(0,(controller.mediaItemCount-1).coerceAtLeast(0)), (if (position.isFinite()) position.coerceAtLeast(0.0) * 1000 else 0.0).toLong());controller.prepare();controller.play();emit(controller) },promise,"playIndex")
-  @ReactMethod fun play(promise: Promise)=withController({if (!MusicPlaybackService.resumeExpiredUrl()) it.play();emit(it)},promise,"play")
+  @ReactMethod fun play(promise: Promise)=withController({
+    if (!MusicPlaybackService.resumeExpiredUrl()) {
+      if (it.playbackState == Player.STATE_IDLE && it.mediaItemCount > 0) it.prepare()
+      it.play()
+    }
+    emit(it)
+  },promise,"play")
   @ReactMethod fun pause(promise: Promise)=withController({MusicPlaybackService.cancelUrlRecovery();it.pause();emit(it)},promise,"pause")
   @ReactMethod fun stop(promise: Promise)=withController({MusicPlaybackService.cancelUrlRecovery();it.stop();emit(it)},promise,"stop")
   @ReactMethod fun seek(seconds: Double,promise: Promise)=withController({MusicPlaybackService.cancelUrlRecovery();it.seekTo((seconds.coerceAtLeast(0.0)*1000).toLong());emit(it)},promise,"seek")
@@ -398,9 +423,8 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     }
   }
   @ReactMethod fun getState(promise: Promise) {
-    future.addListener({
-      try {
-        val controller = future.get()
+    connection.execute({ controller ->
+        rememberController(controller)
         observeDuration(controller)
         promise.resolve(Arguments.createMap().apply {
           putBoolean("playing", controller.isPlaying)
@@ -417,10 +441,9 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
           putUrlRecovery(this, controller)
           putPreviousItem(this)
         })
-      } catch (error: Throwable) {
+    }, { error ->
         promise.reject("PLAYER_ERROR", error.message, error)
-      }
-    }, ContextCompat.getMainExecutor(context))
+    })
   }
 
   @ReactMethod fun setAutoNext(enabled: Boolean, promise: Promise) {
@@ -431,7 +454,7 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
 
   private fun cancelTask(){sleepTask?.let(main::removeCallbacks);sleepTask=null}
   private fun scheduleTrackEnd(controller: MediaController){val task=object:Runnable{override fun run(){if(sleepMode!="track")return;val remaining=controller.duration-controller.currentPosition;if(controller.duration>0&&remaining<=700){controller.pause();sleepMode="off";sleepDeadline=0;emit(controller)}else main.postDelayed(this,250)}};sleepTask=task;main.post(task)}
-  @ReactMethod fun setSleepTimer(mode:String,minutes:Int,promise:Promise)=withController({controller->cancelTask();sleepMode=if(mode=="track")"track" else "minutes";if(sleepMode=="track"){sleepDeadline=0;scheduleTrackEnd(controller)}else{sleepDeadline=System.currentTimeMillis()+TimeUnit.MINUTES.toMillis(minutes.coerceIn(1,720).toLong());val task=Runnable{controller.pause();sleepMode="off";sleepDeadline=0;emit(controller)};sleepTask=task;main.postDelayed(task,(sleepDeadline-System.currentTimeMillis()).coerceAtLeast(0))};emit(controller)},promise)
+  @ReactMethod fun setSleepTimer(mode:String,minutes:Int,promise:Promise)=withController({controller->cancelTask();sleepMode=if(mode=="track")"track" else "minutes";if(sleepMode=="track"){sleepDeadline=0;scheduleTrackEnd(controller)}else{sleepDeadline=System.currentTimeMillis()+TimeUnit.MINUTES.toMillis(minutes.coerceIn(1,720).toLong());val task=Runnable{sleepMode="off";sleepDeadline=0;withController({it.pause();emit(it)})};sleepTask=task;main.postDelayed(task,(sleepDeadline-System.currentTimeMillis()).coerceAtLeast(0))};emit(controller)},promise)
   @ReactMethod fun cancelSleepTimer(promise:Promise)=withController({controller->cancelTask();sleepMode="off";sleepDeadline=0;emit(controller)},promise)
   @ReactMethod fun addListener(eventName:String){listeners++}
   @ReactMethod fun removeListeners(count:Int){listeners=(listeners-count).coerceAtLeast(0)}
@@ -460,5 +483,5 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
       }
     }
   }
-  override fun invalidate(){mediaTasks.close();if(MediaNotificationState.actionSink === mediaNotificationSink) MediaNotificationState.actionSink=null;EffectSpectrumObserver.enable(false);context.removeLifecycleEventListener(spectrumLifecycle);cancelTask();imageExecutor.shutdownNow();future.cancel(false);super.invalidate()}
+  override fun invalidate(){mediaTasks.close();if(MediaNotificationState.actionSink === mediaNotificationSink) MediaNotificationState.actionSink=null;EffectSpectrumObserver.enable(false);context.removeLifecycleEventListener(spectrumLifecycle);connection.close();main.post { cancelTask(); attachedController=null; reconnectSnapshot=null };imageExecutor.shutdownNow();super.invalidate()}
 }
