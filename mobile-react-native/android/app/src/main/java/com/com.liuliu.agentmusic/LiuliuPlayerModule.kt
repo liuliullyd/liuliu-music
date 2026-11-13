@@ -55,6 +55,13 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
       attach(controller)
       if (sleepMode == "track") { cancelTask(); scheduleTrackEnd(controller) }
     },
+    { expired ->
+      val deadline = Runnable { expired() }
+      main.postDelayed(deadline, 8_000L)
+      val cancel: () -> Unit = { main.removeCallbacks(deadline) }
+      cancel
+    },
+    { MusicPlaybackService.taskLifecycle.allowed },
   )
   private fun connectionDisconnected(controller: MediaController) { connection.disconnected(controller) }
   private var sleepMode = "off"
@@ -64,7 +71,7 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
   private val imageExecutor = Executors.newCachedThreadPool()
   private val mediaTasks = ReactRequestTasks(context, "navigation")
   private val mediaNotificationSink: (String, String) -> Boolean = { action, mediaId ->
-    if (context.hasActiveReactInstance() && listeners > 0) {
+    if (MusicPlaybackService.taskLifecycle.allowed && context.hasActiveReactInstance() && listeners > 0) {
       val payload = Arguments.createMap().apply {
         putString("action", action); putString("mediaId", mediaId)
         putString("requestId", MediaNotificationState.sequence.incrementAndGet().toString())
@@ -78,6 +85,19 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     override fun onHostResume() {}
     override fun onHostPause() { EffectSpectrumObserver.enable(false) }
     override fun onHostDestroy() { EffectSpectrumObserver.enable(false) }
+  }
+  private val stopTaskRemoval = MusicPlaybackService.taskLifecycle.observeRemoval {
+    connection.reset()
+    attachedController = null
+    reconnectSnapshot = null
+    previousItem = null
+    cancelTask()
+    sleepMode = "off"
+    sleepDeadline = 0L
+    EffectSpectrumObserver.enable(false)
+    if (context.hasActiveReactInstance())
+      context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit("playbackTaskRemoved", null)
   }
 
   override fun getName() = "LiuliuPlayer"
@@ -215,7 +235,7 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     })
   }
   private fun emit(controller: MediaController) {
-    if (attachedController !== controller || !controller.isConnected) return
+    if (!MusicPlaybackService.taskLifecycle.allowed || attachedController !== controller || !controller.isConnected) return
     rememberController(controller)
     if (!context.hasActiveReactInstance() || listeners == 0) return
     observeDuration(controller)
@@ -283,6 +303,21 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     controller.replaceMediaItem(index, metadata(track))
     emit(controller)
   }, promise)
+  @ReactMethod fun refreshPreparedQueueItem(currentId: String, index: Int, track: ReadableMap, promise: Promise) {
+    var refreshed = false
+    withController({ controller ->
+      val item = metadata(track)
+      if (controller.isPlaying && controller.currentMediaItem?.mediaId == currentId &&
+        index in 0 until controller.mediaItemCount && index != controller.currentMediaItemIndex &&
+        controller.getMediaItemAt(index).mediaId == item.mediaId) {
+        controller.replaceMediaItem(index, item)
+        refreshed = true
+        emit(controller)
+      }
+    }, object : Promise by promise {
+      override fun resolve(value: Any?) { promise.resolve(refreshed) }
+    })
+  }
   @ReactMethod fun reorderQueue(currentId: String, mediaIds: ReadableArray, promise: Promise) = withController({ controller ->
     val desired = (0 until mediaIds.size()).map { requireNotNull(mediaIds.getString(it)) }
     check(controller.currentMediaItem?.mediaId == currentId) { "Current song changed before queue reversal" }
@@ -328,14 +363,36 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     if (items.isNotEmpty()) controller.addMediaItems(index, items)
     emit(controller)
   }, promise)
-  @ReactMethod fun playIndex(index: Int, position: Double, promise: Promise) = withController({ controller -> CarLibraryState.pendingSelection = null; MusicPlaybackService.cancelUrlRecovery();controller.stop();controller.seekTo(index.coerceIn(0,(controller.mediaItemCount-1).coerceAtLeast(0)), (if (position.isFinite()) position.coerceAtLeast(0.0) * 1000 else 0.0).toLong());controller.prepare();controller.play();emit(controller) },promise,"playIndex")
+  @ReactMethod fun playIndex(index: Int, position: Double, promise: Promise) = withController({ controller ->
+    CarLibraryState.pendingSelection = null
+    MusicPlaybackService.cancelUrlRecovery()
+    // Seeking an already admitted playlist item switches the provider in the
+    // same player. stop/prepare would discard its existing prepared state.
+    controller.seekTo(index.coerceIn(0,(controller.mediaItemCount-1).coerceAtLeast(0)),
+      (if (position.isFinite()) position.coerceAtLeast(0.0) * 1000 else 0.0).toLong())
+    if (controller.playbackState == androidx.media3.common.Player.STATE_IDLE) controller.prepare()
+    controller.play()
+    emit(controller)
+  },promise,"playIndex")
   @ReactMethod fun play(promise: Promise)=withController({
+    MusicPlaybackService.cancelInterruptedPlayback()
     if (!MusicPlaybackService.resumeExpiredUrl()) {
       if (it.playbackState == Player.STATE_IDLE && it.mediaItemCount > 0) it.prepare()
       it.play()
     }
     emit(it)
   },promise,"play")
+  @ReactMethod fun resumeInterruptedPlayback(mediaId: String, promise: Promise) {
+    var resumed = false
+    withController({ controller ->
+      if (context.lifecycleState == LifecycleState.RESUMED) {
+        resumed = MusicPlaybackService.resumeInterruptedPlayback(mediaId)
+        emit(controller)
+      }
+    }, object : Promise by promise {
+      override fun resolve(value: Any?) { promise.resolve(resumed) }
+    }, "resumeInterruptedPlayback")
+  }
   @ReactMethod fun pause(promise: Promise)=withController({MusicPlaybackService.cancelUrlRecovery();it.pause();emit(it)},promise,"pause")
   @ReactMethod fun stop(promise: Promise)=withController({MusicPlaybackService.cancelUrlRecovery();it.stop();emit(it)},promise,"stop")
   @ReactMethod fun seek(seconds: Double,promise: Promise)=withController({MusicPlaybackService.cancelUrlRecovery();it.seekTo((seconds.coerceAtLeast(0.0)*1000).toLong());emit(it)},promise,"seek")
@@ -483,5 +540,5 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
       }
     }
   }
-  override fun invalidate(){mediaTasks.close();if(MediaNotificationState.actionSink === mediaNotificationSink) MediaNotificationState.actionSink=null;EffectSpectrumObserver.enable(false);context.removeLifecycleEventListener(spectrumLifecycle);connection.close();main.post { cancelTask(); attachedController=null; reconnectSnapshot=null };imageExecutor.shutdownNow();super.invalidate()}
+  override fun invalidate(){stopTaskRemoval();mediaTasks.close();if(MediaNotificationState.actionSink === mediaNotificationSink) MediaNotificationState.actionSink=null;EffectSpectrumObserver.enable(false);context.removeLifecycleEventListener(spectrumLifecycle);connection.close();main.post { cancelTask(); attachedController=null; reconnectSnapshot=null };imageExecutor.shutdownNow();super.invalidate()}
 }

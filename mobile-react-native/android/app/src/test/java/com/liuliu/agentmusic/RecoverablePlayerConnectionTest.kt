@@ -23,14 +23,78 @@ class RecoverablePlayerConnectionTest {
     val attached = mutableListOf<Controller>()
     val released = mutableListOf<Any>()
     val failures = mutableListOf<Throwable>()
+    val deadlines = mutableListOf<() -> Unit>()
+    val cancelled = mutableListOf<Int>()
+    val lifecycle = PlaybackTaskLifecycle()
     val connection = RecoverablePlayerConnection(main,
       { SettableFuture.create<Controller>().also(attempts::add) }, { it.connected },
-      { released.add(it) }, { attached.add(it) })
+      { released.add(it) }, { attached.add(it) }, { task ->
+        deadlines.add(task)
+        val index = deadlines.lastIndex
+        { cancelled.add(index); Unit }
+      }, { lifecycle.allowed })
+    init { lifecycle.observeRemoval { connection.reset() } }
     fun command(name: String) = connection.execute({ it.commands.add(name) }, failures::add)
     fun establish(): Controller {
       command("initial"); main.drain()
       return Controller().also { attempts.last().set(it); main.drain() }
     }
+  }
+
+  @Test fun taskRemovalRejectsQueuedCommandsEvenWhenActivityReopensBeforeDispatch() {
+    val f = Fixture(); val old = f.establish()
+    f.command("late-play")
+    f.lifecycle.removeTask(); f.lifecycle.openActivity()
+    f.command("new-load"); f.main.drain()
+    val fresh = Controller(); f.attempts.last().set(fresh); f.main.drain()
+    assertEquals(listOf("initial"), old.commands)
+    assertEquals(listOf("new-load"), fresh.commands)
+    assertEquals(1, f.failures.size)
+    assertEquals(1, f.released.size)
+  }
+
+  @Test fun taskRemovalBlocksBackgroundPollAndPlayUntilActivityOpens() {
+    val f = Fixture(); f.establish()
+    f.lifecycle.removeTask(); f.main.drain()
+    f.command("poll"); f.command("play"); f.main.drain()
+    assertEquals(1, f.attempts.size)
+    assertEquals(2, f.failures.size)
+    f.lifecycle.openActivity(); f.command("reopened"); f.main.drain()
+    val fresh = Controller(); f.attempts.last().set(fresh); f.main.drain()
+    assertEquals(listOf("reopened"), fresh.commands)
+  }
+
+  @Test fun taskRemovalRejectsPendingConnectionAndItsLateCompletion() {
+    val f = Fixture(); f.command("old-load"); f.main.drain()
+    f.lifecycle.removeTask(); f.main.drain()
+    f.lifecycle.openActivity(); f.command("new-load"); f.main.drain()
+    val late = Controller(); f.attempts.first().set(late); f.main.drain()
+    val fresh = Controller(); f.attempts.last().set(fresh); f.main.drain()
+    assertTrue(late.commands.isEmpty())
+    assertEquals(listOf(fresh), f.attached)
+    assertEquals(listOf("new-load"), fresh.commands)
+    assertEquals(1, f.failures.size)
+  }
+
+  @Test fun removalDuringCommandDeliveryRejectsRemainingWaiters() {
+    val f = Fixture()
+    f.connection.execute({ it.commands.add("first"); f.lifecycle.removeTask() }, f.failures::add)
+    f.command("late-next"); f.main.drain()
+    val controller = Controller(); f.attempts.single().set(controller); f.main.drain()
+    assertEquals(listOf("first"), controller.commands)
+    assertEquals(1, f.failures.size)
+    assertEquals(1, f.released.size)
+  }
+
+  @Test fun repeatedRemovalCleansOnceAndOrdinaryBackgroundKeepsPermission() {
+    val lifecycle = PlaybackTaskLifecycle()
+    var removed = 0
+    val unsubscribe = lifecycle.observeRemoval { removed++ }
+    lifecycle.openActivity(); assertTrue(lifecycle.allowed)
+    lifecycle.removeTask(); lifecycle.removeTask()
+    assertFalse(lifecycle.allowed); assertEquals(1, removed)
+    lifecycle.openActivity(); assertTrue(lifecycle.allowed)
+    unsubscribe(); lifecycle.removeTask(); assertEquals(1, removed)
   }
 
   @Test fun disconnectedControllerIsReplacedBeforeNextAndPreviousCommands() {
@@ -119,6 +183,47 @@ class RecoverablePlayerConnectionTest {
   @Test fun closeBeforeQueuedDispatchNeverStartsAConnection() {
     val f = Fixture(); f.command("play"); f.connection.close(); f.main.drain()
     assertTrue(f.attempts.isEmpty()); assertEquals(1, f.failures.size)
+  }
+
+  @Test fun hungConnectionRejectsAllWaitingCommandsAndALaterPlayCanReconnect() {
+    val f = Fixture(); f.command("play"); f.command("next"); f.command("poll"); f.main.drain()
+    assertEquals(1, f.attempts.size)
+    assertEquals(1, f.deadlines.size)
+    f.deadlines.single()(); f.main.drain()
+    assertEquals(3, f.failures.size)
+    assertTrue(f.failures.all { it is java.util.concurrent.TimeoutException })
+    assertEquals(listOf(f.attempts.first()), f.released)
+    f.command("play-again"); f.main.drain()
+    val fresh = Controller(); f.attempts.last().set(fresh); f.main.drain()
+    assertEquals(2, f.attempts.size)
+    assertEquals(listOf("play-again"), fresh.commands)
+  }
+
+  @Test fun lateCompletionOfTimedOutAttemptCannotDispatchOrReplaceTheNewController() {
+    val f = Fixture(); f.command("old-next"); f.main.drain()
+    assertEquals(1, f.deadlines.size)
+    f.deadlines.first()(); f.main.drain()
+    f.command("new-previous"); f.main.drain()
+    val fresh = Controller(); f.attempts.last().set(fresh); f.main.drain()
+    val late = Controller(); f.attempts.first().set(late); f.main.drain()
+    // A cancelled timer already queued on main must also be harmless.
+    f.deadlines.forEach { it() }; f.main.drain()
+    f.command("play"); f.main.drain()
+    assertEquals(listOf(fresh), f.attached)
+    assertTrue(late.commands.isEmpty())
+    assertEquals(listOf("new-previous", "play"), fresh.commands)
+    assertEquals(1, f.failures.size)
+    assertEquals(2, f.attempts.size)
+    assertEquals(listOf(0, 1), f.cancelled)
+  }
+
+  @Test fun closingPendingConnectionCancelsItsDeadlineAndNeverReleasesTwice() {
+    val f = Fixture(); f.command("play"); f.main.drain()
+    assertEquals(1, f.deadlines.size)
+    f.connection.close(); f.main.drain()
+    f.deadlines.single()(); f.main.drain()
+    assertEquals(listOf(0), f.cancelled)
+    assertEquals(1, f.failures.size); assertEquals(1, f.released.size)
   }
 
   private class PlayerState(var items: List<MediaItem> = emptyList()) {

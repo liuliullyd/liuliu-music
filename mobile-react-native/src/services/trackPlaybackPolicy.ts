@@ -1,4 +1,3 @@
-import { Platform } from 'react-native';
 import type { Track } from '../domain/types';
 import { trackMediaKind } from './mediaLibrary';
 import { isRecommendationMusicTrack } from './recommendationContentPolicy';
@@ -40,38 +39,6 @@ export class TrackPlaybackRejectedError extends Error {
     super(message);
     this.name = 'TrackPlaybackRejectedError';
   }
-}
-
-/** A URL-level failure: another existing interface may return the complete song. */
-export class QishuiIncompleteAudioError extends Error {
-  readonly code = 'QISHUI_INCOMPLETE_AUDIO';
-
-  constructor(readonly catalogSeconds: number, readonly actualSeconds: number) {
-    super('当前汽水音源返回的音频不完整，未获取到整首音频');
-    this.name = 'QishuiIncompleteAudioError';
-  }
-}
-
-export const requiresQishuiCompleteness = (track: Track) =>
-  Platform.OS === 'android' &&
-  track.provider === 'qishui' &&
-  trackMediaKind(track) === 'music';
-
-/** Same-song native duration only; catalog labels and resolver tier names are not audio evidence. */
-export function validateQishuiAudioCompleteness(
-  track: Track,
-  probe: AudioProbeResult,
-) {
-  if (!requiresQishuiCompleteness(track)) return;
-  const catalog = Number(track.duration),
-    actual = Number(probe.durationSeconds);
-  const tolerance = Math.max(2, catalog * 0.01);
-  if (
-    Number.isFinite(catalog) &&
-    catalog > 0 &&
-    (!Number.isFinite(actual) || actual <= 0 || actual + tolerance < catalog)
-  )
-    throw new QishuiIncompleteAudioError(catalog, actual);
 }
 
 const blockedTracks = new Map<string, DeterministicTrackFailure>();
@@ -128,7 +95,11 @@ export function rejectCatalogShortTrack(track: Track): never {
   );
 }
 
-export function validateResolvedAudio(track: Track, probe: AudioProbeResult) {
+export function validateResolvedAudio(
+  track: Track,
+  probe: AudioProbeResult,
+  recordFailure = true,
+) {
   if (!isRecommendationMusicTrack(track))
     return rejectTrack(track, 'unsupported-content', '当前版本仅支持音乐');
   const actual = Number(probe.durationSeconds);
@@ -137,24 +108,28 @@ export function validateResolvedAudio(track: Track, probe: AudioProbeResult) {
       track,
       'duration-unreadable',
       '该歌曲无法读取音频时长，已从列表移除',
+      recordFailure,
     );
-  validateQishuiAudioCompleteness(track, probe);
-  // Other online music retains its positive-duration rule. Android qs alone
-  // rejects incomplete URLs without adding a song to the runtime blacklist.
   if (track.provider === 'custom' || trackMediaKind(track) !== 'music') {
     if (actual < MIN_PLAYABLE_DURATION_SECONDS)
-      return rejectTrack(track, 'actual-short');
+      return rejectTrack(track, 'actual-short', undefined, recordFailure);
     if (
       Number.isFinite(track.duration) &&
       track.duration >= MIN_PLAYABLE_DURATION_SECONDS &&
       actual < track.duration * MIN_ACTUAL_TO_CATALOG_RATIO
     )
-      return rejectTrack(track, 'duration-mismatch');
+      return rejectTrack(track, 'duration-mismatch', undefined, recordFailure);
   }
   return probe;
 }
 
-export function rejectDeterministicNativeFailure(track: Track, error: unknown) {
+export function rejectDeterministicNativeFailure(
+  track: Track,
+  error: unknown,
+  recordFailure = true,
+) {
+  if (error instanceof TrackPlaybackRejectedError)
+    return rejectTrack(track, error.reason, error.message, recordFailure);
   const code = String((error as { code?: unknown })?.code ?? '');
   const reason: DeterministicTrackFailure | null =
     code === 'AUDIO_NO_TRACK'
@@ -171,6 +146,7 @@ export function rejectDeterministicNativeFailure(track: Track, error: unknown) {
     reason === 'no-audio-track'
       ? '该歌曲没有可播放的音频轨道，已从列表移除'
       : '该歌曲无法读取有效音频，已从列表移除',
+    recordFailure,
   );
 }
 
@@ -198,10 +174,11 @@ function rejectTrack(
   track: Track,
   reason: DeterministicTrackFailure,
   message?: string,
+  recordFailure = true,
 ): never {
   const key = runtimeTrackKey(track);
-  const changed = !blockedTracks.has(key);
-  blockedTracks.set(key, reason);
+  const changed = recordFailure && !blockedTracks.has(key);
+  if (recordFailure) blockedTracks.set(key, reason);
   if (changed) listeners.forEach(listener => listener());
   throw new TrackPlaybackRejectedError(key, reason, message);
 }

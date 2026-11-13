@@ -14,7 +14,6 @@ import {
   rejectDeterministicNativeFailure,
   TrackPlaybackRejectedError,
   validateResolvedAudio,
-  validateQishuiAudioCompleteness,
   type AudioProbeResult,
 } from './trackPlaybackPolicy';
 
@@ -38,10 +37,35 @@ type ResolvedSource = {
   backendUrls?: BackendEndpoint[];
   audio?: AudioProbeResult;
 };
-type BackendEndpoint = { backend?: string; url: string; requestRoute?: string; dependencyRoutes?: string[]; quality?: Quality };
-type NativeResolvedSource = string | { url: string; quality?: Quality; reportedQuality?: Quality; backend?: string; backendUrls?: BackendEndpoint[]; audio?: AudioProbeResult };
-type SourceResolver = (script: string, source: string, musicInfoJson: string, quality: string) => Promise<NativeResolvedSource>;
-type StartupPrefixProbeResult = { sampleBytes: number; mimeType?: string; resolvedUrl?: string };
+type BackendEndpoint = {
+  backend?: string;
+  url: string;
+  requestRoute?: string;
+  dependencyRoutes?: string[];
+  quality?: Quality;
+};
+type NativeResolvedSource =
+  | string
+  | {
+      url: string;
+      quality?: Quality;
+      reportedQuality?: Quality;
+      backend?: string;
+      backendUrls?: BackendEndpoint[];
+      audio?: AudioProbeResult;
+    };
+type SourceResolver = (
+  script: string,
+  source: string,
+  musicInfoJson: string,
+  quality: string,
+  signal?: AbortSignal,
+) => Promise<NativeResolvedSource>;
+type StartupPrefixProbeResult = {
+  sampleBytes: number;
+  mimeType?: string;
+  resolvedUrl?: string;
+};
 const resolvedUrls = new Map<string, { value: ResolvedSource }>();
 const resolving = new Map<string, Promise<ResolvedSource>>();
 const expiredResolutions = new Map<string, Promise<ResolvedSource>>();
@@ -50,15 +74,30 @@ const expiredResolutions = new Map<string, Promise<ResolvedSource>>();
 // playback still applies its existing native gate.
 const prewarmedUrls = new Map<string, { value: ResolvedSource }>();
 const prewarming = new Map<string, Promise<ResolvedSource>>();
+// An interruption requests a new audio check without discarding the URL.
+const requiredPrewarmChecks = new Map<string, object>();
 type BackendRecord = { backend?: string; url?: string; available: boolean };
-type BackendRoute = { key: string; backend?: string; routes: string[]; primaryRoutes: string[]; qualities: Quality[]; available: boolean };
-type BackendPool = { records: BackendRecord[]; preferred?: string; routes?: BackendRoute[]; preferredRoute?: string };
+type BackendRoute = {
+  key: string;
+  backend?: string;
+  routes: string[];
+  primaryRoutes: string[];
+  qualities: Quality[];
+  available: boolean;
+};
+type BackendPool = {
+  records: BackendRecord[];
+  preferred?: string;
+  routes?: BackendRoute[];
+  preferredRoute?: string;
+};
 type BackendAttemptFailures = { routes: Set<string>; backends: Set<string> };
 // The imported handler constructs each target request; captured routes select its successful interfaces.
 const backendPools = new Map<string, BackendPool>();
 let backendPoolGeneration = 0;
 let resolutionCacheGeneration = 0;
 const addressControllers = new Map<string, AbortController>();
+const interfaceControllers = new Set<AbortController>();
 let addressRequestSequence = 0;
 const nativeRuntime = () =>
   NativeModules.LiuliuStorage as
@@ -70,7 +109,11 @@ const nativeRuntime = () =>
           quality: string,
         ) => Promise<NativeResolvedSource>;
         resolveSourceScriptAddress?: (
-          script: string, source: string, musicInfoJson: string, quality: string, requestId: string,
+          script: string,
+          source: string,
+          musicInfoJson: string,
+          quality: string,
+          requestId: string,
         ) => Promise<NativeResolvedSource>;
         cancelSourceScriptAddress?: (requestId: string) => Promise<boolean>;
         resolveSourceScriptForHealth?: (
@@ -80,15 +123,31 @@ const nativeRuntime = () =>
           quality: string,
         ) => Promise<NativeResolvedSource>;
         probeAudioUrl?: (url: string) => Promise<AudioProbeResult>;
-        probeBackgroundAudioUrl?: (url: string, requestId: string) => Promise<AudioProbeResult>;
+        probeAudioUrlCancellable?: (
+          url: string,
+          requestId: string,
+        ) => Promise<AudioProbeResult>;
+        cancelAudioProbe?: (requestId: string) => Promise<boolean>;
+        probeBackgroundAudioUrl?: (
+          url: string,
+          requestId: string,
+        ) => Promise<AudioProbeResult>;
         cancelBackgroundAudioProbe?: (requestId: string) => Promise<boolean>;
-        probeStartupAudioUrl?: (url: string, requestId: string) => Promise<AudioProbeResult>;
+        probeStartupAudioUrl?: (
+          url: string,
+          requestId: string,
+        ) => Promise<AudioProbeResult>;
         probeAudioPrefix?: (url: string) => Promise<StartupPrefixProbeResult>;
       }
     | undefined;
 
-export async function probeManualSource(track: Track, source: SourceSetting, recordBackendResult = true) {
-  if (!isSourceAuthorized(source)) throw new Error('尚未取得该同步音源的使用权限');
+export async function probeManualSource(
+  track: Track,
+  source: SourceSetting,
+  recordBackendResult = true,
+) {
+  if (!isSourceAuthorized(source))
+    throw new Error('尚未取得该同步音源的使用权限');
   const generation = backendPoolGeneration;
   const native = nativeRuntime();
   if (!native?.resolveSourceScriptForHealth || !native.probeAudioPrefix)
@@ -104,12 +163,7 @@ export async function probeManualSource(track: Track, source: SourceSetting, rec
         source.script!,
         sourceType,
         JSON.stringify(
-          normalizeLxInfo(
-            track,
-            sourceType,
-            undefined,
-            undefined,
-          ),
+          normalizeLxInfo(track, sourceType, undefined, undefined),
         ),
         '128k',
       ),
@@ -117,19 +171,29 @@ export async function probeManualSource(track: Track, source: SourceSetting, rec
     const probe = await native.probeAudioPrefix(resolved.url);
     if (probe.sampleBytes <= 0) throw new Error('播放链路未返回音频数据');
     resolved.url = probe.resolvedUrl?.trim() || resolved.url;
-    if (recordBackendResult && generation === backendPoolGeneration) rememberBackendResult(source, sourceType, resolved, '128k');
+    if (recordBackendResult && generation === backendPoolGeneration)
+      rememberBackendResult(source, sourceType, resolved, '128k');
     return { ...resolved, quality: '128k' as const, probe };
   } catch (error) {
     const failedBackend = resolved?.backend?.trim();
-    if (recordBackendResult && failedBackend && generation === backendPoolGeneration)
+    if (
+      recordBackendResult &&
+      failedBackend &&
+      generation === backendPoolGeneration
+    )
       markBackendUnavailable(source, sourceType, failedBackend);
     throw error;
   }
 }
 
 /** Startup resolves its original chart sample and requires one actual frame after 61s. */
-export async function probeStartupSource(track: Track, source: SourceSetting, preferred: AppSettings['quality']) {
-  if (!isSourceAuthorized(source)) throw new Error('尚未取得该同步音源的使用权限');
+export async function probeStartupSource(
+  track: Track,
+  source: SourceSetting,
+  preferred: AppSettings['quality'],
+) {
+  if (!isSourceAuthorized(source))
+    throw new Error('尚未取得该同步音源的使用权限');
   const result = await resolveImportedSourcePrewarm(
     track,
     [{ ...source, healthy: true, pinnedBackend: undefined }],
@@ -139,21 +203,48 @@ export async function probeStartupSource(track: Track, source: SourceSetting, pr
     true,
     STARTUP_FRAME_AFTER_SECONDS,
   );
-  console.info('[startup-quality]', JSON.stringify({ key: `${track.provider}:${track.providerId ?? track.id}`,
-    ceiling: preferred, quality: result.quality, audioValidated: Boolean(result.audio) }));
+  console.info(
+    '[startup-quality]',
+    JSON.stringify({
+      key: `${track.provider}:${track.providerId ?? track.id}`,
+      ceiling: preferred,
+      quality: result.quality,
+      audioValidated: Boolean(result.audio),
+    }),
+  );
   return result;
 }
 
-function memoizeAudioProbe(probe: (url: string) => Promise<AudioProbeResult>) {
-  const measured = new Map<string, Promise<AudioProbeResult>>();
-  return (url: string) => {
-    let pending = measured.get(url);
+type AudioProbe = (
+  url: string,
+  signal?: AbortSignal,
+) => Promise<AudioProbeResult>;
+function memoizeAudioProbe(probe: AudioProbe): AudioProbe {
+  const shared = new Map<string, Promise<AudioProbeResult>>();
+  const attempts = new WeakMap<
+    AbortSignal,
+    Map<string, Promise<AudioProbeResult>>
+  >();
+  return (url, signal) => {
+    let measured = signal ? attempts.get(signal) : shared;
+    if (!measured) {
+      measured = new Map();
+      attempts.set(signal!, measured);
+    }
+    const cache = measured;
+    let pending = cache.get(url);
     if (!pending) {
-      pending = probe(url).then(audio => {
-        if (audio.resolvedUrl) measured.set(audio.resolvedUrl, Promise.resolve(audio));
-        return audio;
-      }).catch(error => { measured.delete(url); throw error; });
-      measured.set(url, pending);
+      pending = probe(url, signal)
+        .then(audio => {
+          if (audio.resolvedUrl)
+            cache.set(audio.resolvedUrl, Promise.resolve(audio));
+          return audio;
+        })
+        .catch(error => {
+          cache.delete(url);
+          throw error;
+        });
+      cache.set(url, pending);
     }
     return pending;
   };
@@ -172,8 +263,11 @@ async function observePlaybackStage<T>(
 ) {
   const startedAt = Date.now();
   const notify = (outcome: 'success' | 'failure') => {
-    try { observer?.(stage, { ms: Date.now() - startedAt, quality, outcome }); }
-    catch { /* Diagnostics cannot change playback or quality fallback. */ }
+    try {
+      observer?.(stage, { ms: Date.now() - startedAt, quality, outcome });
+    } catch {
+      /* Diagnostics cannot change playback or quality fallback. */
+    }
   };
   try {
     const value = await run();
@@ -203,7 +297,12 @@ export async function resolveWithImportedSource(
     throw new Error('当前 Android 构建不支持音乐源解析运行时');
   if (!native.probeAudioUrl)
     throw new Error('当前 Android 构建不支持真实音频时长检测');
-  const probeAudio = (url: string) => observePlaybackStage(timing, 'native-validation', () => native.probeAudioUrl!(url));
+  const probeAudio: AudioProbe = (url, signal) =>
+    observePlaybackStage(timing, 'native-validation', () =>
+      signal && native.probeAudioUrlCancellable && native.cancelAudioProbe
+        ? runBackgroundAudioNative(native, url, signal, true)
+        : native.probeAudioUrl!(url),
+    );
   const sourceType = sourceTypes[track.provider];
   const candidates = sources.filter(
     source =>
@@ -215,16 +314,34 @@ export async function resolveWithImportedSource(
   );
   if (!candidates.length) throw new SourceBindingUnavailableError(sourceType);
   const key = resolutionKey(track, candidates, sourceType, preferred);
+  const requiredCheck = requiredPrewarmChecks.get(key);
+  const acceptValidated = (value: ResolvedSource) => {
+    if (requiredPrewarmChecks.get(key) === requiredCheck)
+      requiredPrewarmChecks.delete(key);
+    return value;
+  };
   if (cachedUrlOnly) {
+    if (requiredCheck) throw new Error('歌曲缓存正在重新校验');
     const entry = resolvedUrls.get(key) ?? prewarmedUrls.get(key);
     if (!entry) throw new Error('歌曲预解析缓存尚未就绪');
     const snapshot = entry.value;
     if (!snapshot.audio) throw new Error('歌曲校验缓存尚未就绪');
     validateResolvedAudio(track, snapshot.audio);
-    const quality = audioQualityForPreference(snapshot.audio, snapshot.reportedQuality, preferred);
-    console.info('[playback-url-cache]', JSON.stringify({ provider: track.provider,
-      id: track.providerId ?? track.id, stage: 'prepared-hit', quality: snapshot.quality,
-      urlToken: scriptFingerprint(snapshot.url) }));
+    const quality = audioQualityForPreference(
+      snapshot.audio,
+      snapshot.reportedQuality,
+      preferred,
+    );
+    console.info(
+      '[playback-url-cache]',
+      JSON.stringify({
+        provider: track.provider,
+        id: track.providerId ?? track.id,
+        stage: 'prepared-hit',
+        quality: snapshot.quality,
+        urlToken: scriptFingerprint(snapshot.url),
+      }),
+    );
     // The playlist already checked this exact URL. Complete-page/native queue
     // preparation only consumes that evidence; it must not reopen or reselect it.
     return { ...snapshot, quality };
@@ -242,48 +359,81 @@ export async function resolveWithImportedSource(
   }
   const cached = resolvedUrls.get(key);
   if (cached) {
-    console.info('[playback-url-cache]', JSON.stringify({ provider: track.provider,
-      id: track.providerId ?? track.id, stage: 'validated-hit', quality: cached.value.quality,
-      urlToken: scriptFingerprint(cached.value.url) }));
+    console.info(
+      '[playback-url-cache]',
+      JSON.stringify({
+        provider: track.provider,
+        id: track.providerId ?? track.id,
+        stage: 'validated-hit',
+        quality: cached.value.quality,
+        urlToken: scriptFingerprint(cached.value.url),
+      }),
+    );
     try {
       const probe = await probeAudio(cached.value.url);
       validateResolvedAudio(track, probe);
       const validated = {
         ...cached.value,
         url: validatedPlaybackUrl(cached.value.url, probe),
-        quality: audioQualityForPreference(probe, cached.value.reportedQuality, preferred),
+        quality: audioQualityForPreference(
+          probe,
+          cached.value.reportedQuality,
+          preferred,
+        ),
         audio: probe,
       };
-      if (resolvedUrls.get(key) === cached) resolvedUrls.set(key, { value: validated });
+      if (resolvedUrls.get(key) === cached)
+        resolvedUrls.set(key, { value: validated });
       const warm = prewarmedUrls.get(key);
-      if (warm?.value === cached.value) prewarmedUrls.set(key, { value: validated });
-      return validated;
+      if (warm?.value === cached.value)
+        prewarmedUrls.set(key, { value: validated });
+      return acceptValidated(validated);
     } catch (error) {
       if (error instanceof TrackPlaybackRejectedError) throw error;
       if (resolvedUrls.get(key) === cached) resolvedUrls.delete(key);
-      if (prewarmedUrls.get(key)?.value === cached.value) prewarmedUrls.delete(key);
+      if (prewarmedUrls.get(key)?.value === cached.value)
+        prewarmedUrls.delete(key);
     }
   }
   const prewarmed = prewarmedUrls.get(key);
   if (prewarmed) {
-    console.info('[playback-url-cache]', JSON.stringify({ provider: track.provider,
-      id: track.providerId ?? track.id, stage: 'prewarm-hit', quality: prewarmed.value.quality,
-      urlToken: scriptFingerprint(prewarmed.value.url) }));
+    console.info(
+      '[playback-url-cache]',
+      JSON.stringify({
+        provider: track.provider,
+        id: track.providerId ?? track.id,
+        stage: 'prewarm-hit',
+        quality: prewarmed.value.quality,
+        urlToken: scriptFingerprint(prewarmed.value.url),
+      }),
+    );
     try {
       const probe = await probeAudio(prewarmed.value.url);
       validateResolvedAudio(track, probe);
       const validated = {
         ...prewarmed.value,
         url: validatedPlaybackUrl(prewarmed.value.url, probe),
-        quality: audioQualityForPreference(probe, prewarmed.value.reportedQuality, preferred),
+        quality: audioQualityForPreference(
+          probe,
+          prewarmed.value.reportedQuality,
+          preferred,
+        ),
         audio: probe,
       };
-      if (cacheGeneration === resolutionCacheGeneration && generation === backendPoolGeneration && prewarmedUrls.get(key) === prewarmed)
+      if (
+        cacheGeneration === resolutionCacheGeneration &&
+        generation === backendPoolGeneration &&
+        prewarmedUrls.get(key) === prewarmed
+      )
         resolvedUrls.set(key, { value: validated });
-      return validated;
+      return acceptValidated(validated);
     } catch (error) {
       if (error instanceof TrackPlaybackRejectedError) throw error;
-      if (generation === backendPoolGeneration && prewarmedUrls.get(key) === prewarmed) prewarmedUrls.delete(key);
+      if (
+        generation === backendPoolGeneration &&
+        prewarmedUrls.get(key) === prewarmed
+      )
+        prewarmedUrls.delete(key);
     }
   }
   const warming = prewarming.get(key);
@@ -293,27 +443,45 @@ export async function resolveWithImportedSource(
       warmed = await warming;
       const probe = await probeAudio(warmed.url);
       validateResolvedAudio(track, probe);
-      if (cacheGeneration === resolutionCacheGeneration && generation === backendPoolGeneration && prewarmedUrls.get(key)?.value === warmed) resolvedUrls.set(key, {
+      if (
+        cacheGeneration === resolutionCacheGeneration &&
+        generation === backendPoolGeneration &&
+        prewarmedUrls.get(key)?.value === warmed
+      )
+        resolvedUrls.set(key, {
           value: {
             ...warmed,
             url: validatedPlaybackUrl(warmed.url, probe),
-            quality: audioQualityForPreference(probe, warmed.reportedQuality, preferred),
+            quality: audioQualityForPreference(
+              probe,
+              warmed.reportedQuality,
+              preferred,
+            ),
             audio: probe,
           },
         });
-      return {
+      return acceptValidated({
         ...warmed,
         url: validatedPlaybackUrl(warmed.url, probe),
-        quality: audioQualityForPreference(probe, warmed.reportedQuality, preferred),
+        quality: audioQualityForPreference(
+          probe,
+          warmed.reportedQuality,
+          preferred,
+        ),
         audio: probe,
-      };
+      });
     } catch (error) {
       if (error instanceof TrackPlaybackRejectedError) throw error;
       // This failed wait belongs to the captured flight, never a newer warm entry.
       // A superseded selected request must not restart full resolution after
       // its shared URL-only request was cancelled by a newer user selection.
       if (error instanceof Error && error.name === 'AbortError') throw error;
-      if (generation === backendPoolGeneration && warmed && prewarmedUrls.get(key)?.value === warmed) prewarmedUrls.delete(key);
+      if (
+        generation === backendPoolGeneration &&
+        warmed &&
+        prewarmedUrls.get(key)?.value === warmed
+      )
+        prewarmedUrls.delete(key);
     }
   }
   const requestKey = key;
@@ -326,23 +494,48 @@ export async function resolveWithImportedSource(
     candidates,
     preferred,
     sourceType,
-    (...args) => observePlaybackStage(timing, 'source-url', () => native.resolveSourceScript!(...args), args[3]),
+    (script, platform, info, quality, signal) =>
+      observePlaybackStage(
+        timing,
+        'source-url',
+        () =>
+          signal &&
+          native.resolveSourceScriptAddress &&
+          native.cancelSourceScriptAddress
+            ? runAddressNative(
+                native,
+                [script, platform, info, quality],
+                signal,
+              )
+            : native.resolveSourceScript!(script, platform, info, quality),
+        quality,
+      ),
     probeAudio,
     generation,
   )
     .then(result => {
       const value = result;
-      if (resolving.get(requestKey) !== request || generation !== backendPoolGeneration || cacheGeneration !== resolutionCacheGeneration) return value;
+      if (
+        resolving.get(requestKey) !== request ||
+        generation !== backendPoolGeneration ||
+        cacheGeneration !== resolutionCacheGeneration
+      )
+        return value;
       resolvedUrls.set(key, { value });
-      if (!warmBeforeFresh && prewarmedUrls.get(key) === warmBeforeFresh && prewarming.get(key) === warmFlightBeforeFresh)
+      if (
+        !warmBeforeFresh &&
+        prewarmedUrls.get(key) === warmBeforeFresh &&
+        prewarming.get(key) === warmFlightBeforeFresh
+      )
         prewarmedUrls.set(key, { value });
       while (resolvedUrls.size > RESOLVED_URL_CACHE_LIMIT)
         resolvedUrls.delete(resolvedUrls.keys().next().value!);
-      return value;
+      return acceptValidated(value);
     })
     .finally(() => {
       if (resolving.get(requestKey) === request) resolving.delete(requestKey);
-      if (expiredResolutions.get(key) === request) expiredResolutions.delete(key);
+      if (expiredResolutions.get(key) === request)
+        expiredResolutions.delete(key);
     });
   resolving.set(requestKey, request);
   if (refreshExpiredUrl) expiredResolutions.set(key, request);
@@ -388,10 +581,13 @@ async function resolveImportedSourcePrewarm(
   const native = nativeRuntime();
   if (!native?.resolveSourceScriptAddress || !native.cancelSourceScriptAddress)
     throw new Error('当前 Android 构建不支持可取消的 URL 预解析');
-  if (validateAudio &&
-      (!(requireFrameAfterSeconds === undefined
-          ? native.probeBackgroundAudioUrl
-          : native.probeStartupAudioUrl) || !native.cancelBackgroundAudioProbe))
+  if (
+    validateAudio &&
+    (!(requireFrameAfterSeconds === undefined
+      ? native.probeBackgroundAudioUrl
+      : native.probeStartupAudioUrl) ||
+      !native.cancelBackgroundAudioProbe)
+  )
     throw new Error('当前 Android 构建不支持可取消的预解析音频校验');
   const sourceType = sourceTypes[track.provider];
   const candidates = sources.filter(
@@ -404,28 +600,50 @@ async function resolveImportedSourcePrewarm(
   );
   if (!candidates.length) throw new SourceBindingUnavailableError(sourceType);
   const key = resolutionKey(track, candidates, sourceType, preferred);
+  const requiredCheck = requiredPrewarmChecks.get(key);
   const validated = resolvedUrls.get(key);
+  const rememberValidatedInterface = (value: ResolvedSource) => {
+    if (!validateAudio || !value.audio || generation !== backendPoolGeneration)
+      return;
+    const source = candidates.find(
+      candidate => candidate.id === value.sourceId,
+    );
+    if (source) rememberBackendResult(source, sourceType, value, preferred);
+  };
   const reuseCached = (cached: { value: ResolvedSource }) => {
+    if (validateAudio && requiredCheck) return undefined;
     if (validateAudio && !cached.value.audio) return undefined;
     try {
       throwIfAddressAborted(signal);
       if (requireFrameAfterSeconds === undefined && cached.value.audio)
         validateResolvedAudio(track, cached.value.audio);
-      if (requireFrameAfterSeconds !== undefined &&
-          (!cached.value.audio ||
-            (cached.value.audio.verifiedThroughSeconds ?? Number.NEGATIVE_INFINITY) <= requireFrameAfterSeconds))
+      if (
+        requireFrameAfterSeconds !== undefined &&
+        (!cached.value.audio ||
+          (cached.value.audio.verifiedThroughSeconds ??
+            Number.NEGATIVE_INFINITY) <= requireFrameAfterSeconds)
+      )
         throw new PrewarmAudioUnavailable(
           `启动样本未读取到 ${requireFrameAfterSeconds} 秒后的实际音频帧`,
         );
       // The process cache owns this exact final URL and its measured evidence.
       // URL-only consumers reuse it; actual playback still reopens and validates it.
-      const quality = audioQualityForPreference(cached.value.audio, cached.value.reportedQuality, preferred);
-      return quality === cached.value.quality ? cached.value : { ...cached.value, quality };
+      const quality = audioQualityForPreference(
+        cached.value.audio,
+        cached.value.reportedQuality,
+        preferred,
+      );
+      rememberValidatedInterface(cached.value);
+      return quality === cached.value.quality
+        ? cached.value
+        : { ...cached.value, quality };
     } catch (error) {
       throwIfAddressAborted(signal);
       if (error instanceof TrackPlaybackRejectedError) throw error;
-      if (resolvedUrls.get(key)?.value === cached.value) resolvedUrls.delete(key);
-      if (prewarmedUrls.get(key)?.value === cached.value) prewarmedUrls.delete(key);
+      if (resolvedUrls.get(key)?.value === cached.value)
+        resolvedUrls.delete(key);
+      if (prewarmedUrls.get(key)?.value === cached.value)
+        prewarmedUrls.delete(key);
       return undefined;
     }
   };
@@ -433,7 +651,10 @@ async function resolveImportedSourcePrewarm(
     const value = reuseCached(validated);
     if (value) return value;
   }
-  const cached = prewarmedUrls.get(key);
+  const cached =
+    validateAudio && requiredCheck
+      ? validated ?? prewarmedUrls.get(key)
+      : prewarmedUrls.get(key);
   if (cached && (!validateAudio || cached.value.audio)) {
     const value = reuseCached(cached);
     if (value) return value;
@@ -452,15 +673,15 @@ async function resolveImportedSourcePrewarm(
       // frame-evidence rejection, otherwise the recursive call would await the
       // same short result forever.
       if (prewarming.get(key) === pending) prewarming.delete(key);
-      if (addressControllers.get(key) === controller) addressControllers.delete(key);
-      let complete = true;
-      if (validateAudio && requireFrameAfterSeconds === undefined && value.audio) {
-        try { validateQishuiAudioCompleteness(track, value.audio); }
-        catch { complete = false; }
-      }
-      if (complete && (!validateAudio || value.audio) &&
-          (requireFrameAfterSeconds === undefined ||
-            (value.audio?.verifiedThroughSeconds ?? Number.NEGATIVE_INFINITY) > requireFrameAfterSeconds)) return value;
+      if (addressControllers.get(key) === controller)
+        addressControllers.delete(key);
+      if (
+        (!validateAudio || (value.audio && !requiredPrewarmChecks.has(key))) &&
+        (requireFrameAfterSeconds === undefined ||
+          (value.audio?.verifiedThroughSeconds ?? Number.NEGATIVE_INFINITY) >
+            requireFrameAfterSeconds)
+      )
+        return value;
       return resolveImportedSourcePrewarm(
         track,
         sources,
@@ -470,58 +691,101 @@ async function resolveImportedSourcePrewarm(
         discoverBackends,
         requireFrameAfterSeconds,
       );
+    } finally {
+      signal?.removeEventListener('abort', forwardAbort);
     }
-    finally { signal?.removeEventListener('abort', forwardAbort); }
   }
   const controller = new AbortController();
   const forwardAbort = () => controller.abort();
   signal?.addEventListener('abort', forwardAbort, { once: true });
   if (signal?.aborted) controller.abort();
   addressControllers.set(key, controller);
-  const resolveAddress = () => resolveFreshAddress(
-    track,
-    candidates,
-    preferred,
-    sourceType,
-    (...args) => runAddressNative(native, args, controller.signal),
-    controller.signal,
-    generation,
-    validateAudio
-      ? url => requireFrameAfterSeconds === undefined
-        ? runBackgroundAudioNative(native, url, controller.signal)
-        : runStartupAudioNative(native, url, controller.signal)
-      : undefined,
-    discoverBackends,
-    requireFrameAfterSeconds,
-  );
-  const request = (validateAudio && cached
-    ? resolveAddressEvidence(track, cached.value, preferred,
-        url => requireFrameAfterSeconds === undefined
-          ? runBackgroundAudioNative(native, url, controller.signal)
-          : runStartupAudioNative(native, url, controller.signal),
-        controller.signal,
-        requireFrameAfterSeconds)
-      .then(result => ({ ...cached.value, ...result }))
-      .catch(error => {
-        throwIfAddressAborted(controller.signal);
-        if (error instanceof TrackPlaybackRejectedError) throw error;
-        if (requireFrameAfterSeconds === undefined)
-          rejectDeterministicNativeFailure(track, error);
-        if (prewarmedUrls.get(key) === cached) prewarmedUrls.delete(key);
-        return resolveAddress();
-      })
-    : resolveAddress())
+  const resolveAddress = () =>
+    resolveFreshAddress(
+      track,
+      candidates,
+      preferred,
+      sourceType,
+      (script, platform, info, quality, attemptSignal) =>
+        runAddressNative(
+          native,
+          [script, platform, info, quality],
+          attemptSignal ?? controller.signal,
+        ),
+      controller.signal,
+      generation,
+      validateAudio
+        ? (url, attemptSignal) =>
+            requireFrameAfterSeconds === undefined
+              ? runBackgroundAudioNative(
+                  native,
+                  url,
+                  attemptSignal ?? controller.signal,
+                )
+              : runStartupAudioNative(
+                  native,
+                  url,
+                  attemptSignal ?? controller.signal,
+                )
+        : undefined,
+      discoverBackends,
+      requireFrameAfterSeconds,
+    );
+  const request = (
+    validateAudio && cached
+      ? resolveAddressEvidence(
+          track,
+          cached.value,
+          preferred,
+          url =>
+            requireFrameAfterSeconds === undefined
+              ? runBackgroundAudioNative(native, url, controller.signal)
+              : runStartupAudioNative(native, url, controller.signal),
+          controller.signal,
+          requireFrameAfterSeconds,
+        )
+          .then(result => {
+            throwIfAddressAborted(controller.signal);
+            const value = { ...cached.value, ...result };
+            rememberValidatedInterface(value);
+            return value;
+          })
+          .catch(error => {
+            throwIfAddressAborted(controller.signal);
+            if (error instanceof TrackPlaybackRejectedError) throw error;
+            if (requireFrameAfterSeconds === undefined)
+              rejectDeterministicNativeFailure(track, error);
+            if (prewarmedUrls.get(key) === cached) prewarmedUrls.delete(key);
+            if (resolvedUrls.get(key) === cached) resolvedUrls.delete(key);
+            return resolveAddress();
+          })
+      : resolveAddress()
+  )
     .then(result => {
       const value = result;
       throwIfAddressAborted(controller.signal);
       if (generation !== backendPoolGeneration) throw addressAbortError();
-      if (prewarming.get(key) !== request || cacheGeneration !== resolutionCacheGeneration) return value;
+      if (
+        prewarming.get(key) !== request ||
+        cacheGeneration !== resolutionCacheGeneration
+      )
+        return value;
       prewarmedUrls.set(key, { value });
+      if (
+        validateAudio &&
+        requiredCheck &&
+        requiredPrewarmChecks.get(key) === requiredCheck
+      ) {
+        requiredPrewarmChecks.delete(key);
+        if (validated && resolvedUrls.get(key) === validated)
+          resolvedUrls.set(key, { value });
+      }
       return value;
     })
     .finally(() => {
       if (prewarming.get(key) === request) prewarming.delete(key);
-      if (addressControllers.get(key) === controller) addressControllers.delete(key);
+      if (addressControllers.get(key) === controller)
+        addressControllers.delete(key);
       signal?.removeEventListener('abort', forwardAbort);
     });
   prewarming.set(key, request);
@@ -540,7 +804,7 @@ function throwIfAddressAborted(signal?: AbortSignal) {
 
 async function runAddressNative(
   native: NonNullable<ReturnType<typeof nativeRuntime>>,
-  args: Parameters<SourceResolver>,
+  args: [string, string, string, string],
   signal: AbortSignal,
 ): Promise<NativeResolvedSource> {
   throwIfAddressAborted(signal);
@@ -554,21 +818,30 @@ async function runAddressNative(
       aborted = true;
       const acknowledgement = native.cancelSourceScriptAddress!(requestId);
       acknowledgement.then(
-        () => { cleanup(); reject(addressAbortError()); },
-        () => { cleanup(); reject(addressAbortError()); },
+        () => {
+          cleanup();
+          reject(addressAbortError());
+        },
+        () => {
+          cleanup();
+          reject(addressAbortError());
+        },
       );
     };
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
-    operation.then(value => {
-      if (aborted) return;
-      cleanup();
-      resolve(value);
-    }, error => {
-      if (aborted) return;
-      cleanup();
-      reject(error);
-    });
+    operation.then(
+      value => {
+        if (aborted) return;
+        cleanup();
+        resolve(value);
+      },
+      error => {
+        if (aborted) return;
+        cleanup();
+        reject(error);
+      },
+    );
   });
 }
 
@@ -576,32 +849,47 @@ async function runBackgroundAudioNative(
   native: NonNullable<ReturnType<typeof nativeRuntime>>,
   url: string,
   signal: AbortSignal,
+  foreground = false,
 ): Promise<AudioProbeResult> {
   throwIfAddressAborted(signal);
   const requestId = `prewarm_audio_${++addressRequestSequence}`;
-  const operation = native.probeBackgroundAudioUrl!(url, requestId);
+  const operation = foreground
+    ? native.probeAudioUrlCancellable!(url, requestId)
+    : native.probeBackgroundAudioUrl!(url, requestId);
   return new Promise((resolve, reject) => {
     let aborted = false;
     const cleanup = () => signal.removeEventListener('abort', abort);
     const abort = () => {
       if (aborted) return;
       aborted = true;
-      native.cancelBackgroundAudioProbe!(requestId).then(
-        () => { cleanup(); reject(addressAbortError()); },
-        () => { cleanup(); reject(addressAbortError()); },
+      const acknowledgement = foreground
+        ? native.cancelAudioProbe!(requestId)
+        : native.cancelBackgroundAudioProbe!(requestId);
+      acknowledgement.then(
+        () => {
+          cleanup();
+          reject(addressAbortError());
+        },
+        () => {
+          cleanup();
+          reject(addressAbortError());
+        },
       );
     };
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
-    operation.then(value => {
-      if (aborted) return;
-      cleanup();
-      resolve(value);
-    }, error => {
-      if (aborted) return;
-      cleanup();
-      reject(error);
-    });
+    operation.then(
+      value => {
+        if (aborted) return;
+        cleanup();
+        resolve(value);
+      },
+      error => {
+        if (aborted) return;
+        cleanup();
+        reject(error);
+      },
+    );
   });
 }
 
@@ -620,21 +908,30 @@ async function runStartupAudioNative(
       if (aborted) return;
       aborted = true;
       native.cancelBackgroundAudioProbe!(requestId).then(
-        () => { cleanup(); reject(addressAbortError()); },
-        () => { cleanup(); reject(addressAbortError()); },
+        () => {
+          cleanup();
+          reject(addressAbortError());
+        },
+        () => {
+          cleanup();
+          reject(addressAbortError());
+        },
       );
     };
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
-    operation.then(value => {
-      if (aborted) return;
-      cleanup();
-      resolve(value);
-    }, error => {
-      if (aborted) return;
-      cleanup();
-      reject(error);
-    });
+    operation.then(
+      value => {
+        if (aborted) return;
+        cleanup();
+        resolve(value);
+      },
+      error => {
+        if (aborted) return;
+        cleanup();
+        reject(error);
+      },
+    );
   });
 }
 
@@ -643,6 +940,11 @@ class PrewarmAudioUnavailable extends Error {}
 // Preserve playback's original per-quality failure path. A failed audio URL
 // never invalidates the resolver interface that produced it for other songs.
 class PlaybackAudioUnavailable extends Error {}
+class InterfaceAudioRejected extends Error {
+  constructor(readonly rejection: TrackPlaybackRejectedError) {
+    super(rejection.message);
+  }
+}
 
 async function resolveFresh(
   track: Track,
@@ -650,31 +952,52 @@ async function resolveFresh(
   preferred: AppSettings['quality'],
   sourceType: string,
   resolveSourceScript: SourceResolver,
-  probeAudioUrl: (url: string) => Promise<AudioProbeResult>,
+  probeAudioUrl: AudioProbe,
   generation = backendPoolGeneration,
 ) {
   probeAudioUrl = memoizeAudioProbe(probeAudioUrl);
   const failures: string[] = [];
+  let deferredRejection: TrackPlaybackRejectedError | undefined;
   for (const source of candidates) {
     const declared = source.sourceCapabilities?.[sourceType]?.qualitys;
     const qualities = qualityCandidates(track, declared, preferred);
-    const requestFailures: BackendAttemptFailures = { routes: new Set(), backends: new Set() };
+    const requestFailures: BackendAttemptFailures = {
+      routes: new Set(),
+      backends: new Set(),
+    };
     // The setting is the request starting point and ceiling. Stop at the
     // first validated, in-ceiling result, including unknown actual quality.
     for (const quality of qualities) {
-      if (generation !== backendPoolGeneration) throw new Error('音源配置已重置，旧解析已失效');
+      if (generation !== backendPoolGeneration)
+        throw new Error('音源配置已重置，旧解析已失效');
       try {
-        const accept = async (result: Exclude<NativeResolvedSource, string>) => {
-          if (!/^https?:\/\//i.test(result.url)) throw new Error('音源未返回 HTTP/HTTPS 播放地址');
+        const accept = async (
+          result: Exclude<NativeResolvedSource, string>,
+          attemptSignal?: AbortSignal,
+        ) => {
+          if (!/^https?:\/\//i.test(result.url))
+            throw new Error('音源未返回 HTTP/HTTPS 播放地址');
           try {
-            const probe = await probeAudioUrl(result.url);
-            validateResolvedAudio(track, probe);
-            return { ...result, url: validatedPlaybackUrl(result.url, probe),
-              quality: audioQualityForPreference(probe, result.reportedQuality, preferred), audio: probe };
+            const probe = await probeAudioUrl(result.url, attemptSignal);
+            throwIfAddressAborted(attemptSignal);
+            validateResolvedAudio(track, probe, !attemptSignal);
+            return {
+              ...result,
+              url: validatedPlaybackUrl(result.url, probe),
+              quality: audioQualityForPreference(
+                probe,
+                result.reportedQuality,
+                preferred,
+              ),
+              audio: probe,
+            };
           } catch (error) {
             if (error instanceof TrackPlaybackRejectedError) throw error;
-            rejectDeterministicNativeFailure(track, error);
-            throw new PlaybackAudioUnavailable(error instanceof Error ? error.message : String(error));
+            throwIfAddressAborted(attemptSignal);
+            rejectDeterministicNativeFailure(track, error, !attemptSignal);
+            throw new PlaybackAudioUnavailable(
+              error instanceof Error ? error.message : String(error),
+            );
           }
         };
         const result = await resolveWithBackendPool(
@@ -703,8 +1026,9 @@ async function resolveFresh(
         return resolved;
       } catch (error) {
         if (generation !== backendPoolGeneration) throw error;
-        if (error instanceof TrackPlaybackRejectedError) throw error;
-        rejectDeterministicNativeFailure(track, error);
+        if (error instanceof InterfaceAudioRejected)
+          deferredRejection = error.rejection;
+        else rejectDeterministicNativeFailure(track, error);
         failures.push(
           `${source.name}/${quality}: ${
             error instanceof Error ? error.message : String(error)
@@ -713,6 +1037,8 @@ async function resolveFresh(
       }
     }
   }
+  if (deferredRejection)
+    rejectDeterministicNativeFailure(track, deferredRejection);
   throw new Error(`音源解析失败（${failures.join('；')}）`);
 }
 
@@ -724,26 +1050,31 @@ async function resolveFreshAddress(
   resolveSourceScript: SourceResolver,
   signal: AbortSignal,
   generation: number,
-  probeAudio: ((url: string) => Promise<AudioProbeResult>) | undefined,
+  probeAudio: AudioProbe | undefined,
   discoverBackends = false,
   requireFrameAfterSeconds?: number,
 ) {
   const audioProbe = probeAudio ? memoizeAudioProbe(probeAudio) : undefined;
   const failures: string[] = [];
+  let deferredRejection: TrackPlaybackRejectedError | undefined;
   for (const source of candidates) {
     const declared = source.sourceCapabilities?.[sourceType]?.qualitys;
     const qualities = qualityCandidates(track, declared, preferred);
     // Startup discovery retains its own existing pool-health semantics. Normal
     // song work shares failures only across this song's descending qualities.
     const requestFailures: BackendAttemptFailures | undefined = discoverBackends
-      ? undefined : { routes: new Set(), backends: new Set() };
+      ? undefined
+      : { routes: new Set(), backends: new Set() };
     // Startup and full background validation share the playback preference
     // order; a previous lower-quality song never changes the next song's order.
     for (const quality of qualities) {
       throwIfAddressAborted(signal);
       if (generation !== backendPoolGeneration) throw addressAbortError();
       try {
-        const accept = async (result: Exclude<NativeResolvedSource, string>) => {
+        const accept = async (
+          result: Exclude<NativeResolvedSource, string>,
+          attemptSignal?: AbortSignal,
+        ) => {
           throwIfAddressAborted(signal);
           if (!/^https?:\/\//i.test(result.url))
             throw new Error('音源未返回 HTTP/HTTPS 播放地址');
@@ -752,16 +1083,21 @@ async function resolveFreshAddress(
               track,
               result,
               preferred,
-              audioProbe,
-              signal,
+              attemptSignal && audioProbe
+                ? url => audioProbe(url, attemptSignal)
+                : audioProbe,
+              attemptSignal ?? signal,
               requireFrameAfterSeconds,
+              !attemptSignal,
             );
           } catch (error) {
-            throwIfAddressAborted(signal);
+            throwIfAddressAborted(attemptSignal ?? signal);
             if (error instanceof TrackPlaybackRejectedError) throw error;
             if (requireFrameAfterSeconds === undefined)
-              rejectDeterministicNativeFailure(track, error);
-            throw new PrewarmAudioUnavailable(error instanceof Error ? error.message : String(error));
+              rejectDeterministicNativeFailure(track, error, !attemptSignal);
+            throw new PrewarmAudioUnavailable(
+              error instanceof Error ? error.message : String(error),
+            );
           }
         };
         const result = await resolveWithBackendPool(
@@ -794,7 +1130,10 @@ async function resolveFreshAddress(
       } catch (error) {
         throwIfAddressAborted(signal);
         if (generation !== backendPoolGeneration) throw addressAbortError();
-        if (error instanceof TrackPlaybackRejectedError) throw error;
+        if (error instanceof InterfaceAudioRejected)
+          deferredRejection = error.rejection;
+        else if (error instanceof TrackPlaybackRejectedError)
+          rejectDeterministicNativeFailure(track, error);
         failures.push(
           `${source.name}/${quality}: ${
             error instanceof Error ? error.message : String(error)
@@ -803,6 +1142,8 @@ async function resolveFreshAddress(
       }
     }
   }
+  if (deferredRejection)
+    rejectDeterministicNativeFailure(track, deferredRejection);
   throw new Error(`音源解析失败（${failures.join('；')}）`);
 }
 
@@ -810,43 +1151,70 @@ async function resolveAddressEvidence(
   track: Track,
   result: Exclude<NativeResolvedSource, string>,
   preferred: Quality,
-  probeAudio: ((url: string) => Promise<AudioProbeResult>) | undefined,
+  probeAudio: AudioProbe | undefined,
   signal: AbortSignal,
   requireFrameAfterSeconds?: number,
+  recordFailure = true,
 ) {
   throwIfAddressAborted(signal);
-  if (!probeAudio) return { ...result,
-    quality: audioQualityForPreference(undefined, result.reportedQuality, preferred) };
+  if (!probeAudio)
+    return {
+      ...result,
+      quality: audioQualityForPreference(
+        undefined,
+        result.reportedQuality,
+        preferred,
+      ),
+    };
   const audio = await probeAudio(result.url);
   throwIfAddressAborted(signal);
   if (requireFrameAfterSeconds === undefined) {
-    validateResolvedAudio(track, audio);
-  } else if ((audio.verifiedThroughSeconds ?? Number.NEGATIVE_INFINITY) <= requireFrameAfterSeconds)
+    validateResolvedAudio(track, audio, recordFailure);
+  } else if (
+    (audio.verifiedThroughSeconds ?? Number.NEGATIVE_INFINITY) <=
+    requireFrameAfterSeconds
+  )
     throw new PrewarmAudioUnavailable(
       `启动样本未读取到 ${requireFrameAfterSeconds} 秒后的实际音频帧`,
     );
-  return { ...result, url: validatedPlaybackUrl(result.url, audio),
-    quality: audioQualityForPreference(audio, result.reportedQuality, preferred), audio };
+  return {
+    ...result,
+    url: validatedPlaybackUrl(result.url, audio),
+    quality: audioQualityForPreference(
+      audio,
+      result.reportedQuality,
+      preferred,
+    ),
+    audio,
+  };
 }
 
-function normalizeResolvedSource(value: NativeResolvedSource): Exclude<NativeResolvedSource, string> {
+function normalizeResolvedSource(
+  value: NativeResolvedSource,
+): Exclude<NativeResolvedSource, string> {
   // A resolver response cannot certify its own audio. Only our native gate can.
-  return typeof value === 'string' ? { url: value } : {
-    url: value.url, backend: value.backend, backendUrls: value.backendUrls,
-    quality: undefined,
-    reportedQuality: normalizeReturnedQuality(value.quality),
-  };
+  return typeof value === 'string'
+    ? { url: value }
+    : {
+        url: value.url,
+        backend: value.backend,
+        backendUrls: value.backendUrls,
+        quality: undefined,
+        reportedQuality: normalizeReturnedQuality(value.quality),
+      };
 }
 
 export function clearResolvedSourceCache() {
   backendPoolGeneration += 1;
   for (const controller of addressControllers.values()) controller.abort();
   addressControllers.clear();
+  for (const controller of interfaceControllers) controller.abort();
   expiredResolutions.clear();
   resolvedUrls.clear();
   resolving.clear();
   prewarmedUrls.clear();
   prewarming.clear();
+  requiredPrewarmChecks.clear();
   backendPools.clear();
   clearRuntimeTrackBlacklist();
 }
@@ -860,6 +1228,7 @@ export function clearRuntimeResolutionCache() {
   resolutionCacheGeneration += 1;
   resolvedUrls.clear();
   prewarmedUrls.clear();
+  requiredPrewarmChecks.clear();
 }
 
 export function sourceResolutionCacheToken() {
@@ -871,35 +1240,61 @@ export function resetLaunchBackendPools() {
   backendPools.clear();
 }
 
-export function sourceAddressCacheKey(track: Track, sources: SourceSetting[], preferred: AppSettings['quality']) {
-  const sourceType = track.provider === 'custom' ? 'custom' : sourceTypes[track.provider];
-  const candidates = sources.filter(source => isSourceEnabled(source) && source.healthy !== false && Boolean(source.script) &&
-    (source.capabilities?.includes(sourceType) || Boolean(source.sourceCapabilities?.[sourceType])));
+export function sourceAddressCacheKey(
+  track: Track,
+  sources: SourceSetting[],
+  preferred: AppSettings['quality'],
+) {
+  const sourceType =
+    track.provider === 'custom' ? 'custom' : sourceTypes[track.provider];
+  const candidates = sources.filter(
+    source =>
+      isSourceEnabled(source) &&
+      source.healthy !== false &&
+      Boolean(source.script) &&
+      (source.capabilities?.includes(sourceType) ||
+        Boolean(source.sourceCapabilities?.[sourceType])),
+  );
   return resolutionKey(track, candidates, sourceType, preferred);
 }
 
-export function hasPlaybackAddressPrewarm(track: Track, sources: SourceSetting[], preferred: AppSettings['quality']) {
-  if (isRuntimeTrackBlocked(track) || !isCatalogTrackEligible(track)) return false;
+export function hasPlaybackAddressPrewarm(
+  track: Track,
+  sources: SourceSetting[],
+  preferred: AppSettings['quality'],
+) {
+  if (isRuntimeTrackBlocked(track) || !isCatalogTrackEligible(track))
+    return false;
   const key = sourceAddressCacheKey(track, sources, preferred);
   return resolvedUrls.has(key) || prewarmedUrls.has(key);
 }
 
+export function requirePlaybackPrewarmRevalidation(
+  track: Track,
+  sources: SourceSetting[],
+  preferred: AppSettings['quality'],
+) {
+  requiredPrewarmChecks.set(
+    sourceAddressCacheKey(track, sources, preferred),
+    {},
+  );
+}
+
 /** Readiness only: a fully audio-validated result can admit a native neighbour. */
-export function hasValidatedPlaybackPrewarm(track: Track, sources: SourceSetting[], preferred: AppSettings['quality']) {
-  if (isRuntimeTrackBlocked(track) || !isCatalogTrackEligible(track)) return false;
+export function hasValidatedPlaybackPrewarm(
+  track: Track,
+  sources: SourceSetting[],
+  preferred: AppSettings['quality'],
+) {
+  if (isRuntimeTrackBlocked(track) || !isCatalogTrackEligible(track))
+    return false;
   const key = sourceAddressCacheKey(track, sources, preferred);
+  if (requiredPrewarmChecks.has(key)) return false;
   // Readiness must not evict a valid URL. The consumer owns any authorized
   // reselection after a genuinely new better route is discovered.
   const validated = resolvedUrls.get(key);
   const warmed = prewarmedUrls.get(key);
-  return [validated, warmed].some(entry => {
-    if (!entry?.value.audio) return false;
-    try {
-      // Startup's post-61s sample is health evidence, not qs completeness.
-      validateQishuiAudioCompleteness(track, entry.value.audio);
-      return true;
-    } catch { return false; }
-  });
+  return [validated, warmed].some(entry => Boolean(entry?.value.audio));
 }
 
 function resolutionKey(
@@ -922,45 +1317,110 @@ function resolutionKey(
 }
 
 function backendPoolKey(source: SourceSetting, sourceType: string) {
-  return `${source.id}:${source.version ?? ''}:${scriptFingerprint(source.script!)}:${sourceType}`;
+  return `${source.id}:${source.version ?? ''}:${scriptFingerprint(
+    source.script!,
+  )}:${sourceType}`;
 }
 
-function backendPoolHead(source: SourceSetting, sourceType: string, excludedBackends?: ReadonlySet<string>) {
+function backendPoolHead(
+  source: SourceSetting,
+  sourceType: string,
+  excludedBackends?: ReadonlySet<string>,
+) {
   const pool = backendPools.get(backendPoolKey(source, sourceType));
-  const unavailable = (backend: string) => excludedBackends?.has(backend) ||
-    pool?.records.some(record => record.backend === backend && !record.available);
+  const unavailable = (backend: string) =>
+    excludedBackends?.has(backend) ||
+    pool?.records.some(
+      record => record.backend === backend && !record.available,
+    );
   if (pool?.preferred && !unavailable(pool.preferred)) return pool.preferred;
-  if (source.pinnedBackend && !unavailable(source.pinnedBackend)) return source.pinnedBackend;
-  return pool?.records.find(record => record.available && record.backend && !excludedBackends?.has(record.backend))?.backend;
+  if (source.pinnedBackend && !unavailable(source.pinnedBackend))
+    return source.pinnedBackend;
+  return pool?.records.find(
+    record =>
+      record.available &&
+      record.backend &&
+      !excludedBackends?.has(record.backend),
+  )?.backend;
 }
 
-function rememberBackendResult(source: SourceSetting, sourceType: string, result: Exclude<NativeResolvedSource, string>, _requestedQuality: Quality) {
+function rememberBackendResult(
+  source: SourceSetting,
+  sourceType: string,
+  result: Exclude<NativeResolvedSource, string>,
+  _requestedQuality: Quality,
+) {
   const key = backendPoolKey(source, sourceType);
   const pool = backendPools.get(key) ?? { records: [] };
   const previousRoute = pool.preferredRoute;
-  const endpoints: Array<{ backend?: string; url?: string; requestRoute?: string; dependencyRoutes?: string[]; quality?: Quality }> = (result.backendUrls ?? [])
-    .filter(endpoint => typeof endpoint.url === 'string' && /^https?:\/\//i.test(endpoint.url))
+  const endpoints: Array<{
+    backend?: string;
+    url?: string;
+    requestRoute?: string;
+    dependencyRoutes?: string[];
+    quality?: Quality;
+  }> = (result.backendUrls ?? [])
+    .filter(
+      endpoint =>
+        typeof endpoint.url === 'string' && /^https?:\/\//i.test(endpoint.url),
+    )
     // Pool identity is the interface address; song/quality parameters belong to requests.
-    .map(endpoint => ({ backend: endpoint.backend?.trim() || undefined, url: endpoint.url.split(/[?#]/, 1)[0],
-       requestRoute: endpoint.requestRoute?.trim() || undefined,
-       dependencyRoutes: endpoint.dependencyRoutes?.filter(route => typeof route === 'string'),
-       quality: endpoint.quality }));
+    .map(endpoint => ({
+      backend: endpoint.backend?.trim() || undefined,
+      url: endpoint.url.split(/[?#]/, 1)[0],
+      requestRoute: endpoint.requestRoute?.trim() || undefined,
+      dependencyRoutes: endpoint.dependencyRoutes?.filter(
+        route => typeof route === 'string',
+      ),
+      quality: endpoint.quality,
+    }));
   const backend = result.backend?.trim();
   for (const endpoint of endpoints) {
-    const existing = pool.records.find(record => record.backend === endpoint.backend && record.url === endpoint.url);
+    const existing = pool.records.find(
+      record =>
+        record.backend === endpoint.backend && record.url === endpoint.url,
+    );
     if (existing) existing.available = true;
-    else pool.records.push({ backend: endpoint.backend, url: endpoint.url, available: true });
+    else
+      pool.records.push({
+        backend: endpoint.backend,
+        url: endpoint.url,
+        available: true,
+      });
   }
   if (backend && endpoints.length) {
-    pool.records.filter(record => record.backend === backend).forEach(record => { record.available = true; });
+    pool.records
+      .filter(record => record.backend === backend)
+      .forEach(record => {
+        record.available = true;
+      });
     pool.preferred = backend;
   }
-  const routes = [...new Set(endpoints.flatMap(endpoint => endpoint.requestRoute
-    ? [endpoint.requestRoute, ...(endpoint.dependencyRoutes ?? [])] : []))];
-  const qualities = [...new Set((result.audio ? [result.quality] : [])
-    .filter((quality): quality is Quality => qualityOrder.includes(quality as Quality)))];
+  const routes = [
+    ...new Set(
+      endpoints.flatMap(endpoint =>
+        endpoint.requestRoute
+          ? [endpoint.requestRoute, ...(endpoint.dependencyRoutes ?? [])]
+          : [],
+      ),
+    ),
+  ];
+  const qualities = [
+    ...new Set(
+      (result.audio ? [result.quality] : []).filter(
+        (quality): quality is Quality =>
+          qualityOrder.includes(quality as Quality),
+      ),
+    ),
+  ];
   if (routes.length) {
-    const primaryRoutes = [...new Set(endpoints.flatMap(endpoint => endpoint.requestRoute ? [endpoint.requestRoute] : []))];
+    const primaryRoutes = [
+      ...new Set(
+        endpoints.flatMap(endpoint =>
+          endpoint.requestRoute ? [endpoint.requestRoute] : [],
+        ),
+      ),
+    ];
     const routeKey = JSON.stringify([backend ?? '', [...routes].sort()]);
     pool.routes ??= [];
     const existing = pool.routes.find(route => route.key === routeKey);
@@ -968,39 +1428,66 @@ function rememberBackendResult(source: SourceSetting, sourceType: string, result
       existing.available = true;
       existing.primaryRoutes = primaryRoutes;
       existing.qualities = [...new Set([...existing.qualities, ...qualities])];
-    } else pool.routes.push({ key: routeKey, backend, routes, primaryRoutes, qualities, available: true });
+    } else
+      pool.routes.push({
+        key: routeKey,
+        backend,
+        routes,
+        primaryRoutes,
+        qualities,
+        available: true,
+      });
     pool.preferredRoute = routeKey;
   }
   backendPools.set(key, pool);
-  if (result.audio || pool.records.length === 1 || previousRoute !== pool.preferredRoute) {
+  if (
+    result.audio ||
+    pool.records.length === 1 ||
+    previousRoute !== pool.preferredRoute
+  ) {
     try {
-      console.info('[platform-backend-pool]', JSON.stringify({ platform: sourceType,
-        sourceId: source.id, records: pool.records.length, routes: pool.routes?.length ?? 0,
-        quality: result.quality, audioValidated: Boolean(result.audio) }));
-    } catch { /* Pool diagnostics cannot affect source selection. */ }
+      console.info(
+        '[platform-backend-pool]',
+        JSON.stringify({
+          platform: sourceType,
+          sourceId: source.id,
+          records: pool.records.length,
+          routes: pool.routes?.length ?? 0,
+          quality: result.quality,
+          audioValidated: Boolean(result.audio),
+        }),
+      );
+    } catch {
+      /* Pool diagnostics cannot affect source selection. */
+    }
   }
 }
 
-function markBackendUnavailable(source: SourceSetting, sourceType: string, backend: string) {
+function markBackendUnavailable(
+  source: SourceSetting,
+  sourceType: string,
+  backend: string,
+) {
   const key = backendPoolKey(source, sourceType);
   const pool = backendPools.get(key) ?? { records: [] };
   const records = pool.records.filter(record => record.backend === backend);
-  records.forEach(record => { record.available = false; });
+  records.forEach(record => {
+    record.available = false;
+  });
   backendPools.set(key, pool);
 }
 
 function normalizeBackendLabels(values: unknown) {
   if (!Array.isArray(values)) return [];
   const seen = new Set<string>();
-  return values
-    .flatMap(value => {
-      if (typeof value !== 'string') return [];
-      const normalized = value.trim();
-      if (!normalized || normalized.length > 128 || seen.has(normalized))
-        return [];
-      seen.add(normalized);
-      return [normalized];
-    });
+  return values.flatMap(value => {
+    if (typeof value !== 'string') return [];
+    const normalized = value.trim();
+    if (!normalized || normalized.length > 128 || seen.has(normalized))
+      return [];
+    seen.add(normalized);
+    return [normalized];
+  });
 }
 
 function shouldFallbackBackend(error: unknown) {
@@ -1012,6 +1499,58 @@ function shouldFallbackBackend(error: unknown) {
   );
 }
 
+/** Each interface owns its transport and evidence. Only the winner updates the pool/cache. */
+async function firstValidatedInterface<T>(
+  attempts: ((signal: AbortSignal) => Promise<T>)[],
+  signal?: AbortSignal,
+): Promise<T> {
+  throwIfAddressAborted(signal);
+  const controllers = attempts.map(() => new AbortController());
+  controllers.forEach(controller => interfaceControllers.add(controller));
+  const abort = () => controllers.forEach(controller => controller.abort());
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+  let remaining = attempts.length;
+  let settled = false;
+  const errors: unknown[] = [];
+  return new Promise<T>((resolve, reject) => {
+    attempts.forEach((attempt, index) => {
+      const controller = controllers[index]!;
+      attempt(controller.signal)
+        .then(
+          value => {
+            if (settled || signal?.aborted) return;
+            settled = true;
+            controllers.forEach(other => {
+              if (other !== controller) other.abort();
+            });
+            resolve(value);
+          },
+          error => {
+            errors[index] = error;
+          },
+        )
+        .finally(() => {
+          remaining -= 1;
+          if (remaining) return;
+          controllers.forEach(item => interfaceControllers.delete(item));
+          signal?.removeEventListener('abort', abort);
+          if (settled) return;
+          const audioRejection = errors.find(
+            error => error instanceof TrackPlaybackRejectedError,
+          );
+          reject(
+            signal?.aborted || controllers.some(item => item.signal.aborted)
+              ? addressAbortError()
+              : audioRejection
+              ? new InterfaceAudioRejected(audioRejection)
+              : errors[0],
+          );
+        });
+    });
+  });
+}
+
 async function resolveWithBackendPool(
   track: Track,
   source: SourceSetting,
@@ -1020,14 +1559,18 @@ async function resolveWithBackendPool(
   resolveSourceScript: SourceResolver,
   signal?: AbortSignal,
   generation = backendPoolGeneration,
-  accept?: (result: Exclude<NativeResolvedSource, string>) => Promise<Exclude<NativeResolvedSource, string>>,
+  accept?: (
+    result: Exclude<NativeResolvedSource, string>,
+    signal?: AbortSignal,
+  ) => Promise<Exclude<NativeResolvedSource, string>>,
   preferred?: Quality,
   discoverBackends = false,
   requestFailures?: BackendAttemptFailures,
 ) {
   const attemptedRoutes = new Set<string>();
   const attemptedPrimaryRoutes = new Set<string>();
-  const routeAvailable = (route: BackendRoute) => route.available && !requestFailures?.routes.has(route.key);
+  const routeAvailable = (route: BackendRoute) =>
+    route.available && !requestFailures?.routes.has(route.key);
   const failRoute = (route: BackendRoute) => {
     if (requestFailures) requestFailures.routes.add(route.key);
     else route.available = false;
@@ -1040,23 +1583,55 @@ async function resolveWithBackendPool(
     pool = backendPools.get(key),
     allowDiscovery = discoverBackends || !pool?.routes?.length,
     orderedRoutes = [...(pool?.routes ?? [])].sort((left, right) => {
-      const rank = (route: BackendRoute) => Math.min(...route.qualities.filter(tier =>
-        qualityRank(tier) >= qualityRank(preferred ?? quality)).map(qualityRank));
+      const rank = (route: BackendRoute) =>
+        Math.min(
+          ...route.qualities
+            .filter(
+              tier => qualityRank(tier) >= qualityRank(preferred ?? quality),
+            )
+            .map(qualityRank),
+        );
       return rank(left) - rank(right);
     }),
-    qualityRoute = orderedRoutes.find(route => routeAvailable(route) && route.qualities.includes(preferred ?? quality)) ??
-      orderedRoutes.find(route => routeAvailable(route) && route.qualities.includes(quality)),
-    pinnedRoute = qualityRoute ?? orderedRoutes.find(route => route.key === pool?.preferredRoute && routeAvailable(route)) ??
+    qualityRoute =
+      orderedRoutes.find(
+        route =>
+          routeAvailable(route) &&
+          route.qualities.includes(preferred ?? quality),
+      ) ??
+      orderedRoutes.find(
+        route => routeAvailable(route) && route.qualities.includes(quality),
+      ),
+    previousRoute = orderedRoutes.find(
+      route => route.key === pool?.preferredRoute && routeAvailable(route),
+    ),
+    pinnedRoute =
+      (!discoverBackends ? previousRoute : undefined) ??
+      qualityRoute ??
+      previousRoute ??
       orderedRoutes.find(routeAvailable),
-    pinnedBackend = pinnedRoute ? pinnedRoute.backend : backendPoolHead(source, sourceType, requestFailures?.backends),
+    pinnedBackend = pinnedRoute
+      ? pinnedRoute.backend
+      : backendPoolHead(source, sourceType, requestFailures?.backends),
     pinnedSource = pinnedBackend ? { ...source, pinnedBackend } : source,
-    resolveOnce = (candidate: SourceSetting, route?: BackendRoute, discovery = false) => {
+    resolveOnce = (
+      candidate: SourceSetting,
+      route?: BackendRoute,
+      discovery = false,
+      attemptSignal?: AbortSignal,
+    ) => {
       const rejected = discovery ? attemptedPrimaryRoutes : new Set<string>();
-      const info = JSON.stringify(
-          { ...normalizeLxInfo(track, sourceType, candidate.pinnedBackend), __lxBoundedRequests: true,
-            __lxRejectedBackendRoutes: [...rejected],
-            ...(route?.routes.length ? { __lxPinnedBackendRoutes: route.routes, __lxBackendPlatform: sourceType } : {}) },
-        );
+      const info = JSON.stringify({
+        ...normalizeLxInfo(track, sourceType, candidate.pinnedBackend),
+        __lxBoundedRequests: true,
+        __lxRejectedBackendRoutes: [...rejected],
+        ...(route?.routes.length
+          ? {
+              __lxPinnedBackendRoutes: route.routes,
+              __lxBackendPlatform: sourceType,
+            }
+          : {}),
+      });
       if (route) {
         attemptedRoutes.add(route.key);
         route.primaryRoutes.forEach(value => attemptedPrimaryRoutes.add(value));
@@ -1066,6 +1641,7 @@ async function resolveWithBackendPool(
         sourceType,
         info,
         quality,
+        attemptSignal,
       );
     };
   for (const route of pool?.routes ?? []) {
@@ -1074,62 +1650,180 @@ async function resolveWithBackendPool(
   }
   const register = async (value: NativeResolvedSource) => {
     throwIfAddressAborted(signal);
-    const result = accept ? await accept(normalizeResolvedSource(value)) : normalizeResolvedSource(value);
+    const result = accept
+      ? await accept(normalizeResolvedSource(value))
+      : normalizeResolvedSource(value);
     throwIfAddressAborted(signal);
-    if (generation !== backendPoolGeneration) throw new Error('音源配置已重置，旧解析已失效');
+    if (generation !== backendPoolGeneration)
+      throw new Error('音源配置已重置，旧解析已失效');
     if (generation === backendPoolGeneration) {
       rememberBackendResult(source, sourceType, result, quality);
     }
     return result;
   };
   const canTryAnotherInterface = (error: unknown) => {
-    if (error instanceof TrackPlaybackRejectedError ||
-        (error instanceof Error && error.name === 'AbortError')) return false;
+    if (
+      error instanceof TrackPlaybackRejectedError ||
+      (error instanceof Error && error.name === 'AbortError')
+    )
+      return false;
     // A response about this song, including an empty-resource response, does
     // not prove that the same imported handler has no other usable interface.
     return Boolean(pool?.routes?.length) || shouldFallbackBackend(error);
   };
+  const raceRoutes = async (routes: BackendRoute[]) => {
+    const result = await firstValidatedInterface(
+      routes.map(route => async attemptSignal => {
+        try {
+          const value = normalizeResolvedSource(
+            await resolveOnce(
+              { ...source, pinnedBackend: route.backend },
+              route,
+              false,
+              attemptSignal,
+            ),
+          );
+          throwIfAddressAborted(attemptSignal);
+          const checked = accept ? await accept(value, attemptSignal) : value;
+          throwIfAddressAborted(attemptSignal);
+          if (generation !== backendPoolGeneration) throw addressAbortError();
+          return checked;
+        } catch (error) {
+          throwIfAddressAborted(attemptSignal);
+          if (
+            !(error instanceof PrewarmAudioUnavailable) &&
+            !(error instanceof PlaybackAudioUnavailable) &&
+            !(error instanceof TrackPlaybackRejectedError) &&
+            (!route.qualities.length || route.qualities.includes(quality))
+          )
+            failRoute(route);
+          throw error;
+        }
+      }),
+      signal,
+    );
+    throwIfAddressAborted(signal);
+    if (generation !== backendPoolGeneration) throw addressAbortError();
+    rememberBackendResult(source, sourceType, result, quality);
+    return result;
+  };
+  const hasIndependentInterfaces =
+    !discoverBackends && (pool?.routes?.length ?? 0) > 1;
   try {
     if (!allowDiscovery && !pinnedRoute?.available)
       throw new Error('所有接口均失败：当前歌曲的池内接口已尝试');
+    // Reuse the previous successful interface before racing its alternatives.
+    if (hasIndependentInterfaces && pinnedRoute)
+      return await raceRoutes([pinnedRoute]);
     return await register(await resolveOnce(pinnedSource, pinnedRoute));
   } catch (error) {
     throwIfAddressAborted(signal);
-    if ((!pool?.routes?.length && !pinnedBackend && !pinnedRoute && !(error instanceof PrewarmAudioUnavailable)) || !canTryAnotherInterface(error)) throw error;
+    if (
+      (!pool?.routes?.length &&
+        !pinnedBackend &&
+        !pinnedRoute &&
+        !(error instanceof PrewarmAudioUnavailable)) ||
+      !canTryAnotherInterface(error)
+    )
+      throw error;
     if (generation !== backendPoolGeneration) throw error;
-    if (!(error instanceof PrewarmAudioUnavailable) && !(error instanceof PlaybackAudioUnavailable) && (!pinnedRoute?.qualities.length || pinnedRoute.qualities.includes(quality))) {
+    if (
+      !(error instanceof PrewarmAudioUnavailable) &&
+      !(error instanceof PlaybackAudioUnavailable) &&
+      !(error instanceof InterfaceAudioRejected) &&
+      (!pinnedRoute?.qualities.length ||
+        pinnedRoute.qualities.includes(quality))
+    ) {
       if (pinnedBackend) failBackend(pinnedBackend);
       if (pinnedRoute) failRoute(pinnedRoute);
     }
     const attemptedBackends = new Set(pinnedBackend ? [pinnedBackend] : []);
+    if (hasIndependentInterfaces) {
+      const alternatives = orderedRoutes.filter(
+        route => routeAvailable(route) && !attemptedRoutes.has(route.key),
+      );
+      if (alternatives.length) {
+        alternatives.forEach(route => {
+          if (route.backend) attemptedBackends.add(route.backend);
+        });
+        try {
+          return await raceRoutes(alternatives);
+        } catch (nextError) {
+          throwIfAddressAborted(signal);
+          if (
+            generation !== backendPoolGeneration ||
+            !canTryAnotherInterface(nextError)
+          )
+            throw nextError;
+          if (nextError instanceof InterfaceAudioRejected) throw nextError;
+        }
+      }
+      if (error instanceof InterfaceAudioRejected) throw error;
+    }
     for (const route of orderedRoutes) {
       if (!routeAvailable(route) || route === pinnedRoute) continue;
       if (attemptedRoutes.has(route.key)) continue;
       throwIfAddressAborted(signal);
       if (route.backend) attemptedBackends.add(route.backend);
-      try { return await register(await resolveOnce({ ...source, pinnedBackend: route.backend }, route)); }
-      catch (nextError) {
+      try {
+        return await register(
+          await resolveOnce({ ...source, pinnedBackend: route.backend }, route),
+        );
+      } catch (nextError) {
         throwIfAddressAborted(signal);
-        if (generation !== backendPoolGeneration || !canTryAnotherInterface(nextError)) throw nextError;
-        if (!(nextError instanceof PrewarmAudioUnavailable) && !(nextError instanceof PlaybackAudioUnavailable) && (!route.qualities.length || route.qualities.includes(quality))) failRoute(route);
+        if (
+          generation !== backendPoolGeneration ||
+          !canTryAnotherInterface(nextError)
+        )
+          throw nextError;
+        if (
+          !(nextError instanceof PrewarmAudioUnavailable) &&
+          !(nextError instanceof PlaybackAudioUnavailable) &&
+          (!route.qualities.length || route.qualities.includes(quality))
+        )
+          failRoute(route);
       }
     }
-    const known = allowDiscovery ? normalizeBackendLabels(backendPools.get(key)?.records
-      .filter(record => record.available && (!record.backend ||
-        (!attemptedBackends.has(record.backend) && !requestFailures?.backends.has(record.backend)))).map(record => record.backend)) : [];
+    const known = allowDiscovery
+      ? normalizeBackendLabels(
+          backendPools
+            .get(key)
+            ?.records.filter(
+              record =>
+                record.available &&
+                (!record.backend ||
+                  (!attemptedBackends.has(record.backend) &&
+                    !requestFailures?.backends.has(record.backend))),
+            )
+            .map(record => record.backend),
+        )
+      : [];
     for (const backend of known) {
       throwIfAddressAborted(signal);
-      try { return await register(await resolveOnce({ ...source, pinnedBackend: backend })); }
-      catch (nextError) {
+      try {
+        return await register(
+          await resolveOnce({ ...source, pinnedBackend: backend }),
+        );
+      } catch (nextError) {
         throwIfAddressAborted(signal);
         if (generation !== backendPoolGeneration) throw nextError;
         if (!canTryAnotherInterface(nextError)) throw nextError;
-        if (!(nextError instanceof PrewarmAudioUnavailable) && !(nextError instanceof PlaybackAudioUnavailable)) failBackend(backend);
+        if (
+          !(nextError instanceof PrewarmAudioUnavailable) &&
+          !(nextError instanceof PlaybackAudioUnavailable)
+        )
+          failBackend(backend);
       }
     }
     // Discovery belongs to this song, never another song's result or failure.
     // Existing per-song address/playback flights still merge identical work.
-    return register(await resolveOnce({ ...source, pinnedBackend: undefined }, undefined, true));
+    return register(
+      await resolveOnce(
+        { ...source, pinnedBackend: undefined },
+        undefined,
+        true,
+      ),
+    );
   }
 }
 
@@ -1159,17 +1853,17 @@ export function qualityCandidates(
   // drive the existing descending fallback.
   const candidates = qualityOrder
     .slice(start)
-    .filter(
-      quality =>
-        (!actualSet || actualSet.has(quality)),
-    );
-  console.info('[audio-quality-candidates]', JSON.stringify({
-    key: `${track.provider}:${track.providerId ?? track.id}`,
-    ceiling: preferred,
-    declared: declared ?? [],
-    catalog: Object.keys(actual),
-    candidates,
-  }));
+    .filter(quality => !actualSet || actualSet.has(quality));
+  console.info(
+    '[audio-quality-candidates]',
+    JSON.stringify({
+      key: `${track.provider}:${track.providerId ?? track.id}`,
+      ceiling: preferred,
+      declared: declared ?? [],
+      catalog: Object.keys(actual),
+      candidates,
+    }),
+  );
   return candidates;
 }
 
@@ -1189,21 +1883,30 @@ export function normalizeLxInfo(
     (track.provider === 'custom' ? 'custom' : sourceTypes[track.provider]);
   const songmid = platformSongId(track, source, metadata);
   const _types = qualityMap(track, metadata);
-  const mappedTypes = Object.entries(_types).map(([type, value]: [string, any]) => ({
-        type,
-        size: value?.size ?? null,
-        ...(source === 'kg' && value?.hash ? { hash: value.hash } : {}),
-      }));
+  const mappedTypes = Object.entries(_types).map(
+    ([type, value]: [string, any]) => ({
+      type,
+      size: value?.size ?? null,
+      ...(source === 'kg' && value?.hash ? { hash: value.hash } : {}),
+    }),
+  );
   const rawTypes = Array.isArray(metadata.types)
-    ? [...metadata.types, ...mappedTypes.filter(value =>
-        ['wy', 'tx'].includes(source) && ['hires', 'flac24bit'].includes(value.type) &&
-        !metadata.types.some((entry: any) => entry?.type === value.type))]
+    ? [
+        ...metadata.types,
+        ...mappedTypes.filter(
+          value =>
+            ['wy', 'tx'].includes(source) &&
+            ['hires', 'flac24bit'].includes(value.type) &&
+            !metadata.types.some((entry: any) => entry?.type === value.type),
+        ),
+      ]
     : mappedTypes;
   // Keep the payload on the mobile Scheme contract.  Desktop-only quality
   // labels or malformed entries must not reach a mobile source handler.
   const types = rawTypes.flatMap((value: any) => {
     const type = String(value?.type ?? '').trim();
-    if (!['128k', '320k', 'flac', 'flac24bit', 'hires'].includes(type)) return [];
+    if (!['128k', '320k', 'flac', 'flac24bit', 'hires'].includes(type))
+      return [];
     return [
       {
         type,
@@ -1291,10 +1994,17 @@ function qualityMap(track: Track, metadata: Record<string, any>) {
     // Compact ID-based search rows omit high-resolution fields. Absence is
     // not evidence of unavailability: keep both handler request names with an
     // unreadable size, then let the returned URL's native evidence decide.
-    const highResolution = existing.hires ?? existing.flac24bit ?? { size: null };
-    if (['netease', 'qq'].includes(track.provider) && Object.keys(existing).length)
-      return { ...existing, hires: existing.hires ?? highResolution,
-        flac24bit: existing.flac24bit ?? highResolution };
+    const highResolution = existing.hires ??
+      existing.flac24bit ?? { size: null };
+    if (
+      ['netease', 'qq'].includes(track.provider) &&
+      Object.keys(existing).length
+    )
+      return {
+        ...existing,
+        hires: existing.hires ?? highResolution,
+        flac24bit: existing.flac24bit ?? highResolution,
+      };
     return existing;
   }
   if (track.provider === 'kugou') {

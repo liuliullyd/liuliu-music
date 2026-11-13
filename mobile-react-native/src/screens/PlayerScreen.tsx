@@ -1,3 +1,8 @@
+import {
+  PlayerPageMotion,
+  type PageGesture,
+  type PageMotionHandle,
+} from '../components/PlayerPageMotion';
 import React, {
   useCallback,
   useEffect,
@@ -9,7 +14,6 @@ import React, {
 import {
   Animated,
   Easing,
-  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -236,15 +240,22 @@ function NowPlaying() {
     appTrack = app.current;
   const insets = useSafeAreaInsets();
   const progressTouchActive = useRef(false);
-  const swipeY = useRef(new Animated.Value(0)).current;
+  const motionRef = useRef<PageMotionHandle>(null);
   const pageSlotsRef = useRef(new Map<string, number>());
   const visualSlotRef = useRef(0);
   const restingYRef = useRef(0);
-  const gestureBaseYRef = useRef(0);
+  const gestureActiveRef = useRef(false);
+  const retainedPages = useRef(
+    new Map<string, { track: PlayerTrack; slot: number }>(),
+  );
+  const visiblePages = useRef(
+    new Map<string, { track: PlayerTrack; slot: number }>(),
+  );
   const appRef = useRef(app);
   appRef.current = app;
   const [stageHeight, setStageHeight] = useState(0);
   const [previewTrack, setPreviewTrack] = useState<PlayerTrack | null>(null);
+  const [, setPagerRevision] = useState(0);
   const [fallbackPage, setFallbackPage] = useState<{
     track: PlayerTrack;
     index: number;
@@ -273,9 +284,18 @@ function NowPlaying() {
     index: number;
     slot: number;
     token: number;
+    navigation?: Promise<void>;
   } | null>(null);
   const transitionAnimationDone = useRef(false);
   const transitionNavigationDone = useRef(false);
+  const stopSwipeAnimation = useCallback(
+    (token: number, onStopped: (position: number) => void) => {
+      motionRef.current?.stop(position => {
+        if (token === pagerToken.current) onStopped(position);
+      });
+    },
+    [],
+  );
   const [timerOpen, setTimerOpen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
   // Keep the outgoing page mounted while the native target is resolving and
@@ -283,6 +303,7 @@ function NowPlaying() {
   // settleTransition has both the accepted target and the finished animation.
   const track =
     transitionActive.current ||
+    gestureActiveRef.current ||
     Boolean(appTrack && outgoingTrackKeys.current.has(trackQueueKey(appTrack)))
       ? visualTrackRef.current ?? appTrack
       : appTrack;
@@ -312,8 +333,10 @@ function NowPlaying() {
   // Retained pages keep their coordinates when the current role changes.
   // Native animation commands and React layout commits are not atomic, so
   // rebasing all pages while resetting the transform can reveal next-next.
-  const centerSlot =
-    pageSlotsRef.current.get(visualKey) ?? visualSlotRef.current;
+  // External selections replace the resting page in the same React commit.
+  // Moving to its old preload slot would require a separate native transform
+  // command, whose delivery can lag behind the page layout and visibility.
+  const centerSlot = visualSlotRef.current;
   const pages = new Map<
     string,
     {
@@ -328,8 +351,24 @@ function NowPlaying() {
       pages.set(trackQueueKey(item), {
         track: item,
         offset,
-        slot: centerSlot + offset,
+        slot:
+          transitionActive.current || gestureActiveRef.current
+            ? pageSlotsRef.current.get(trackQueueKey(item)) ??
+              centerSlot + offset
+            : centerSlot + offset,
       });
+  }
+  for (const [key, page] of retainedPages.current) {
+    pages.set(key, { ...page, offset: page.slot - centerSlot });
+  }
+  const pendingPage = transitionTargetRef.current;
+  if (transitionActive.current && pendingPage?.token === pagerToken.current) {
+    const pendingKey = trackQueueKey(pendingPage.track);
+    pages.set(pendingKey, {
+      track: pages.get(pendingKey)?.track ?? pendingPage.track,
+      offset: pendingPage.slot - centerSlot,
+      slot: pendingPage.slot,
+    });
   }
   if (
     fallbackPage &&
@@ -344,11 +383,30 @@ function NowPlaying() {
       slot: fallbackPage.slot,
     });
   }
+  // Retained surfaces own their coordinates until native motion finishes.
+  // A stale logical neighbour must not cover another song at the same slot.
+  const slotOwners = new Map<number, string>();
+  const priorityKeys = [
+    ...(fallbackPage ? [trackQueueKey(fallbackPage.track)] : []),
+    ...(pendingPage ? [trackQueueKey(pendingPage.track)] : []),
+    ...retainedPages.current.keys(),
+    visualKey,
+    ...pages.keys(),
+  ];
+  for (const key of priorityKeys) {
+    const page = pages.get(key);
+    if (!page) continue;
+    const owner = slotOwners.get(page.slot);
+    if (owner && owner !== key) pages.delete(key);
+    else slotOwners.set(page.slot, key);
+  }
   pageSlotsRef.current = new Map(
     [...pages].map(([key, page]) => [key, page.slot]),
   );
+  // The full-screen viewport clips neighbouring pages. Keep their surfaces
+  // opaque while native motion crosses them, including spring cancellation.
+  visiblePages.current = new Map(pages);
   const orderedPages = [...pages].sort((a, b) => a[1].slot - b[1].slot);
-  const swipeTransform = swipeY;
   const settleTransition = useCallback(() => {
     const pending = transitionTargetRef.current;
     if (
@@ -366,7 +424,9 @@ function NowPlaying() {
       outgoingTrackKeys.current.has(trackQueueKey(live))
     )
       return;
-    const slot = pageSlotsRef.current.get(trackQueueKey(live)) ?? pending.slot;
+    const slot =
+      pageSlotsRef.current.get(trackQueueKey(live)) ??
+      pending.slot + (appRef.current.player.index >= pending.index ? 1 : -1);
     if (
       trackQueueKey(live) !== trackQueueKey(pending.track) &&
       (committedFallback.current?.key !== trackQueueKey(live) ||
@@ -387,8 +447,9 @@ function NowPlaying() {
     // A bounded playback fallback may accept a different page. Ordinary
     // promotion leaves the finished native offset and page positions intact.
     if (trackQueueKey(live) !== trackQueueKey(pending.track))
-      swipeY.setValue(restingYRef.current);
+      motionRef.current?.setPosition(restingYRef.current);
     outgoingTrackKeys.current.clear();
+    retainedPages.current.clear();
     transitionTargetRef.current = null;
     transitionAnimationDone.current = false;
     transitionNavigationDone.current = false;
@@ -396,7 +457,8 @@ function NowPlaying() {
     setPreviewTrack(null);
     transitionActive.current = false;
     resetFallbackPage();
-  }, [resetFallbackPage, swipeY]);
+    setPagerRevision(value => value + 1);
+  }, [resetFallbackPage]);
   useLayoutEffect(() => {
     if (
       !fallbackPage ||
@@ -411,6 +473,7 @@ function NowPlaying() {
     settleTransition();
   }, [fallbackPage, settleTransition]);
   useEffect(() => {
+    if (gestureActiveRef.current) return;
     // A selection made from the shared queue can supersede an unfinished
     // player swipe while the logical current item is still the outgoing one.
     // The queue surface is the explicit owner of that selection; release the
@@ -430,9 +493,10 @@ function NowPlaying() {
       visualSlotRef.current =
         pageSlotsRef.current.get(trackQueueKey(live)) ?? visualSlotRef.current;
       restingYRef.current = -visualSlotRef.current * stageExtent;
-      swipeY.stopAnimation();
-      swipeY.setValue(restingYRef.current);
+      pagerToken.current += 1;
+      motionRef.current?.setPosition(restingYRef.current);
       outgoingTrackKeys.current.clear();
+      retainedPages.current.clear();
       transitionTargetRef.current = null;
       transitionAnimationDone.current = false;
       transitionNavigationDone.current = false;
@@ -453,7 +517,7 @@ function NowPlaying() {
       const restingY = -centerSlot * stageExtent;
       if (restingY !== restingYRef.current) {
         restingYRef.current = restingY;
-        swipeY.setValue(restingY);
+        motionRef.current?.setPosition(restingY);
       }
       outgoingTrackKeys.current.clear();
     }
@@ -464,76 +528,131 @@ function NowPlaying() {
     centerSlot,
     settleTransition,
     stageExtent,
-    swipeY,
     track,
     queueListOpen,
     resetFallbackPage,
   ]);
-  const panResponder = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponderCapture: (_, gesture) =>
-        !progressTouchActive.current &&
-        Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 12,
-      onPanResponderGrant: () => {
+  useEffect(
+    () => () => {
+      pagerToken.current += 1;
+      motionRef.current?.stop();
+    },
+    [],
+  );
+  const cancelTransition = useCallback(
+    (token: number) => {
+      if (token !== pagerToken.current || !transitionActive.current) return;
+      const live = appRef.current.current;
+      outgoingTrackKeys.current.clear();
+      retainedPages.current.clear();
+      visualTrackRef.current = live;
+      visualIndexRef.current = appRef.current.player.index;
+      visualSlotRef.current = live
+        ? pageSlotsRef.current.get(trackQueueKey(live)) ?? visualSlotRef.current
+        : visualSlotRef.current;
+      restingYRef.current = -visualSlotRef.current * stageExtentRef.current;
+      transitionTargetRef.current = null;
+      transitionAnimationDone.current = false;
+      transitionNavigationDone.current = false;
+      previewTrackRef.current = null;
+      setPreviewTrack(null);
+      transitionActive.current = false;
+      resetFallbackPage();
+      setPagerRevision(value => value + 1);
+      stopSwipeAnimation(token, () => {
+        motionRef.current?.animateTo(restingYRef.current, true);
+      });
+    },
+    [resetFallbackPage, stopSwipeAnimation],
+  );
+  const pageGestures = useMemo(
+    () => ({
+      onGrant: (event: PageGesture) => {
+        gestureActiveRef.current = true;
+        retainedPages.current = new Map(visiblePages.current);
         const pending = transitionTargetRef.current;
         if (pending) {
           visualTrackRef.current = pending.track;
           visualIndexRef.current = pending.index;
           visualSlotRef.current = pending.slot;
         }
-        pagerToken.current += 1;
-        transitionActive.current = false;
+        const token = ++pagerToken.current;
+        transitionActive.current = Boolean(pending);
         resetFallbackPage();
-        swipeY.stopAnimation();
-        gestureBaseYRef.current =
-          -visualSlotRef.current * stageExtentRef.current;
-        restingYRef.current = gestureBaseYRef.current;
-        swipeY.setValue(gestureBaseYRef.current);
-        transitionTargetRef.current = null;
+        restingYRef.current = -visualSlotRef.current * stageExtentRef.current;
+        transitionTargetRef.current = pending ? { ...pending, token } : null;
         transitionAnimationDone.current = false;
         transitionNavigationDone.current = false;
+        if (pending?.navigation) {
+          pending.navigation.then(
+            () => {
+              if (token !== pagerToken.current) return;
+              transitionNavigationDone.current = true;
+              settleTransition();
+            },
+            () => cancelTransition(token),
+          );
+        }
         previewTrackRef.current = null;
         setPreviewTrack(null);
+        // Native interception has already stopped the old animator at this
+        // exact offset. Page identities keep their coordinates during handoff.
+        retainedPages.current = new Map(
+          [...retainedPages.current].filter(
+            ([, page]) =>
+              Math.abs(page.slot * stageExtentRef.current + event.position) <
+              stageExtentRef.current,
+          ),
+        );
       },
-      onPanResponderMove: (_, gesture) => {
-        const { dx, dy } = gesture;
+      onMove: ({ dx, dy }: PageGesture) => {
         if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 12) {
           const direction = dy < 0 ? -1 : 1;
           const targetIndex = visualIndexRef.current + (direction < 0 ? 1 : -1);
           const target = appRef.current.queue[targetIndex] ?? null;
           if (
             direction !== previewDirectionRef.current ||
-            target?.id !== previewTrackRef.current?.id
+            (target ? trackQueueKey(target) : '') !==
+              (previewTrackRef.current
+                ? trackQueueKey(previewTrackRef.current)
+                : '')
           ) {
             previewDirectionRef.current = direction;
             previewTrackRef.current = target;
             setPreviewTrack(target);
           }
-          swipeY.setValue(
-            gestureBaseYRef.current +
-              Math.max(
-                -stageExtentRef.current,
-                Math.min(stageExtentRef.current, dy),
-              ),
-          );
         }
       },
-      onPanResponderRelease: (_, gesture) => {
-        const dx = gesture.dx;
-        const dy = gesture.dy;
+      onRelease: ({ dx, dy }: PageGesture) => {
+        gestureActiveRef.current = false;
         if (Math.max(Math.abs(dx), Math.abs(dy)) < 64) {
           previewTrackRef.current = null;
           setPreviewTrack(null);
-          Animated.spring(swipeY, {
-            toValue: restingYRef.current,
-            useNativeDriver: true,
-            tension: 80,
-            friction: 9,
-          }).start();
+          const token = pagerToken.current;
+          if (!transitionTargetRef.current && visualTrackRef.current) {
+            transitionTargetRef.current = {
+              track: visualTrackRef.current,
+              index: visualIndexRef.current,
+              slot: visualSlotRef.current,
+              token,
+            };
+            transitionNavigationDone.current = true;
+          }
+          transitionActive.current = true;
+          transitionAnimationDone.current = false;
+          motionRef.current?.animateTo(
+            restingYRef.current,
+            true,
+            ({ finished }) => {
+              if (!finished || token !== pagerToken.current) return;
+              transitionAnimationDone.current = true;
+              settleTransition();
+            },
+          );
           return;
         }
         if (Math.abs(dx) > Math.abs(dy)) {
-          swipeY.setValue(restingYRef.current);
+          motionRef.current?.setPosition(restingYRef.current);
           previewTrackRef.current = null;
           setPreviewTrack(null);
           if (dx < 0) appRef.current.open('lyrics');
@@ -545,7 +664,7 @@ function NowPlaying() {
         const targetIndex = currentIndex + (direction < 0 ? 1 : -1);
         const target = appRef.current.queue[targetIndex] ?? null;
         if (!target) {
-          swipeY.setValue(restingYRef.current);
+          motionRef.current?.setPosition(restingYRef.current);
           previewTrackRef.current = null;
           setPreviewTrack(null);
           // The first queue entry has no previous target.  Treat this as a
@@ -556,12 +675,7 @@ function NowPlaying() {
           // can request the next page as before.
           if (direction > 0) {
             transitionActive.current = false;
-            Animated.spring(swipeY, {
-              toValue: restingYRef.current,
-              useNativeDriver: true,
-              tension: 80,
-              friction: 9,
-            }).start();
+            motionRef.current?.animateTo(restingYRef.current, true);
             return;
           }
           const change =
@@ -599,12 +713,8 @@ function NowPlaying() {
         const change =
           direction < 0 ? appRef.current.next : appRef.current.previous;
         const navigation = change();
-        Animated.timing(swipeY, {
-          toValue: exitY,
-          duration: 240,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start(({ finished }) => {
+        transitionTargetRef.current.navigation = navigation;
+        motionRef.current?.animateTo(exitY, false, ({ finished }) => {
           if (!finished || token !== pagerToken.current) return;
           transitionAnimationDone.current = true;
           settleTransition();
@@ -620,37 +730,13 @@ function NowPlaying() {
             transitionNavigationDone.current = true;
             settleTransition();
           },
-          () => {
-            if (token !== pagerToken.current || !transitionActive.current)
-              return;
-            const live = appRef.current.current;
-            outgoingTrackKeys.current.clear();
-            visualTrackRef.current = live;
-            visualIndexRef.current = appRef.current.player.index;
-            visualSlotRef.current = live
-              ? pageSlotsRef.current.get(trackQueueKey(live)) ??
-                visualSlotRef.current
-              : visualSlotRef.current;
-            restingYRef.current =
-              -visualSlotRef.current * stageExtentRef.current;
-            transitionTargetRef.current = null;
-            transitionAnimationDone.current = false;
-            transitionNavigationDone.current = false;
-            previewTrackRef.current = null;
-            setPreviewTrack(null);
-            transitionActive.current = false;
-            resetFallbackPage();
-            Animated.spring(swipeY, {
-              toValue: restingYRef.current,
-              useNativeDriver: true,
-              tension: 80,
-              friction: 9,
-            }).start();
-          },
+          () => cancelTransition(token),
         );
       },
-      onPanResponderTerminate: () => {
-        pagerToken.current += 1;
+      onTerminate: () => {
+        gestureActiveRef.current = false;
+        retainedPages.current.clear();
+        const token = ++pagerToken.current;
         transitionActive.current = false;
         resetFallbackPage();
         const live = appRef.current.current;
@@ -668,15 +754,13 @@ function NowPlaying() {
         transitionNavigationDone.current = false;
         previewTrackRef.current = null;
         setPreviewTrack(null);
-        Animated.spring(swipeY, {
-          toValue: restingYRef.current,
-          useNativeDriver: true,
-          tension: 80,
-          friction: 9,
-        }).start();
+        stopSwipeAnimation(token, () => {
+          motionRef.current?.animateTo(restingYRef.current, true);
+        });
       },
     }),
-  ).current;
+    [cancelTransition, resetFallbackPage, settleTransition, stopSwipeAnimation],
+  );
   if (!track)
     return (
       <View testID="now-playing" style={s.root}>
@@ -696,11 +780,19 @@ function NowPlaying() {
       ) : null}
       <View
         testID="player-swipe-stage"
-        {...panResponder.panHandlers}
         onLayout={event => setStageHeight(event.nativeEvent.layout.height)}
         style={s.playerSwipeViewport}
       >
-        <View
+        <PlayerPageMotion
+          ref={motionRef}
+          pageExtent={stageExtent}
+          onGesture={event => {
+            if (progressTouchActive.current) return;
+            if (event.phase === 'grant') pageGestures.onGrant(event);
+            if (event.phase === 'move') pageGestures.onMove(event);
+            if (event.phase === 'release') pageGestures.onRelease(event);
+            if (event.phase === 'terminate') pageGestures.onTerminate();
+          }}
           testID="player-swipe-content-viewport"
           style={[
             s.playerContentViewport,
@@ -713,22 +805,16 @@ function NowPlaying() {
             },
           ]}
         >
-          <Animated.View
+          <View
+            collapsable={false}
             testID="player-swipe-track"
-            style={[
-              s.playerSwipeTrack,
-              { height: stageExtent },
-              { transform: [{ translateY: swipeTransform }] },
-            ]}
+            style={[s.playerSwipeTrack, { height: stageExtent }]}
           >
             {orderedPages.map(([key, page]) => {
               const active = page.offset === 0;
               const isPreview =
                 !active &&
                 Boolean(previewTrack && trackQueueKey(previewTrack) === key);
-              const isFallback =
-                fallbackPage?.token === pagerToken.current &&
-                trackQueueKey(fallbackPage.track) === key;
               return (
                 <View
                   key={key}
@@ -741,7 +827,7 @@ function NowPlaying() {
                   style={[
                     s.playerPreviewFrame,
                     { top: page.slot * stageExtent },
-                    { opacity: active || isPreview || isFallback ? 1 : 0 },
+                    s.playerPageVisible,
                     { height: stageExtent },
                   ]}
                 >
@@ -778,8 +864,8 @@ function NowPlaying() {
                 </View>
               );
             })}
-          </Animated.View>
-        </View>
+          </View>
+        </PlayerPageMotion>
       </View>
       <ProgressScrubber
         id="player-progress-touch"
@@ -2287,6 +2373,7 @@ const s = createThemedStyles(
     playerSwipeTrack: { position: 'absolute', top: 0, left: 0, right: 0 },
     playerPageFrame: { flex: 1 },
     playerPageContent: { position: 'absolute', left: 0, right: 0 },
+    playerPageVisible: { opacity: 1 },
     playerPreviewFrame: {
       position: 'absolute',
       right: 0,

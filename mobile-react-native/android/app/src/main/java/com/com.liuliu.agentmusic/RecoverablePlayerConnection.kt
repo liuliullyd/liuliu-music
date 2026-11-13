@@ -2,6 +2,7 @@ package com.liuliu.agentmusic
 
 import com.google.common.util.concurrent.ListenableFuture
 import java.util.concurrent.Executor
+import java.util.concurrent.TimeoutException
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
@@ -13,49 +14,73 @@ internal class RecoverablePlayerConnection<T>(
   private val isConnected: (T) -> Boolean,
   private val release: (ListenableFuture<T>) -> Unit,
   private val onConnected: (T) -> Unit,
+  private val scheduleTimeout: (() -> Unit) -> (() -> Unit),
+  private val isAvailable: () -> Boolean = { true },
 ) {
   private class Request<T>(val action: (T) -> Unit, val failed: (Throwable) -> Unit)
-  private class Attempt<T>(val future: ListenableFuture<T>) {
+  private class Attempt<T>(val future: ListenableFuture<T>, val generation: Long) {
     var controller: T? = null
+    var cancelTimeout: (() -> Unit)? = null
     val waiting = mutableListOf<Request<T>>()
   }
   private var attempt: Attempt<T>? = null
   @Volatile private var closed = false
+  private val generation = java.util.concurrent.atomic.AtomicLong()
 
-  fun execute(action: (T) -> Unit, failed: (Throwable) -> Unit) = executor.execute {
-    if (closed) { failed(IllegalStateException("播放连接已关闭")); return@execute }
-    var current = attempt
-    val controller = current?.controller
-    if (controller != null) {
-      if (isConnected(controller)) {
-        dispatch(Request(action, failed), controller)
-        return@execute
+  fun execute(action: (T) -> Unit, failed: (Throwable) -> Unit) {
+    val issued = generation.get()
+    val admitted = isAvailable()
+    executor.execute {
+      if (closed || !admitted || !isAvailable() || issued != generation.get()) {
+        failed(IllegalStateException("播放连接已关闭")); return@execute
       }
-      discard(current, IllegalStateException("播放连接已断开"))
-      current = null
+      var current = attempt
+      val controller = current?.controller
+      if (controller != null) {
+        if (isConnected(controller)) {
+          dispatch(Request(action, failed), controller)
+          return@execute
+        }
+        discard(current, IllegalStateException("播放连接已断开"))
+        current = null
+      }
+      if (current != null) { current.waiting.add(Request(action, failed)); return@execute }
+      val next = try { Attempt(connect(), issued) } catch (error: Throwable) {
+        failed(error); return@execute
+      }
+      attempt = next
+      next.waiting.add(Request(action, failed))
+      try {
+        next.cancelTimeout = scheduleTimeout {
+          executor.execute {
+            if (attempt === next && next.controller == null)
+              discard(next, TimeoutException("连接播放器超时，请重试"))
+          }
+        }
+      } catch (error: Throwable) { discard(next, error); return@execute }
+      next.future.addListener({ connected(next) }, executor)
     }
-    if (current != null) { current.waiting.add(Request(action, failed)); return@execute }
-    val next = try { Attempt(connect()) } catch (error: Throwable) {
-      failed(error); return@execute
-    }
-    attempt = next
-    next.waiting.add(Request(action, failed))
-    next.future.addListener({ connected(next) }, executor)
   }
 
   private fun connected(current: Attempt<T>) {
-    if (closed || attempt !== current) return
+    if (attempt !== current) return
+    if (closed || !isAvailable() || current.generation != generation.get()) {
+      discard(current, IllegalStateException("播放连接已关闭")); return
+    }
     val controller = try {
       current.future.get().also {
         check(isConnected(it)) { "播放连接不可用" }
         current.controller = it
+        current.cancelTimeout?.invoke()
+        current.cancelTimeout = null
         onConnected(it)
       }
     } catch (error: Throwable) { discard(current, error); return }
     val waiting = current.waiting.toList()
     current.waiting.clear()
     for (request in waiting) {
-      if (closed || attempt !== current || !isConnected(controller))
+      if (closed || !isAvailable() || current.generation != generation.get() ||
+        attempt !== current || !isConnected(controller))
         request.failed(IllegalStateException("播放连接已断开"))
       else dispatch(request, controller)
     }
@@ -67,7 +92,10 @@ internal class RecoverablePlayerConnection<T>(
   }
 
   private fun discard(current: Attempt<T>, error: Throwable) {
-    if (attempt === current) attempt = null
+    if (attempt !== current) return
+    attempt = null
+    current.cancelTimeout?.invoke()
+    current.cancelTimeout = null
     val waiting = current.waiting.toList()
     current.waiting.clear()
     release(current.future)
@@ -82,6 +110,11 @@ internal class RecoverablePlayerConnection<T>(
 
   fun close() {
     closed = true
+    reset()
+  }
+
+  fun reset() {
+    generation.incrementAndGet()
     executor.execute { attempt?.let { discard(it, IllegalStateException("播放连接已关闭")) } }
   }
 }

@@ -161,7 +161,7 @@ export class UrlPrewarmScheduler {
     return new Promise<void>(resolve => this.idleWaiters.push(resolve));
   }
 
-  /** Resolves only after every queue-lane URL task, including retries, settles. */
+  /** Resolves after every queue task and its failed-song cleanup settles. */
   whenQueueIdle() {
     if (this.isQueueIdle()) return Promise.resolve();
     return new Promise<void>(resolve => this.queueIdleWaiters.push(resolve));
@@ -191,12 +191,20 @@ export class UrlPrewarmScheduler {
   }
 
   private takeNext() {
-    const queueActive = [...this.activeTasks].some(task => task.lane === 'queue');
+    const queueActive = [...this.activeTasks].some(
+      task => task.lane === 'queue',
+    );
     for (const queue of [this.retryQueue, this.queueQueue, this.homeQueue]) {
-      for (let index = 0; index < queue.length;) {
+      for (let index = 0; index < queue.length; ) {
         const task = queue[index]!;
-        if (this.pending.get(task.key) !== task) { queue.splice(index, 1); continue; }
-        if (queueActive && task.lane === 'queue') { index += 1; continue; }
+        if (this.pending.get(task.key) !== task) {
+          queue.splice(index, 1);
+          continue;
+        }
+        if (queueActive && task.lane === 'queue') {
+          index += 1;
+          continue;
+        }
         queue.splice(index, 1);
         return task;
       }
@@ -245,10 +253,10 @@ export class UrlPrewarmScheduler {
     } else if (succeeded) {
       this.pending.delete(task.key);
       task.resolveOutcome('success');
-    }
-    else {
+    } else {
       task.attempts += 1;
-      if (task.attempts < this.maxAttempts) this.retryQueue.push(task);
+      if (task.attempts < (task.lane === 'queue' ? 1 : this.maxAttempts))
+        this.retryQueue.push(task);
       else {
         // A terminal outcome belongs to this song, independently of native
         // cleanup or the rest of the queue, including coalesced detail owners.
@@ -261,8 +269,7 @@ export class UrlPrewarmScheduler {
             console.error('[url-prewarm] queue failure removal failed', error);
           }
         }
-        if (this.pending.get(task.key) === task)
-          this.pending.delete(task.key);
+        if (this.pending.get(task.key) === task) this.pending.delete(task.key);
       }
     }
     task.active = false;

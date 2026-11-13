@@ -1,3 +1,4 @@
+import { requirePlaybackPrewarmRevalidation } from '../services/sourceRuntime';
 import React, {
   createContext,
   useCallback,
@@ -874,6 +875,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }),
     [player, setPlayer] = useState<NativePlayerState>(initialPlayer),
     [playerPreparationReadyKey, setPlayerPreparationReadyKey] = useState(''),
+    [interruptionRefreshVersion, setInterruptionRefreshVersion] = useState(0),
     [playerOverlayOpen, setPlayerOverlayOpen] = useState(false),
     [queueListOpen, setQueueListOpenState] = useState(false),
     [queueReversed, setQueueReversed] = useState(false),
@@ -950,6 +952,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } | null>(null),
     playerQueuePreparation = useRef(new PlayerQueuePreparation()),
     preparedNeighbourContexts = useRef(new Map<string, string>()),
+    interruptionQueue = useRef<{
+      source: number;
+      quality: PersistedState['settings']['quality'];
+      cacheToken: number;
+      started: boolean;
+      pending: Set<string>;
+      ready: Map<string, Track & { playUrl: string }>;
+    } | null>(null),
     playerPreparationCommit = useRef<Promise<void>>(Promise.resolve()),
     pendingTrackPreparations = useRef(
       new Map<
@@ -1318,6 +1328,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             track => trackQueueKey(track) === nativeKey,
           )
         : -1;
+      // A bridge event for the outgoing item may arrive after playIndex has
+      // acknowledged its command but before the target actually starts. It
+      // must not change either the displayed item or the playback cursor.
+      const pending = pendingDisplay.current;
+      if (pending && nativeKey !== pending.key) return;
+      if (nativeKey && logicalQueueRef.current.length && logicalIndex < 0)
+        return;
       if (
         value.error &&
         nativeKey === supersededSceneKey.current &&
@@ -1371,26 +1388,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Media3 may still publish the old item while the new URL is resolving;
       // do not let that stale native snapshot put the old metadata back on
       // the player page.
-      const pending = pendingDisplay.current;
-      if (pending && nativeKey !== pending.key) {
-        const pendingIndex = logicalQueueRef.current.findIndex(
-          track => trackQueueKey(track) === pending.key,
-        );
-        if (pendingIndex >= 0) {
-          const pendingTrack = logicalQueueRef.current[pendingIndex]!;
-          setPlayer(current => ({
-            ...current,
-            index: pendingIndex,
-            mediaId: pending.key,
-            playing: false,
-            position: 0,
-            duration: pendingTrack.duration,
-            error: null,
-          }));
-          return;
-        }
-      }
-      if (pending && nativeKey === pending.key) pendingDisplay.current = null;
+      if (
+        pending &&
+        nativeKey === pending.key &&
+        value.playing &&
+        !navigationPending.current
+      )
+        pendingDisplay.current = null;
       if (value.playing && !recovering && !navigationPending.current) {
         const playedTrack = queueRef.current.find(
           track => trackQueueKey(track) === nativeKey,
@@ -1462,26 +1466,144 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       }
     };
-    const unsubscribe = nativePlayer.subscribe(publishNativeState);
+    let disposed = false;
+    let nativeEventRevision = 0;
+    let readSequence = 0;
+    let publishedRead = 0;
+    let foreground = true;
+    let taskRemoved = false;
+    const readNativeState = (forceProgress = false) => {
+      if (disposed || taskRemoved) return Promise.resolve(undefined);
+      const eventRevision = nativeEventRevision;
+      const navigation = navigationVersion.current;
+      const generation = queueGeneration.current;
+      const sequence = ++readSequence;
+      return nativePlayer.getState().then(value => {
+        // A slow poll belongs to the state at its invocation. A newer native
+        // event or selection must not be replaced by that outgoing snapshot.
+        if (
+          disposed ||
+          eventRevision !== nativeEventRevision ||
+          navigation !== navigationVersion.current ||
+          generation !== queueGeneration.current ||
+          sequence < publishedRead
+        )
+          return;
+        publishedRead = sequence;
+        publishNativeState(value, forceProgress);
+        return value;
+      });
+    };
+    const unsubscribe = nativePlayer.subscribe(value => {
+      if (taskRemoved) return;
+      nativeEventRevision += 1;
+      publishNativeState(value);
+    });
+    const taskRemovalSubscription = DeviceEventEmitter.addListener(
+      'playbackTaskRemoved',
+      () => {
+        taskRemoved = true;
+        nativeEventRevision += 1;
+        startupAutoplayCancelled.current = true;
+        queueGeneration.current += 1;
+        navigationVersion.current += 1;
+        qualityRequestVersion.current += 1;
+        queuePreparationVersion.current += 1;
+        navigationPending.current = false;
+        selectedPreparationGeneration.current = null;
+        pendingDisplay.current = null;
+        actualPlayingKey.current = '';
+        queueRef.current = [];
+        preparedNeighbourContexts.current.clear();
+        setPlayerPreparationReadyKey('');
+        interruptionQueue.current = null;
+        expiredUrlRequest.current?.abort.abort();
+        playerRequestAbort.current?.abort();
+        playerQueuePreparation.current.reset();
+        urlPrewarmScheduler.current!.setPlaybackReady(false);
+        urlPrewarmScheduler.current!.reset();
+        if (scenePlayback.current) scenePlayback.current.paused = true;
+        setBusy(false);
+        setPlayer(value => ({ ...value, playing: false }));
+      },
+    );
     const appStateSubscription = AppState.addEventListener('change', next => {
-      if (next === 'active') return;
-      nativePlayer
-        .getState()
-        .then(value => {
-          publishNativeState(value, true);
-        })
+      foreground = next === 'active';
+      if (next === 'active') {
+        taskRemoved = false;
+        const generation = queueGeneration.current;
+        const navigation = navigationVersion.current;
+        const source = sourceSelectionGeneration.current;
+        const quality = qualityPreferenceRef.current;
+        const currentRequest = () =>
+          !disposed &&
+          foreground &&
+          !navigationPending.current &&
+          generation === queueGeneration.current &&
+          navigation === navigationVersion.current &&
+          source === sourceSelectionGeneration.current &&
+          quality === qualityPreferenceRef.current;
+        readNativeState()
+          .then(async value => {
+            if (!value?.mediaId || !currentRequest()) return;
+            const key = value.mediaId;
+            const admitted = queueRef.current.find(
+              track => trackQueueKey(track) === key,
+            );
+            if (
+              !admitted ||
+              admitted.metadata?._playbackPreference !== quality ||
+              admitted.metadata?._playerPreparationSource !== source
+            )
+              return;
+            // Native owns the interruption reason and consumes its intent atomically.
+            // A manual pause has no eligible interruption to resume.
+            const resumed = await nativePlayer.resumeInterruptedPlayback(key);
+            if (!resumed || !currentRequest()) return;
+            const logical = logicalQueueRef.current;
+            const index = logical.findIndex(
+              track => trackQueueKey(track) === key,
+            );
+            if (index < 0) return;
+            const tracks = logical.filter(
+              track =>
+                trackQueueKey(track) !== key &&
+                track.provider !== 'custom' &&
+                !localPlaybackReference(track),
+            );
+            interruptionQueue.current = {
+              source,
+              quality,
+              cacheToken: sourceResolutionCacheToken(),
+              started: false,
+              pending: new Set(tracks.map(trackQueueKey)),
+              ready: new Map(),
+            };
+            // Keep the address cache, but require new evidence before any old
+            // prepared item or cached result can be consumed after interruption.
+            for (const track of tracks)
+              requirePlaybackPrewarmRevalidation(
+                track,
+                startupRuntime.current.playbackSourcesFor(track),
+                quality,
+              );
+            setInterruptionRefreshVersion(version => version + 1);
+          })
+          .catch(() => undefined);
+        return;
+      }
+      readNativeState(true)
+        .then(() => {})
         .catch(() => undefined);
     });
     const timer = setInterval(
-      () =>
-        nativePlayer
-          .getState()
-          .then(publishNativeState)
-          .catch(() => undefined),
+      () => readNativeState().catch(() => undefined),
       800,
     );
     return () => {
+      disposed = true;
       unsubscribe();
+      taskRemovalSubscription.remove();
       appStateSubscription.remove();
       clearInterval(timer);
       expiredUrlRequest.current?.abort.abort();
@@ -2491,52 +2613,81 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [],
   );
-  const dropUnavailableQueueTrack = useCallback((key: string) => {
-    if (
-      key === actualPlayingKey.current ||
-      key === catalogPlaybackGate.current?.key
-    )
-      return;
-    const logical = logicalQueueRef.current;
-    if (!logical.some(track => trackQueueKey(track) === key)) return;
-    const remaining = logical.filter(track => trackQueueKey(track) !== key);
-    logicalQueueRef.current = remaining;
-    queuePublishedRef.current = remaining;
-    queuePreparationVersion.current += 1;
-    setQueue(remaining);
-    setPlayer(value => ({
-      ...value,
-      index: Math.max(
-        0,
-        remaining.findIndex(
-          track => trackQueueKey(track) === actualPlayingKey.current,
-        ),
-      ),
-    }));
-    const generation = queueGeneration.current;
-    if (queueRef.current.some(track => trackQueueKey(track) === key)) {
-      const cleanup = playerPreparationCommit.current
-        .catch(() => undefined)
-        .then(async () => {
-          if (
-            queueGeneration.current !== generation ||
-            key === actualPlayingKey.current ||
-            key === catalogPlaybackGate.current?.key
+  const dropUnavailableQueueTrack = useCallback(
+    (key: string, selectedFailure = false) => {
+      if (
+        !selectedFailure &&
+        (key === actualPlayingKey.current ||
+          key === catalogPlaybackGate.current?.key)
+      )
+        return;
+      const logical = logicalQueueRef.current;
+      if (!logical.some(track => trackQueueKey(track) === key)) return;
+      const cursorTrack = logical[navigationCursor.current];
+      interruptionQueue.current?.pending.delete(key);
+      interruptionQueue.current?.ready.delete(key);
+      const remaining = logical.filter(track => trackQueueKey(track) !== key);
+      logicalQueueRef.current = remaining;
+      queuePublishedRef.current = remaining;
+      queuePreparationVersion.current += 1;
+      const cursorIndex = cursorTrack
+        ? remaining.findIndex(
+            track => trackQueueKey(track) === trackQueueKey(cursorTrack),
           )
-            return;
-          const index = queueRef.current.findIndex(
-            track => trackQueueKey(track) === key,
-          );
-          if (index < 0) return;
-          await nativePlayer.removeQueueItem(index);
-          if (queueGeneration.current === generation)
-            queueRef.current = queueRef.current.filter(
-              track => trackQueueKey(track) !== key,
+        : -1;
+      if (cursorIndex >= 0) navigationCursor.current = cursorIndex;
+      const pending = pendingDisplay.current;
+      if (pending) {
+        const index = remaining.findIndex(
+          track => trackQueueKey(track) === pending.key,
+        );
+        if (index >= 0) pendingDisplay.current = { ...pending, index };
+      }
+      setQueue(remaining);
+      setPlayer(value => {
+        const index = remaining.findIndex(
+          track =>
+            trackQueueKey(track) ===
+            (value.mediaId ?? actualPlayingKey.current),
+        );
+        return {
+          ...value,
+          index:
+            index >= 0
+              ? index
+              : Math.max(0, Math.min(value.index, remaining.length - 1)),
+          ...(value.mediaId === key
+            ? { mediaId: null, playing: false, position: 0 }
+            : {}),
+        };
+      });
+      const generation = queueGeneration.current;
+      if (queueRef.current.some(track => trackQueueKey(track) === key)) {
+        const cleanup = playerPreparationCommit.current
+          .catch(() => undefined)
+          .then(async () => {
+            if (
+              queueGeneration.current !== generation ||
+              (!selectedFailure &&
+                (key === actualPlayingKey.current ||
+                  key === catalogPlaybackGate.current?.key))
+            )
+              return;
+            const index = queueRef.current.findIndex(
+              track => trackQueueKey(track) === key,
             );
-        });
-      playerPreparationCommit.current = cleanup.catch(() => undefined);
-    }
-  }, []);
+            if (index < 0) return;
+            await nativePlayer.removeQueueItem(index);
+            if (queueGeneration.current === generation)
+              queueRef.current = queueRef.current.filter(
+                track => trackQueueKey(track) !== key,
+              );
+          });
+        playerPreparationCommit.current = cleanup.catch(() => undefined);
+      }
+    },
+    [],
+  );
   const enqueueUrlPrewarm = useCallback(
     (
       lane: UrlPrewarmLane,
@@ -2594,7 +2745,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const startedAt = Date.now();
             const preferred = qualityPreferenceRef.current;
             const cacheToken = sourceResolutionCacheToken();
-            const result =
+            let result =
               lane === 'queue'
                 ? await resolveWithImportedSourcePrewarm(
                     track,
@@ -2610,11 +2761,64 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   );
             if (signal.aborted) throw new Error('URL prewarm interrupted');
             if (
+              sourceGenerationAtEnqueue !== sourceSelectionGeneration.current ||
+              preferred !== qualityPreferenceRef.current ||
+              cacheToken !== sourceResolutionCacheToken()
+            )
+              return;
+            const refresh = interruptionQueue.current;
+            const targetKey = trackQueueKey(track);
+            const refreshing =
+              lane === 'queue' &&
+              refresh?.pending.has(targetKey) &&
+              refresh.source === sourceGenerationAtEnqueue &&
+              refresh.quality === preferred &&
+              refresh.cacheToken === cacheToken;
+            // A task already in flight when the interruption was recorded cannot
+            // certify the newly requested check with its earlier evidence.
+            if (
+              refreshing &&
+              !hasValidatedPlaybackPrewarm(
+                track,
+                playbackSourcesFor(track),
+                preferred,
+              )
+            )
+              result = await resolveWithImportedSourcePrewarm(
+                track,
+                playbackSourcesFor(track),
+                preferred,
+                signal,
+              );
+            if (
+              signal.aborted ||
+              sourceGenerationAtEnqueue !== sourceSelectionGeneration.current ||
               preferred !== qualityPreferenceRef.current ||
               cacheToken !== sourceResolutionCacheToken()
             )
               return;
             bindPrewarmedTrack(track, result);
+            if (
+              refreshing &&
+              refresh &&
+              interruptionQueue.current === refresh &&
+              logicalQueueRef.current.some(
+                item => trackQueueKey(item) === targetKey,
+              )
+            ) {
+              const prepared = await prepareTrack(
+                { ...track, playUrl: undefined },
+                preferred,
+                false,
+                undefined,
+                false,
+                true,
+              );
+              if (signal.aborted || interruptionQueue.current !== refresh)
+                return;
+              refresh.ready.set(targetKey, prepared);
+              setInterruptionRefreshVersion(version => version + 1);
+            }
             console.info(
               '[url-prewarm]',
               JSON.stringify({
@@ -2644,6 +2848,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       bindPrewarmedTrack,
       dropUnavailableQueueTrack,
       playbackSourcesFor,
+      prepareTrack,
       prewarmIdentity,
       recommendationPlatforms,
       state,
@@ -3803,6 +4008,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         pageRef.current === 'queue' ||
         queueListOpenRef.current;
       if (!preserveQueueOrder) {
+        interruptionQueue.current = null;
         playerQueuePreparation.current.reset();
         queueReversedRef.current = false;
         setQueueReversed(false);
@@ -3892,7 +4098,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             nextSource !== source
           ) {
             continuationContext.source = nextSource;
-            setQueuePage(value => ({ ...value, hasMore: nextSource.hasMore }));
+            setQueuePage(value => ({
+              ...value,
+              hasMore: nextSource.hasMore,
+            }));
           }
           return;
         }
@@ -4168,6 +4377,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         const mainPlayerSelection =
           onDemand && preserveQueueOrder && pageRef.current === 'player';
+        const reusePlaylistCache =
+          preserveQueueOrder &&
+          typeof hasValidatedPlaybackPrewarm === 'function' &&
+          hasValidatedPlaybackPrewarm(
+            track,
+            playbackSourcesFor(track),
+            requestedQuality,
+          );
         const prepareSelected = () =>
           prepareTrack(
             track,
@@ -4175,6 +4392,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             false,
             sceneTiming,
             options?.navigationToken === undefined,
+            reusePlaylistCache,
           );
         const selectedRequest = mainPlayerSelection
           ? playerQueuePreparation.current.select(
@@ -4395,8 +4613,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           !playbackStarted &&
           (sceneQueue ||
             options?.bulkPlay === true ||
-            options?.allowFailureFallback === true ||
-            options?.navigationToken !== undefined) &&
+            options?.allowFailureFallback === true) &&
+          options?.navigationToken === undefined &&
           (options?.bulkPlay
             ? tracks.length > 1
             : fallbackDepth < PLAYER_FAILURE_FALLBACK_LIMIT)
@@ -4569,6 +4787,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       patchState,
       prepare,
       prepareTrack,
+      playbackSourcesFor,
       enqueueUrlPrewarm,
       prewarmIdentity,
       prefetchQueueAt,
@@ -4605,13 +4824,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       if (shouldPlay) {
         if (!current) return;
+        if (!queueRef.current.length) {
+          await playTrack(
+            current,
+            logicalQueueRef.current,
+            player.index,
+            { openPlayer: false },
+            queuePaging.current?.source ?? null,
+            true,
+          );
+          return;
+        }
         await nativePlayer.play();
       } else await nativePlayer.pause();
       // Do not invert a possibly newer polling/event value. The native action
       // above has one explicit target state, so commit that same target.
       setPlayer(value => ({ ...value, playing: shouldPlay }));
     },
-    [current],
+    [current, playTrack, player.index],
   );
   const togglePlay = useCallback(
     () => setPlaybackPlaying(!player.playing),
@@ -5215,13 +5445,57 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         await playerPreparationCommit.current.catch(() => undefined);
         if (navigationVersion.current !== requestVersion) return;
-        await nativePlayer.stop();
-        if (navigationVersion.current !== requestVersion) return;
-        await backgroundReleased;
+        const preparedTarget = logicalQueueRef.current[requestedTarget];
+        const preparedNative =
+          preparedTarget &&
+          queueRef.current.find(
+            item =>
+              trackQueueKey(item) === trackQueueKey(preparedTarget) &&
+              item.playUrl &&
+              !interruptionQueue.current?.pending.has(trackQueueKey(item)) &&
+              item.metadata?._playbackPreference ===
+                qualityPreferenceRef.current &&
+              (item.metadata?._playerPreparationSource === undefined ||
+                item.metadata._playerPreparationSource ===
+                  sourceSelectionGeneration.current),
+          );
+        let providerStopped = false;
+        if (!preparedNative) {
+          await nativePlayer.stop();
+          providerStopped = true;
+          if (navigationVersion.current !== requestVersion) return;
+          await backgroundReleased;
+        } else {
+          // A validated native item can switch directly. Cancellation of
+          // unrelated background work does not own the prepared play command.
+          backgroundReleased.catch(() => undefined);
+        }
         if (navigationVersion.current !== requestVersion) return;
         let target = requestedTarget;
         let skipped = 0;
+        const advanceUnavailableTarget = async (key: string) => {
+          await nativePlayer.stop();
+          if (navigationVersion.current !== requestVersion) return false;
+          providerStopped = true;
+          const failedIndex = logicalQueueRef.current.findIndex(
+            item => trackQueueKey(item) === key,
+          );
+          if (catalogPlaybackGate.current?.key === key)
+            catalogPlaybackGate.current = null;
+          if (actualPlayingKey.current === key) actualPlayingKey.current = '';
+          dropUnavailableQueueTrack(key, true);
+          await playerPreparationCommit.current;
+          if (navigationVersion.current !== requestVersion) return false;
+          skipped += 1;
+          target =
+            failedIndex >= 0
+              ? failedIndex + (direction === 1 ? 0 : -1)
+              : target;
+          navigationCursor.current = target;
+          return true;
+        };
         while (skipped < 8) {
+          if (navigationVersion.current !== requestVersion) return;
           if (target < 0) {
             if (
               !queueReversedRef.current ||
@@ -5271,6 +5545,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               const targetNativeTrack = queueRef.current[target];
               const qualityReady =
                 Boolean(targetNativeTrack?.playUrl) &&
+                !interruptionQueue.current?.pending.has(
+                  trackQueueKey(targetNativeTrack!),
+                ) &&
                 targetNativeTrack?.metadata?._playbackPreference ===
                   qualityPreferenceRef.current;
               if (!qualityReady) {
@@ -5311,6 +5588,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   };
                 }
                 await nativePlayer.playIndex(target);
+                if (navigationVersion.current !== requestVersion) return;
                 preparedGate.preparedAccepted = true;
                 if (navigationVersion.current === requestVersion)
                   musicEntityRecorder.current.accept(
@@ -5347,6 +5625,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 if (isMenuSceneQueue(queuePaging.current?.source)) {
                   if (navigationVersion.current !== requestVersion) return;
                   await nativePlayer.stop();
+                  if (navigationVersion.current !== requestVersion) return;
                   skipped += 1;
                   target += direction;
                   navigationCursor.current = target;
@@ -5387,31 +5666,53 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             nativeIndex >= 0 ? queueRef.current[nativeIndex] : null;
           const qualityReady =
             Boolean(nativeTrack?.playUrl) &&
+            !interruptionQueue.current?.pending.has(targetKey) &&
             nativeTrack?.metadata?._playbackPreference ===
               qualityPreferenceRef.current &&
             (nativeTrack?.metadata?._playerPreparationSource === undefined ||
               nativeTrack.metadata._playerPreparationSource ===
                 sourceSelectionGeneration.current);
           if (nativeIndex < 0 || !qualityReady) {
-            await playTrack(
-              logical[target]!,
-              logical,
-              target,
-              {
-                openPlayer: false,
-                queueSource: queuePaging.current?.source,
-                navigationToken: requestVersion,
-                providerAlreadyStopped: true,
-                forceQualityRefresh: true,
-                failureDirection: direction,
-              },
-              queuePaging.current?.source ?? null,
-              true,
-            );
+            if (!providerStopped) {
+              await nativePlayer.stop();
+              providerStopped = true;
+              if (navigationVersion.current !== requestVersion) return;
+              await backgroundReleased;
+              if (navigationVersion.current !== requestVersion) return;
+            }
+            try {
+              await playTrack(
+                logical[target]!,
+                logical,
+                target,
+                {
+                  openPlayer: false,
+                  queueSource: queuePaging.current?.source,
+                  navigationToken: requestVersion,
+                  providerAlreadyStopped: true,
+                  forceQualityRefresh: true,
+                  failureDirection: direction,
+                },
+                queuePaging.current?.source ?? null,
+                true,
+              );
+            } catch (error) {
+              if (
+                navigationVersion.current !== requestVersion ||
+                error instanceof PlayerRequestCancelled
+              )
+                return;
+              if (isSourceBindingUnavailable(error)) throw error;
+              if (!(await advanceUnavailableTarget(targetKey))) return;
+              continue;
+            }
             if (navigationVersion.current !== requestVersion) return;
-            navigationCursor.current = target;
+            navigationCursor.current = logicalQueueRef.current.findIndex(
+              item => trackQueueKey(item) === targetKey,
+            );
             return;
           }
+          let gateAbort: AbortController | undefined;
           try {
             const preparedGate = {
               generation: queueGeneration.current,
@@ -5430,13 +5731,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               };
             }
             await nativePlayer.playIndex(nativeIndex);
+            if (navigationVersion.current !== requestVersion) return;
             preparedGate.preparedAccepted = true;
             if (navigationVersion.current === requestVersion)
               musicEntityRecorder.current.accept(
                 queueGeneration.current,
                 targetKey,
               );
-            pendingDisplay.current = null;
             console.info(
               '[player-navigation]',
               JSON.stringify({
@@ -5451,7 +5752,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               pageRef.current === 'player' ||
               isMenuSceneQueue(queuePaging.current?.source)
             ) {
-              const gateAbort = new AbortController();
+              gateAbort = new AbortController();
               playerRequestAbort.current = gateAbort;
               await waitForPlayerRequest(
                 nativePlayer.waitForPlaybackStart(
@@ -5473,10 +5774,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 playerRequestAbort.current = null;
             }
             if (navigationVersion.current !== requestVersion) return;
-            navigationCursor.current = target;
+            pendingDisplay.current = null;
+            const acceptedIndex = logicalQueueRef.current.findIndex(
+              item => trackQueueKey(item) === targetKey,
+            );
+            navigationCursor.current = acceptedIndex;
             setPlayer(value => ({
               ...value,
-              index: target,
+              index: acceptedIndex,
               mediaId: playerNavigation ? targetKey : value.mediaId,
               playing: true,
               position: 0,
@@ -5484,13 +5789,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             }));
             return;
           } catch {
-            if (isMenuSceneQueue(queuePaging.current?.source)) {
-              if (navigationVersion.current !== requestVersion) return;
-              await nativePlayer.stop();
-            }
-            skipped += 1;
-            target += direction;
-            navigationCursor.current = target;
+            // A superseded/paused navigation is cancellation, not a failed
+            // song. It cannot advance the newer request's logical cursor.
+            if (
+              navigationVersion.current !== requestVersion ||
+              gateAbort?.signal.aborted
+            )
+              return;
+            if (!(await advanceUnavailableTarget(targetKey))) return;
+          } finally {
+            if (gateAbort && playerRequestAbort.current === gateAbort)
+              playerRequestAbort.current = null;
           }
         }
         const reachedQueueEnd =
@@ -5509,7 +5818,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           !(queuePaging.current?.error ?? queuePage.error) &&
           (!queueReversedRef.current ||
             !(queuePaging.current?.source.hasMore ?? queuePage.hasMore));
-        if (navigationVersion.current === requestVersion)
+        if (navigationVersion.current === requestVersion) {
+          if (skipped > 0) {
+            pendingDisplay.current = null;
+            const remaining = logicalQueueRef.current;
+            const retainedIndex = remaining.findIndex(
+              item => trackQueueKey(item) === actualPlayingKey.current,
+            );
+            const index =
+              retainedIndex >= 0
+                ? retainedIndex
+                : Math.max(0, Math.min(target, remaining.length - 1));
+            navigationCursor.current = index;
+            setPlayer(value => ({
+              ...value,
+              index,
+              mediaId: remaining[index]
+                ? trackQueueKey(remaining[index]!)
+                : null,
+              playing: false,
+              position: 0,
+              error:
+                direction === 1
+                  ? '后续歌曲暂时都无法播放'
+                  : '前面的歌曲暂时都无法播放',
+            }));
+          }
           setMessage(
             reachedQueueEnd
               ? '已到播放列表末尾'
@@ -5519,6 +5853,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               ? '后续歌曲暂时都无法播放'
               : '前面的歌曲暂时都无法播放',
           );
+        }
       };
       const request =
         !playerNavigation &&
@@ -5551,6 +5886,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [
       loadMoreQueue,
+      dropUnavailableQueueTrack,
       playTrack,
       prewarmIdentity,
       player.index,
@@ -5646,6 +5982,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     autoNext,
   ]);
   const preparationCacheToken = sourceResolutionCacheToken();
+  if (
+    interruptionQueue.current &&
+    (interruptionQueue.current.source !== sourceSelectionGeneration.current ||
+      interruptionQueue.current.quality !== qualityPreferenceRef.current ||
+      interruptionQueue.current.cacheToken !== preparationCacheToken)
+  )
+    interruptionQueue.current = null;
   const currentPreparationKey = current ? trackQueueKey(current) : '';
   useEffect(() => {
     const key = currentPreparationKey;
@@ -5674,6 +6017,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       (!actualPlayingKey.current || actualPlayingKey.current === key);
     const matches = (track: Track) =>
       Boolean(track.playUrl) &&
+      !interruptionQueue.current?.pending.has(trackQueueKey(track)) &&
       track.metadata?._playbackPreference === preferred &&
       track.metadata?._playerPreparationSource === sourceGeneration &&
       preparedNeighbourContexts.current.get(trackQueueKey(track)) === context;
@@ -5777,7 +6121,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return true;
       });
       if (
-        !nativeForwardEnabled ||
         !pruned ||
         !isCurrent() ||
         !player.playing ||
@@ -5786,6 +6129,83 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         !catalogPlaybackGate.current?.ready
       )
         return;
+      const refresh = interruptionQueue.current;
+      if (
+        refresh &&
+        refresh.source === sourceGeneration &&
+        refresh.quality === preferred &&
+        refresh.cacheToken === cacheToken
+      ) {
+        if (!refresh.started) {
+          refresh.started = true;
+          preparationOwner.reset();
+          // Rejoin the same ordered lane used after initial playback. It owns
+          // validation, cache updates, cancellation and failed-song removal.
+          enqueueUrlPrewarm(
+            'queue',
+            logicalQueueRef.current.filter(track =>
+              refresh.pending.has(trackQueueKey(track)),
+            ),
+          );
+        }
+        for (const [targetKey, prepared] of refresh.ready) {
+          if (!isCurrent()) return;
+          const committed = await serialCommit(async () => {
+            if (!isCurrent() || interruptionQueue.current !== refresh)
+              return false;
+            const native = await nativePlayer.getState();
+            if (!isCurrent() || !native.playing || native.mediaId !== key)
+              return false;
+            if (
+              targetKey === key ||
+              !logicalQueueRef.current.some(
+                item => trackQueueKey(item) === targetKey,
+              )
+            ) {
+              refresh.pending.delete(targetKey);
+              refresh.ready.delete(targetKey);
+              return true;
+            }
+            const index = queueRef.current.findIndex(
+              item => trackQueueKey(item) === targetKey,
+            );
+            const changed =
+              index >= 0 &&
+              queueRef.current[index]!.playUrl !== prepared.playUrl;
+            if (
+              changed &&
+              !(await nativePlayer.refreshPreparedQueueItem(
+                key,
+                index,
+                prepared,
+              ))
+            )
+              return false;
+            queueRef.current = queueRef.current.map(item =>
+              trackQueueKey(item) === targetKey ? prepared : item,
+            );
+            if (index >= 0)
+              preparedNeighbourContexts.current.set(targetKey, context);
+            refresh.pending.delete(targetKey);
+            refresh.ready.delete(targetKey);
+            preparationOwner.reset();
+            synchronize(prepared);
+            console.info(
+              '[player-interruption-queue]',
+              JSON.stringify({
+                current: key,
+                target: targetKey,
+                changed,
+                remaining: refresh.pending.size,
+                cached: true,
+              }),
+            );
+            return true;
+          });
+          if (!committed) return;
+        }
+      }
+      if (!nativeForwardEnabled || !isCurrent()) return;
       const logicalIndex = logicalQueueRef.current.findIndex(
         item => trackQueueKey(item) === key,
       );
@@ -5938,6 +6358,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     playerPreparationReadyKey,
     queue,
     queueOrderVersion,
+    interruptionRefreshVersion,
     state?.settings.quality,
     state?.settings.wifiQuality,
     state?.settings.shuffle,
@@ -5945,6 +6366,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     wifiConnected,
     sourceHealthRevision,
     preparationCacheToken,
+    enqueueUrlPrewarm,
     prepareTrack,
     playbackSourcesFor,
     restoreLogicalTailContinuation,

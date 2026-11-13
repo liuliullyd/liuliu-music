@@ -44,10 +44,7 @@ import {
   filterPlayableCandidates,
   isCatalogTrackEligible,
   rejectCatalogShortTrack,
-  requiresQishuiCompleteness,
   throwIfRuntimeTrackBlocked,
-  validateQishuiAudioCompleteness,
-  type AudioProbeResult,
 } from './trackPlaybackPolicy';
 export type { PlaybackTimingObserver } from './sourceRuntime';
 export type OnlineMediaType = 'music';
@@ -1712,30 +1709,7 @@ export async function resolvePlaybackWithQuality(
   cachedUrlOnly = false,
 ) {
   const prewarmed = track.metadata?._prewarmedUrl === true;
-  const remoteQishui =
-    requiresQishuiCompleteness(track) &&
-    /^https?:\/\//i.test(track.playUrl ?? '');
-  let reusableUrl = true;
-  if (remoteQishui) {
-    const audio = track.metadata?._playbackAudio as
-      | AudioProbeResult
-      | undefined;
-    reusableUrl = Boolean(audio && audio.resolvedUrl === track.playUrl);
-    if (reusableUrl && audio) {
-      try {
-        validateQishuiAudioCompleteness(track, audio);
-      } catch {
-        reusableUrl = false;
-      }
-    }
-  }
-  if (
-    track.playUrl &&
-    !refreshExpiredUrl &&
-    !prewarmed &&
-    !cachedUrlOnly &&
-    reusableUrl
-  )
+  if (track.playUrl && !refreshExpiredUrl && !prewarmed && !cachedUrlOnly)
     return {
       url: track.playUrl,
       quality:
@@ -1747,9 +1721,7 @@ export async function resolvePlaybackWithQuality(
       audio: track.metadata?._playbackAudio,
     };
   const input =
-    refreshExpiredUrl || prewarmed || remoteQishui
-      ? { ...track, playUrl: undefined }
-      : track;
+    refreshExpiredUrl || prewarmed ? { ...track, playUrl: undefined } : track;
   if (sources.some(source => source.enabled && source.script)) {
     const resolved = await resolveWithImportedSource(
       input,

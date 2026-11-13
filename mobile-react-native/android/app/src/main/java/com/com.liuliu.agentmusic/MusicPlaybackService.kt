@@ -33,6 +33,44 @@ import androidx.media3.session.DefaultMediaNotificationProvider
 import java.util.concurrent.atomic.AtomicLong
 import org.json.JSONArray
 
+internal class PlaybackInterruption {
+  data class Snapshot(val mediaId: String, val uri: String, val positionMs: Long)
+  private var playIntent = false
+  private var pending: Snapshot? = null
+
+  fun playWhenReadyChanged(ready: Boolean, reason: Int, mediaId: String?, uri: String?, positionMs: Long) {
+    if (!ready) {
+      if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS ||
+        reason == Player.PLAY_WHEN_READY_CHANGE_REASON_SUPPRESSED_TOO_LONG) {
+        capture(mediaId, uri, positionMs)
+      } else cancel()
+    }
+    playIntent = ready
+  }
+
+  fun suppressed(reason: Int, mediaId: String?, uri: String?, positionMs: Long) {
+    if (reason == Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS)
+      capture(mediaId, uri, positionMs)
+  }
+
+  private fun capture(mediaId: String?, uri: String?, positionMs: Long) {
+    if (playIntent && mediaId != null && uri != null && pending == null)
+      pending = Snapshot(mediaId, uri, positionMs.coerceAtLeast(0))
+  }
+
+  fun mediaChanged(mediaId: String?, uri: String?) {
+    if (pending?.mediaId != mediaId || pending?.uri != uri) cancel()
+  }
+
+  fun cancel() { pending = null }
+
+  fun take(mediaId: String?, uri: String?): Snapshot? {
+    val snapshot = pending
+    pending = null
+    return snapshot?.takeIf { it.mediaId == mediaId && it.uri == uri }
+  }
+}
+
 class MusicPlaybackService : MediaLibraryService() {
   private var session: MediaLibrarySession? = null
   private var mediaNotificationController: MediaNotificationController? = null
@@ -59,8 +97,11 @@ class MusicPlaybackService : MediaLibraryService() {
     var resume: Boolean, var status: String = "pending", var nativeFallback: Boolean = true,
   )
   private var urlRecovery: UrlRecovery? = null
+  private val interruption = PlaybackInterruption()
+  private var released = false
 
   companion object {
+    internal val taskLifecycle = PlaybackTaskLifecycle()
     private var active: MusicPlaybackService? = null
     fun isNotificationPlaybackActive(): Boolean = active?.player?.isPlaying == true
     fun refreshMediaNotification() { active?.mediaNotificationController?.refresh() }
@@ -68,7 +109,29 @@ class MusicPlaybackService : MediaLibraryService() {
     internal fun recovery(mediaId: String?): UrlRecovery? = active?.let { service ->
       service.urlRecovery?.takeIf { it.mediaId == mediaId && service.player.currentMediaItem?.mediaId == mediaId }
     }
-    fun cancelUrlRecovery() { active?.let { it.urlRecovery = null; it.expiredFailures = 0 } }
+    fun cancelUrlRecovery() { active?.let {
+      // Explicit transport changes invalidate both pending forms of playback recovery.
+      it.urlRecovery = null
+      it.expiredFailures = 0
+      it.interruption.cancel()
+    } }
+    fun cancelInterruptedPlayback() { active?.interruption?.cancel() }
+    fun resumeInterruptedPlayback(mediaId: String): Boolean {
+      val service = active ?: return false
+      val player = service.player
+      if (player.currentMediaItem?.mediaId != mediaId) return false
+      val snapshot = service.interruption.take(mediaId, player.currentMediaItem?.localConfiguration?.uri?.toString()) ?: return false
+      if (!player.isPlaying) {
+        if (!resumeExpiredUrl()) {
+          if (kotlin.math.abs(player.currentPosition - snapshot.positionMs) > 1000)
+            player.seekTo(snapshot.positionMs)
+          if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) player.prepare()
+          player.play()
+        }
+      }
+      Log.i("LiuliuPlayerDiagnostics", "interruption-resume positionMs=${snapshot.positionMs} playing=${player.isPlaying} state=${player.playbackState}")
+      return true
+    }
     fun resumeExpiredUrl(): Boolean = active?.let { service ->
       if (service.urlRecovery?.status == "pending") {
         service.urlRecovery?.resume = true
@@ -101,12 +164,17 @@ class MusicPlaybackService : MediaLibraryService() {
       service.fallbackAfterError(recovery.resume && nativeFallback && service.expiredFailures++ < 6)
     }
     private fun isExpiredUrl(error: Throwable?): Boolean {
+      // Signed CDN URLs may be denied or removed instead of returning Gone.
+      // Recovery keeps the existing single-resolution limit and audio admission checks.
+      return when (httpResponseCode(error)) { 401, 403, 404, 410 -> true; else -> false }
+    }
+    private fun httpResponseCode(error: Throwable?): Int? {
       var cause = error
       repeat(12) {
-        if (cause is HttpDataSource.InvalidResponseCodeException && cause.responseCode == 410) return true
-        cause = cause?.cause ?: return false
+        if (cause is HttpDataSource.InvalidResponseCodeException) return cause.responseCode
+        cause = cause?.cause ?: return null
       }
-      return false
+      return null
     }
     fun setNormalization(enabled: Boolean) { active?.applyNormalization(enabled) }
     val audioEffectWarning: String? get() = active?.tuningProcessor?.warning
@@ -131,6 +199,7 @@ class MusicPlaybackService : MediaLibraryService() {
 
   override fun onCreate() {
     super.onCreate()
+    if (!taskLifecycle.allowed) { stopSelf(); return }
     active = this
     setMediaNotificationProvider(DefaultMediaNotificationProvider(this).apply {
       setSmallIcon(R.drawable.ic_notification_music)
@@ -171,6 +240,7 @@ class MusicPlaybackService : MediaLibraryService() {
       addListener(object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
           if (mediaItem?.mediaId != urlRecovery?.mediaId) urlRecovery = null
+          interruption.mediaChanged(mediaItem?.mediaId, mediaItem?.localConfiguration?.uri?.toString())
           failures = 0
           if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO &&
             !getSharedPreferences("liuliu_player", MODE_PRIVATE).getBoolean("auto_next", true)) {
@@ -178,7 +248,8 @@ class MusicPlaybackService : MediaLibraryService() {
           }
         }
         override fun onPlayerError(error: PlaybackException) {
-          Log.w("LiuliuPlayerDiagnostics", "service-player-error code=${error.errorCode} type=${error.javaClass.simpleName} causeType=${error.cause?.javaClass?.simpleName} state=$playbackState playing=$isPlaying index=$currentMediaItemIndex")
+          if (released) return
+          Log.w("LiuliuPlayerDiagnostics", "service-player-error code=${error.errorCode} http=${httpResponseCode(error) ?: 0} type=${error.javaClass.simpleName} causeType=${error.cause?.javaClass?.simpleName} state=$playbackState playing=$isPlaying playWhenReady=$playWhenReady suppression=$playbackSuppressionReason index=$currentMediaItemIndex")
           val recovery = urlRecovery
           if (recovery != null && recovery.mediaId == currentMediaItem?.mediaId && recovery.status == "retrying") {
             recovery.status = "failed"
@@ -192,9 +263,18 @@ class MusicPlaybackService : MediaLibraryService() {
         }
         override fun onVolumeChanged(volume: Float) { updateEffectVolume() }
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+          if (reason == Player.DISCONTINUITY_REASON_SEEK) interruption.cancel()
         }
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+          Log.i("LiuliuPlayerDiagnostics", "service-play-intent ready=$playWhenReady reason=$reason state=$playbackState suppression=$playbackSuppressionReason")
+          interruption.playWhenReadyChanged(playWhenReady, reason, currentMediaItem?.mediaId,
+            currentMediaItem?.localConfiguration?.uri?.toString(), currentPosition)
           if (!playWhenReady && urlRecovery?.status != "failed") urlRecovery = null
+        }
+        override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
+          Log.i("LiuliuPlayerDiagnostics", "service-suppression reason=$playbackSuppressionReason playWhenReady=$playWhenReady state=$playbackState")
+          interruption.suppressed(playbackSuppressionReason, currentMediaItem?.mediaId,
+            currentMediaItem?.localConfiguration?.uri?.toString(), currentPosition)
         }
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
           applyNormalization(
@@ -229,19 +309,34 @@ class MusicPlaybackService : MediaLibraryService() {
     Log.i("LiuliuPlayerDiagnostics", "service-created")
   }
 
-  override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
+  override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
+    session?.takeIf { taskLifecycle.allowed && !released }
+
+  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    if (!taskLifecycle.allowed || released) { stopSelf(); return START_NOT_STICKY }
+    return super.onStartCommand(intent, flags, startId)
+  }
   private fun captureExpiredUrl(resume: Boolean) {
+    if (released) return
     val mediaId = player.currentMediaItem?.mediaId ?: return
     urlRecovery = UrlRecovery(recoverySequence.incrementAndGet().toString(), mediaId,
       player.currentPosition.coerceAtLeast(0), resume)
     Log.i("LiuliuPlayerDiagnostics", "expired-url-pending token=${urlRecovery?.token} positionMs=${player.currentPosition} resume=$resume")
   }
   private fun fallbackAfterError(allowAdvance: Boolean) {
+    if (released) return
     if (allowAdvance && player.hasNextMediaItem() && failures++ < 6) {
       player.stop(); player.seekToNextMediaItem(); player.prepare(); player.play()
     } else player.pause()
   }
-  override fun onTaskRemoved(rootIntent: Intent?) { DesktopLyricsOverlay.closeForExit(); if (session?.player?.isPlaying != true) stopSelf() }
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    Log.i("LiuliuPlayerDiagnostics", "task-removed")
+    taskLifecycle.removeTask()
+    DesktopLyricsOverlay.closeForExit()
+    releasePlayback()
+    stopForeground(STOP_FOREGROUND_REMOVE)
+    stopSelf()
+  }
   private fun applyAudioFocus(enabled: Boolean) {
     requestedAudioFocus = enabled
     player.setAudioAttributes(
@@ -377,23 +472,43 @@ class MusicPlaybackService : MediaLibraryService() {
     val attenuation=systemDb+20*kotlin.math.log10(appGain.coerceAtLeast(.00001))
     tuningProcessor.updateLoudnessVolume(attenuation,muted)
   }
-  override fun onDestroy() {
+  private fun releasePlayback() {
+    if (released) return
+    released = true
+    urlRecovery = null
+    expiredFailures = 0
+    interruption.cancel()
+    if (::player.isInitialized) {
+      Log.i("LiuliuPlayerDiagnostics", "service-release state=${player.playbackState} playing=${player.isPlaying} index=${player.currentMediaItemIndex}")
+      player.pause()
+    }
+    // Detach metadata observers while their delegated timeline is still valid.
+    // Bluetooth shutdown can synchronously request another notification refresh.
+    mediaNotificationController?.close()
+    mediaNotificationController = null
+    session?.release()
+    session = null
+    if (active === this) active = null
+    if (::player.isInitialized) {
+      player.stop()
+      player.clearMediaItems()
+    }
     CarConnections.close()
     CarConnectionState.player = null
     stopLibraryChanges?.invoke()
     stopLibraryChanges = null
-    mediaNotificationController?.close()
-    mediaNotificationController = null
     effectVolumeHandler.removeCallbacks(effectVolumeMonitor)
     DesktopLyricsOverlay.detach()
-    Log.i("LiuliuPlayerDiagnostics", "service-destroyed state=${player.playbackState} playing=${player.isPlaying} index=${player.currentMediaItemIndex}")
     normalizer?.release()
     normalizer = null
     equalizer?.release()
     equalizer = null
-    active = null
-    session?.run { player.release(); release() }
-    session = null
+    if (::player.isInitialized) player.release()
+    Log.i("LiuliuPlayerDiagnostics", "service-released")
+  }
+
+  override fun onDestroy() {
+    releasePlayback()
     super.onDestroy()
   }
 }

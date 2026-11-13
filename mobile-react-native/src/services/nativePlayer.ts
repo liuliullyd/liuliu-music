@@ -14,13 +14,23 @@ const module = NativeModules.LiuliuPlayer as
         position: number,
       ) => Promise<void>;
       play: () => Promise<void>;
+      resumeInterruptedPlayback?: (mediaId: string) => Promise<boolean>;
       pause: () => Promise<void>;
       stop: () => Promise<void>;
       playIndex: (index: number, position: number) => Promise<void>;
       appendQueue: (tracks: object[]) => Promise<void>;
       replaceQueueItem: (index: number, track: object) => Promise<void>;
+      refreshPreparedQueueItem?: (
+        currentId: string,
+        index: number,
+        track: object,
+      ) => Promise<boolean>;
       removeQueueItem: (index: number) => Promise<void>;
-      removePreparedQueueItem?: (currentId: string, targetId: string, index: number) => Promise<boolean>;
+      removePreparedQueueItem?: (
+        currentId: string,
+        targetId: string,
+        index: number,
+      ) => Promise<boolean>;
       reorderQueue: (currentId: string, mediaIds: string[]) => Promise<void>;
       insertQueueAroundCurrent: (
         currentId: string,
@@ -54,7 +64,10 @@ const module = NativeModules.LiuliuPlayer as
       setNormalize: (enabled: boolean) => Promise<void>;
       setAudioFocus: (enabled: boolean) => Promise<void>;
       setEqualizer: (preset: string) => Promise<void>;
-      setCustomEqualizer: (gains: number[], configuration: AudioEffectConfiguration) => Promise<void>;
+      setCustomEqualizer: (
+        gains: number[],
+        configuration: AudioEffectConfiguration,
+      ) => Promise<void>;
       getState: () => Promise<NativePlayerState>;
       setSleepTimer: (mode: string, minutes: number) => Promise<void>;
       cancelSleepTimer: () => Promise<void>;
@@ -106,6 +119,9 @@ export const nativePlayer = {
     if (module) await module.play();
     else fallback.playing = true;
   },
+  async resumeInterruptedPlayback(mediaId: string) {
+    return (await module?.resumeInterruptedPlayback?.(mediaId)) === true;
+  },
   async pause() {
     if (module) await module.pause();
     else fallback.playing = false;
@@ -147,6 +163,24 @@ export const nativePlayer = {
       playbackPreference: track.metadata?._playbackPreference ?? '',
     });
   },
+  async refreshPreparedQueueItem(
+    currentId: string,
+    index: number,
+    track: Track & { playUrl: string },
+  ) {
+    return (
+      (await module?.refreshPreparedQueueItem?.(currentId, index, {
+        id: track.id,
+        mediaId: trackQueueKey(track),
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+        url: track.playUrl,
+        artwork: track.cover ?? '',
+        playbackPreference: track.metadata?._playbackPreference ?? '',
+      })) === true
+    );
+  },
   async reorderQueue(currentId: string, mediaIds: string[]) {
     if (module) await module.reorderQueue(currentId, mediaIds);
   },
@@ -155,9 +189,16 @@ export const nativePlayer = {
     else if (fallback.index > index)
       fallback = { ...fallback, index: fallback.index - 1 };
   },
-  async removePreparedQueueItem(currentId: string, targetId: string, index: number) {
+  async removePreparedQueueItem(
+    currentId: string,
+    targetId: string,
+    index: number,
+  ) {
     if (!module?.removePreparedQueueItem) return false;
-    return await module.removePreparedQueueItem(currentId, targetId, index) === true;
+    return (
+      (await module.removePreparedQueueItem(currentId, targetId, index)) ===
+      true
+    );
   },
   async insertQueueAroundCurrent(
     currentId: string,
@@ -277,10 +318,17 @@ export const nativePlayer = {
   async setAudioFocus(enabled: boolean) {
     if (module) await module.setAudioFocus(enabled);
   },
-  async setEqualizer(preset: string, gains?: number[], configuration?: AudioEffectConfiguration) {
+  async setEqualizer(
+    preset: string,
+    gains?: number[],
+    configuration?: AudioEffectConfiguration,
+  ) {
     if (!module) return;
     if (preset === 'Custom')
-      await module.setCustomEqualizer(gains ?? Array(10).fill(0), configuration ?? AudioEffectStateManager.configuration());
+      await module.setCustomEqualizer(
+        gains ?? Array(10).fill(0),
+        configuration ?? AudioEffectStateManager.configuration(),
+      );
     else await module.setEqualizer(preset);
   },
   async getState() {

@@ -14,6 +14,7 @@ class MainActivity : ReactActivity() {
   private var initialDraw: ViewTreeObserver.OnPreDrawListener? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    MusicPlaybackService.taskLifecycle.openActivity()
     setTheme(R.style.AppTheme)
     super.onCreate(savedInstanceState)
     val decor = window.decorView
@@ -28,6 +29,11 @@ class MainActivity : ReactActivity() {
     }
     initialDraw = listener
     decor.viewTreeObserver.addOnPreDrawListener(listener)
+  }
+
+  override fun onStart() {
+    MusicPlaybackService.taskLifecycle.openActivity()
+    super.onStart()
   }
 
   private fun hasReadyStartupSplash(view: View): Boolean {

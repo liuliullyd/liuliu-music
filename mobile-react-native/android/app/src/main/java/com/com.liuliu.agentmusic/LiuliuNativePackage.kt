@@ -9,5 +9,5 @@ class LiuliuNativePackage : ReactPackage {
   override fun createNativeModules(context: ReactApplicationContext): List<NativeModule> =
     listOf(LiuliuCarConnectionModule(context), LiuliuPlayerModule(context), LiuliuStorageModule(context), LiuliuCoverModule(context), LiuliuNetworkModule(context), LiuliuDesktopLyricsModule(context), LiuliuMediaLibraryModule(context))
 
-  override fun createViewManagers(context: ReactApplicationContext): List<ViewManager<*, *>> = emptyList()
+  override fun createViewManagers(context: ReactApplicationContext): List<ViewManager<*, *>> = listOf(PlayerPageMotionManager())
 }
