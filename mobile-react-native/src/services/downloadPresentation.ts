@@ -114,29 +114,24 @@ export function downloadRecordRows(
     relevant.map(item => downloadTrackKey(item.track)),
   );
   return [
-    ...relevant
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .map(item => {
-        const saved = entries.find(
-          entry =>
-            downloadTrackKey(entry.track) === downloadTrackKey(item.track),
-        );
-        return item.phase === 'downloaded' && saved
-          ? saved
-          : {
-              id: item.token ?? item.id,
-              track: item.track,
-              status:
-                item.phase === 'failed'
-                  ? ('failed' as const)
-                  : ('queued' as const),
-              createdAt: item.createdAt,
-              fileSize: item.fileSize,
-              quality: item.quality,
-            };
-      }),
+    ...relevant.map<DownloadEntry>(item => {
+      const saved = entries.find(
+        entry =>
+          downloadTrackKey(entry.track) === downloadTrackKey(item.track),
+      );
+      return item.phase === 'downloaded' && saved
+        ? saved
+        : {
+            id: item.token ?? item.id,
+            track: item.track,
+            status: item.phase === 'failed' ? 'failed' : 'queued',
+            createdAt: item.createdAt,
+            fileSize: item.fileSize,
+            quality: item.quality,
+          };
+    }),
     ...entries.filter(
       entry => !activityKeys.has(downloadTrackKey(entry.track)),
     ),
-  ];
+  ].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
 }

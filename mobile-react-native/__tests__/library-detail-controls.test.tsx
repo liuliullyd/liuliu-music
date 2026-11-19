@@ -3,6 +3,7 @@ import { Image, ScrollView, StyleSheet } from 'react-native';
 import Renderer, { act } from 'react-test-renderer';
 import { LibraryScreen } from '../src/screens/LibraryScreen';
 import { LibraryPlaylistActions } from '../src/components/LibraryPlaylistActions';
+import { LibraryMusicTrackRow } from '../src/components/LibraryMusicTrackRow';
 import {
   PlaylistInformationGradient,
   PlaylistInformationSurface,
@@ -97,6 +98,44 @@ const style = (node: Renderer.ReactTestInstance) =>
   StyleSheet.flatten(node.props.style);
 
 test.each(['favorites', 'downloads', 'local'])(
+  '%s shows the newest records first in both the preview and More',
+  async page => {
+    mockApp.page = 'root';
+    mockApp.state.downloads = tracks.map((track, index) => ({
+      id: track.id,
+      track,
+      status: 'downloaded',
+      createdAt: index + 1,
+    }));
+    const view = await render();
+    const rows = () =>
+      view.root.findAllByType(LibraryMusicTrackRow).map(node => node.props.track.id);
+
+    try {
+      await act(async () =>
+        view.root.findByProps({ testID: `library-summary-${page}` }).props.onPress(),
+      );
+      expect(rows()).toEqual(['two', 'one']);
+      await act(async () =>
+        view.root.findByProps({ testID: 'library-music-more' }).props.onPress(),
+      );
+      expect(mockApp.open).toHaveBeenCalledWith(page);
+    } finally {
+      await act(async () => view.unmount());
+    }
+
+    mockApp.page = page;
+    const more = await render();
+    try {
+      expect(more.root.findAllByType(LibraryMusicTrackRow).map(node => node.props.track.id))
+        .toEqual(['two', 'one']);
+    } finally {
+      await act(async () => more.unmount());
+    }
+  },
+);
+
+test.each(['favorites', 'downloads', 'local'])(
   '%s title has no repeated bottom fade',
   async page => {
     mockApp.page = page;
@@ -170,11 +209,11 @@ test('local controls fit the design canvas in two complete sticky rows and prese
     await act(async () => buttons[0]!.props.onPress());
     expect(
       mockApp.toggleFavorite.mock.calls.map((call: any[]) => call[0]),
-    ).toEqual(tracks);
+    ).toEqual(tracks.slice().reverse());
     await act(async () => buttons[2]!.props.onPress());
     expect(mockApp.playTrack).toHaveBeenCalledWith(
-      tracks[0],
-      tracks,
+      tracks[1],
+      tracks.slice().reverse(),
       0,
       expect.objectContaining({ bulkPlay: true }),
     );

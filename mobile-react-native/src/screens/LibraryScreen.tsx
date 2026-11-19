@@ -105,6 +105,14 @@ const modeInfo: Record<
 };
 const findKnownTrack = (tracks: Track[], id: string, kind: LibraryMode) =>
   tracks.find(track => track.id === id && trackMediaKind(track) === kind);
+function newestFavoriteTracks(favoriteIds: string[], knownTracks: Track[]) {
+  return favoriteIds
+    .slice()
+    .reverse()
+    .map(id => findKnownTrack(knownTracks, id, 'music'))
+    .filter((track): track is Track => Boolean(track));
+}
+
 export function LibraryScreen({
   backgroundScrollY,
 }: {
@@ -194,20 +202,14 @@ export function LibraryScreen({
   const supported = new Set<string>([]);
   const allowed = (item: Track | CatalogItem) => true;
   const knownTracks = collectKnownTracks(app.state, app.current);
-  const favoriteTracks = [
-    ...app.state.favorites
-      .map(id => findKnownTrack(knownTracks, id, 'music'))
-      .filter(Boolean),
-  ] as Track[];
-  const modeTracks = favoriteTracks.filter(track => allowed(track));
+  const modeTracks = newestFavoriteTracks(app.state.favorites, knownTracks);
   const modeHistory = mediaHistory(app.state, mode).filter(entry =>
     allowed(entry.track),
   );
-  const modeDownloads = mediaDownloads(app.state, mode).filter(entry =>
-    allowed(entry.track),
-  );
-  const modeCollections = app.state.savedCollections.filter(item =>
-    allowed(item),
+  const modeDownloads = downloadRecordRows(
+    mediaDownloads(app.state, mode),
+    [],
+    mode,
   );
   const openCollection = (item: CatalogItem, resume = false) => {
     selectDetailItem(item, true, resume);
@@ -289,12 +291,12 @@ export function LibraryScreen({
     ['downloads', '', '下载记录', `${modeDownloads.length} 首`],
     ['local', '', '本地音乐', `${app.state.localTracks.length} 首`],
   ];
-  const mediaLocal = app.state.localTracks;
+  const mediaLocal = app.state.localTracks.slice().reverse();
   const recentMusic = [
     ...new Map(
       [
         ...modeHistory.map(item => item.track),
-        ...app.state.localTracks.slice().reverse(),
+        ...mediaLocal,
         ...app.state.downloads.map(item => item.track),
       ]
         .filter(track => true)
@@ -308,7 +310,7 @@ export function LibraryScreen({
       ? modeTracks
       : musicList === 'downloads'
       ? modeDownloads.map(item => item.track)
-      : app.state.localTracks;
+      : mediaLocal;
   const musicTitle = summary.find(item => item[0] === selectedList)?.[2] ?? '';
   const openBrowse = () => {
     app.open('library-browse');
@@ -898,16 +900,15 @@ function LibraryList({
   const supported = new Set<string>([]);
   const allowed = (item: Track | CatalogItem) => true;
   const knownTracks = collectKnownTracks(app.state, app.current);
-  const favoriteTracks = [
-    ...app.state.favorites
-      .map(id => findKnownTrack(knownTracks, id, 'music'))
-      .filter(Boolean),
-  ] as Track[];
-  const tracks = favoriteTracks.filter(track => allowed(track));
-  const savedCollections = app.state.savedCollections.filter(item =>
-    allowed(item),
+  const tracks = newestFavoriteTracks(app.state.favorites, knownTracks);
+  const collectionsByKey = new Map(
+    app.state.savedCollections.map(item => [collectionFavoriteKey(item), item]),
   );
-  const favoriteKeys = app.state.favoriteCollections;
+  const savedCollections = app.state.favoriteCollections
+    .slice()
+    .reverse()
+    .map(key => collectionsByKey.get(key))
+    .filter((item): item is CatalogItem => Boolean(item));
   const history = mediaHistory(app.state, mode).filter(entry =>
     allowed(entry.track),
   );
@@ -989,7 +990,6 @@ function LibraryList({
       ? []
       : baseTracks;
   const collections = savedCollections.filter(item => {
-    if (!favoriteKeys.includes(collectionFavoriteKey(item))) return false;
     const type = collectionEntityKind(item);
     return filter === 'artist'
       ? type === 'artist'
@@ -1431,7 +1431,7 @@ function LocalMusic() {
   const app = useApp();
   const layout = useLayout();
   const theme = useTheme();
-  const tracks = app.state.localTracks;
+  const tracks = app.state.localTracks.slice().reverse();
   const pagination = useLibraryRecordPages('local:music', tracks.length);
   const [detailColor, setDetailColor] = useState(theme.bg);
   const scrollGradient = usePlaylistDetailScrollGradient(
@@ -1499,7 +1499,9 @@ function LocalMusic() {
               onAddLocal={() =>
                 app.addLocalMusicDirectory().catch(() => undefined)
               }
-              onDeleteAllLocal={() => setDeleteAllTracks([...tracks])}
+              onDeleteAllLocal={() =>
+                setDeleteAllTracks([...app.state.localTracks])
+              }
               deleteAllDisabled={!tracks.length}
               sticky
             />
