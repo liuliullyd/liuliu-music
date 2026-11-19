@@ -9,6 +9,7 @@ import type {
 import { trackQueueKey } from '../domain/types';
 import { constituentArtists, isOrdinaryTrack } from './liveDiscovery';
 import { searchOnlinePlaylists } from './onlineMusic';
+import { newSongChart } from './onlineCatalog';
 import { loadCollectionTrackBatch } from './collectionPaging';
 import { CatalogRequestBudget } from './catalogRequestBudget';
 import {
@@ -38,6 +39,8 @@ import { MenuAlbumRequestQueue, menuTrackReleaseYear, normalizeMenuTrackMetadata
 import { compatibleMenuProgress, menuQueryProgressKey } from './homeMenuProgress';
 import { isMusicOnlyRecommendationTrack, isRecommendationMusicCollection, recommendationRecordingPenalty } from './recommendationContentPolicy';
 export { HOME_MENU_SCENES, HOME_MENU_SCENE_RULES } from './homeMenuScenes';
+
+const MEMORY_RECENT_SHARE = 0.2;
 
 export interface HomeMenuChoice {
   id: string;
@@ -483,12 +486,29 @@ async function loadSceneCollectionCandidates(
 ) {
   const scene = HOME_MENU_RULES[choice.id]!.scene;
   const exploring=choice.id==='mode-explore';
+  const remembering = choice.id === 'mode-memory';
   const candidates = sharedCandidates ?? cursor.candidates.filter(
     item => !seen.has(menuSongKey(item.track)) && !cursor.recentTrackKeys?.includes(trackQueueKey(item.track)),
   );
   cursor.candidates = candidates;
   const collections = cursor.collections ?? [];
   const seenCollections = new Set(cursor.seenCollections ?? []);
+  const selectedCount = modeSelection?.preference.count ?? 0;
+  const recentCount = modeSelection?.recent ?? 0;
+  const target = selectedCount + limit;
+  const recentTarget = Math.floor(target * MEMORY_RECENT_SHARE + 1e-9);
+  const needsRecent = remembering && recentCount < recentTarget;
+  const needsRecentOnly = needsRecent && selectedCount - recentCount >= target - recentTarget;
+  let recentChart = collections.find(collection => collection.item.kind === 'charts');
+  if (needsRecentOnly && !recentChart) {
+    // The preference catalog has filled all its older-song slots. Keep it
+    // running and also check the platform's new songs for the remaining slots.
+    const id = newSongChart(platform.id);
+    const position = cursor.collectionPositions?.[id];
+    recentChart = { item: { id, provider: platform.id, kind: 'charts', title: '新歌榜', description: '' },
+      offset: position?.offset ?? 0, hasMore: position?.hasMore ?? true };
+    collections.push(recentChart);
+  }
   const hasEligibleCandidates = () => candidates.some(item =>
     isOrdinaryTrack(item.track) && matchesChoice(item.track, choice, item.query, item.collection) &&
     !menuDiversityArtists(item.track, choice).some(artist => excludedArtists.has(artist)),
@@ -530,17 +550,18 @@ async function loadSceneCollectionCandidates(
     detailRequests += 1;
     detailBudget.remaining -= 1;
     const startedAt = Date.now();
+    const kind = collection.item.kind === 'charts' ? 'charts' : 'playlists';
     const work = (async () => {
       try {
         const request = loadCollectionTrackBatch(
-          platform.id, 'playlists', collection.item.id, collection.offset,
+          platform.id, kind, collection.item.id, collection.offset,
           HOME_MENU_BATCH_SIZE, collection.item.metadata, enabled,
           requestContext, true,
         );
         let result = await (requestContext ? requestContext.wait(request) : request);
         if (!result.tracks.length) {
           requestContext?.assertActive();
-          const retry = loadCollectionTrackBatch(platform.id,'playlists',collection.item.id,collection.offset,
+          const retry = loadCollectionTrackBatch(platform.id,kind,collection.item.id,collection.offset,
             HOME_MENU_BATCH_SIZE,collection.item.metadata,enabled,requestContext,true);
           result = await (requestContext ? requestContext.wait(retry) : retry);
         }
@@ -567,7 +588,6 @@ async function loadSceneCollectionCandidates(
             }
           }
         };
-        const remembering = choice.id === 'mode-memory';
         // An early memory batch leaves this member page at the same offset.
         // Published songs and buffered candidates have already been prepared;
         // only its unconsumed rows need album work on continuation.
@@ -657,6 +677,14 @@ async function loadSceneCollectionCandidates(
   };
   const orderedCollections = (items: typeof collections) => {
     const ordered = random ? shuffleHomeMenuSceneValues(items, random) : [...items];
+    if (needsRecent && modeSelection) {
+      const year = new Date(modeSelection.now).getUTCFullYear();
+      const currentYear = new RegExp(`(^|\\D)${year}(\\D|$)`);
+      // A playlist title only prioritizes recall. Each song still needs its
+      // own verified date before it counts toward the recent quota.
+      return ordered.sort((a, b) =>
+        Number(currentYear.test(b.item.title)) - Number(currentYear.test(a.item.title)) || a.offset - b.offset);
+    }
     // A single-artist playlist cannot supply a diverse mode batch by itself.
     // Give sibling playlists a turn before draining another page of the same
     // artists. Scene ordering and its separate artist rules stay unchanged.
@@ -670,6 +698,7 @@ async function loadSceneCollectionCandidates(
     for (const collection of orderedCollections(collections)) {
       if (enough() || detailRequests >= detailLimit || detailBudget.remaining<=0) break;
       if (!collection.hasMore) continue;
+      if (collection === recentChart && !needsRecentOnly) continue;
       await readCollection(collection);
     }
   };
@@ -709,6 +738,9 @@ async function loadSceneCollectionCandidates(
     }
   } else if (requestContext && scheduler) {
     const memoryPreparation: Promise<void>[] = [];
+    if (needsRecentOnly && recentChart?.hasMore) {
+      memoryPreparation.push(readCollection(recentChart).then(() => undefined));
+    }
     const modeRoutes = [...cursor.queries];
     const routes = prioritizePending(choice.kind === 'mode' ? modeRoutes : random
       ? shuffleHomeMenuSceneValues(cursor.queries, random)
@@ -918,7 +950,7 @@ function selectHomeMenuCandidates(choice: HomeMenuChoice, cursor: HomeMenuCursor
     !songs.has(menuSongKey(candidate.track)) &&
     !menuDiversityArtists(candidate.track,choice).some(artist=>artists.has(artist));
   const targetTotal = (selection?.preference.count ?? 0) + limit;
-  const targetRecent = Math.floor(targetTotal * 0.2 + 1e-9);
+  const targetRecent = Math.floor(targetTotal * MEMORY_RECENT_SHARE + 1e-9);
   const targetChinese = Math.floor(targetTotal * 0.1 + 1e-9);
   const availableForMode = (candidate: MenuCandidate) => {
     if (!selection) return true;
@@ -935,8 +967,8 @@ function selectHomeMenuCandidates(choice: HomeMenuChoice, cursor: HomeMenuCursor
   const modePriority = (candidate: MenuCandidate) => {
     if (!selection) return 0;
     if (choice.id === 'mode-memory') return isRecentRelease(candidate.track, selection.now)
-      ? (selection.preference.count + 1) * 0.2 - selection.recent
-      : (selection.preference.count + 1) * 0.8 - (selection.preference.count - selection.recent);
+      ? (selection.preference.count + 1) * MEMORY_RECENT_SHARE - selection.recent
+      : (selection.preference.count + 1) * (1 - MEMORY_RECENT_SHARE) - (selection.preference.count - selection.recent);
     if (choice.id === 'mode-explore') return exploreLanguage(candidate.track) === 'chinese'
       ? (selection.preference.count + 1) * 0.1 - selection.chinese
       : (selection.preference.count + 1) * 0.9 - (selection.preference.count - selection.chinese);

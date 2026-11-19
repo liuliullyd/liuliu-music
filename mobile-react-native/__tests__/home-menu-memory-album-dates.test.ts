@@ -229,6 +229,62 @@ test('memory can fill twenty distinct artists when year-prefixed new-song search
   }
 });
 
+test.each(['current-year playlist', 'new-song chart'])(
+  'memory fills the last two verified recent slots from the %s when stalled at eighteen', async source => {
+    const tracks = Array.from({ length: 20 }, (_, index) => song(index));
+    const profile: MusicProfile = {
+      artists: {}, languages: {}, genres: {}, moods: {}, timeSlots: {},
+      longTermTrackIds: [], shortTermTrackIds: [], sessionTrackIds: [],
+      memoryStatistics: { ...statisticsFromTracks(tracks), minimumListenedSeconds: 30 },
+    };
+    const platforms = [{ id: 'kuwo' as const, name: '酷我', enabled: true }];
+    const collection = (id: string, title: string) => ({
+      id, title, provider: 'kuwo' as const, kind: 'playlists' as const, description: '',
+    });
+    const read = jest.mocked(loadCollectionTrackBatch);
+    jest.mocked(searchOnlinePlaylists).mockResolvedValue({ items: [collection('first', '粤语流行')], errors: [] });
+    read.mockResolvedValue({ tracks: tracks.slice(0, 5), hasMore: false });
+    globalThis.fetch = jest.fn(async url => {
+      const index = Number(String(url).match(/albumid=(\d+)/)?.[1]) - 100;
+      return response(album(index, index === 4 || index >= 100 ? recent : '1990-04-01'));
+    });
+    const options = { signal: new AbortController().signal };
+    const first = await loadHomeMenuPage('mode-memory', platforms, profile, [], 5, undefined, options);
+    const previous = first.cursor;
+    previous.modeSelection!.preference.count = 18;
+    previous.modeSelection!.recent = 2;
+    const year = new Date(previous.modeSelection!.now).getUTCFullYear();
+    const query = `粤语 ${year}`;
+    const provider = previous.providers[0]!;
+    provider.candidates = [];
+    provider.queries = [{ query, page: 2, hasMore: false }];
+    provider.pendingSceneRoutes = [];
+    provider.collections = [
+      ...Array.from({ length: 40 }, (_, index) => ({
+        item: collection(`classic-${index}`, `粤语经典${index}`), query, offset: 0, hasMore: true,
+      })),
+      { item: collection('current-year', `粤语 ${year} 新歌`), query, offset: 20, hasMore: true },
+    ];
+    read.mockClear();
+    read.mockImplementation(async (_platform, kind, id) => ({
+      tracks: (source === 'new-song chart' ? kind === 'charts' : id === 'current-year')
+        ? [song(90), song(100), song(101)] : [song(90)],
+      hasMore: false,
+    }));
+
+    const next = await loadHomeMenuPage('mode-memory', platforms, profile, [], 2, previous, options);
+
+    if (source === 'current-year playlist') {
+      expect(read.mock.calls.find(([, kind]) => kind === 'playlists')?.slice(2, 4)).toEqual(['current-year', 20]);
+    } else {
+      expect(read.mock.calls.some(([, kind]) => kind === 'charts')).toBe(true);
+    }
+    expect(next.tracks).toHaveLength(2);
+    expect(next.tracks.every(track => isRecentRelease(track))).toBe(true);
+    expect(next.cursor.modeSelection?.preference.count).toBe(20);
+  },
+);
+
 test('memory reaches recent recall while generic preference collections are stalled', async () => {
   jest.useFakeTimers();
   const controller = new AbortController();
