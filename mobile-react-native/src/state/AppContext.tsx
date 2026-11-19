@@ -86,7 +86,9 @@ import {
 } from '../services/equalizer';
 import { EqualizerUpdates } from '../services/equalizerUpdates';
 import {
+  HOME_MENU_FIRST_BATCH_SIZE,
   loadHomeMenuFirstBatch,
+  loadHomeMenuPage,
   type HomeMenuCursor,
 } from '../services/homeMenuDiscovery';
 import {
@@ -3860,6 +3862,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         let releaseHealth = () => {};
         let healthChanged = Promise.resolve();
         const publishHealth = (health: PlatformHealthResult) => {
+          if (!sourceGenerationIsCurrent()) return;
           latestHealth = health;
           pendingWaits.delete(releaseHealth);
           releaseHealth();
@@ -3895,190 +3898,149 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           keepStageVisible(420),
         ]);
         if (!sourceGenerationIsCurrent()) return;
-        const startupProviders = platformHealth.first
-          ? [platformHealth.first]
-          : [];
+        const firstProvider = platformHealth.first;
         console.info(
           '[startup-health]',
           JSON.stringify({
-            healthy: startupProviders,
+            healthy: firstProvider ? [firstProvider] : [],
             failed: Object.entries(platformHealth.byProvider)
               .filter(([, status]) => status?.passed !== true)
               .map(([providerId]) => providerId),
           }),
         );
-        const provider = startupProviders[0] ?? null;
-        if (!provider) {
-          startupRetryAvailable.current =
-            launchState.settings.startupAutoplay &&
-            !startupAutoplayCancelled.current;
+        if (!firstProvider) {
+          startupRetryAvailable.current = launchState.settings.startupAutoplay && !startupAutoplayCancelled.current;
           setMessage('没有通过播放链路检测的平台，已跳过启动推荐');
           await reveal();
           return;
         }
-        if (
-          !launchState.settings.startupAutoplay ||
-          startupAutoplayCancelled.current
-        ) {
-          // With startup autoplay disabled there is no startup playback
-          // session. Keep the logical/native queues empty so Home has no mini
-          // player until the user explicitly selects a song.
+        if (!launchState.settings.startupAutoplay || startupAutoplayCancelled.current) {
           await reveal();
           return;
         }
-        if (homeRevealed && queueGeneration.current !== startupGeneration)
-          return;
-        if (!homeRevealed)
-          setStartup({
-            visible: true,
-            label: '正在生成默认模式推荐',
-            progress: 0.66,
-          });
-        console.info(
-          '[startup-sequence]',
-          JSON.stringify({
-            stage: 'mix-start',
-            providers: startupProviders.length,
-          }),
-        );
-        const mix = await loadHomeMenuFirstBatch(
-          'mode-default',
-          launchState.platforms
-            .filter((platform) => platform.id === provider)
-            .map((platform) => ({ ...platform, enabled: true })),
-          {
-            ...launchState.profile,
-            favoriteStatistics: favoriteStatisticsFor(launchState),
-          },
-          launchState.history,
-          {
-            signal: catalogAbort.signal,
-            progress: advanceExhaustedMenuRound(
-              menuProgressEntry(
-                launchState.menuRecommendationProgress,
-                'mode-default',
-                provider,
-              ),
-            ),
-          },
-        );
-        if (!sourceGenerationIsCurrent()) return;
-        if (startupAutoplayCancelled.current) {
-          await reveal();
-          return;
-        }
-        if (!mix.tracks[0]) throw new Error('默认模式没有可用歌曲');
-        rememberHomeMenuBatch(mix.cursor, mix.tracks);
-        releaseStartupPrewarm ??= urlPrewarmScheduler.current!.hold();
-        if (!homeRevealed)
-          setStartup({
-            visible: true,
-            label: '正在为您准备歌曲',
-            progress: 0.82,
-          });
-        const startupCandidates = mix.tracks.slice(0, QUEUE_BATCH_SIZE);
-        const startupSourceFor = (tracks: Track[]): QueueSource => ({
-          kind: 'home-menu',
-          startup: true,
-          cursor: mix.cursor,
-          hasMore: mix.hasMore,
-          seenKeys: tracks.map(trackQueueKey),
-          ...(mix.hasMore
-            ? {
-                initialMenuBatch: {
-                  remaining: QUEUE_BATCH_SIZE - tracks.length,
-                  artists: [
-                    ...new Set(
-                      tracks.flatMap((item) => constituentArtists(item.artist)),
-                    ),
-                  ],
-                },
-              }
-            : {}),
+        const selectionIsCurrent = () =>
+          sourceGenerationIsCurrent() &&
+          !startupAutoplayCancelled.current &&
+          queueGeneration.current === startupGeneration;
+        if (!selectionIsCurrent()) return;
+        if (!homeRevealed) setStartup({
+          visible: true,
+          label: '正在生成默认模式推荐',
+          progress: 0.66,
         });
-        let attemptedIndex = 0;
-        let resolvedFirst: Awaited<
-          ReturnType<typeof selectFirstResolvableTrack>
-        >;
-        try {
-          resolvedFirst = await selectFirstResolvableTrack(
-            startupCandidates,
-            async (track, signal) => {
-              attemptedIndex = startupCandidates.indexOf(track);
-              const triedSources = new Set<string>();
-              let lastError: unknown = new Error('本平台没有可用音源');
-              while (sourceGenerationIsCurrent()) {
-                const currentHealth = latestHealth ?? platformHealth;
-                const sources = startupRuntime.current
-                  .playbackSourcesFor(track)
-                  .filter(
-                    (source) =>
-                      source.healthy !== false && !triedSources.has(source.id),
-                  );
-                if (sources.length) {
-                  sources.forEach((source) => triedSources.add(source.id));
-                  try {
-                    const playUrl = await resolvePlaybackAddress(
-                      track,
-                      sources,
-                      playbackNetworkQuality(launchState.settings),
-                      signal,
-                      true,
-                    );
-                    return { ...track, playUrl };
-                  } catch (error) {
-                    if (signal.aborted) throw error;
-                    lastError = error;
-                    continue;
-                  }
-                }
-                if (
-                  currentHealth.completed !== false ||
-                  currentHealth.completedProviders?.includes(provider)
-                )
-                  throw lastError;
-                await healthChanged;
-              }
-              throw lastError;
-            },
-            { signal: catalogAbort.signal },
-          );
-        } catch (error) {
-          if (
-            isSourceRateLimited(error) &&
-            sourceGenerationIsCurrent() &&
-            !startupAutoplayCancelled.current &&
-            AppState.currentState === 'active' &&
-            queueGeneration.current === startupGeneration
-          ) {
-            // Keep this catalog selection available for an explicit retry.
-            // Publishing metadata admits no audio and starts no fallback loop.
-            const retryTracks = startupCandidates.slice(attemptedIndex);
-            setQueueSource(startupSourceFor(retryTracks));
-            publishPendingSelection(
-              retryTracks,
-              0,
-              startupRuntime.current.captureQueueOrigin('默认模式', {
-                tab: 'discovery',
-                page: 'root',
-                menuChoiceId: 'mode-default',
-              }),
-              0,
-              sanitizeStartupError(error),
-            );
+
+        const profile = { ...launchState.profile, favoriteStatistics: favoriteStatisticsFor(launchState) };
+        const openedProviders = new Set<typeof firstProvider>();
+        const continuationByProvider = new Map<typeof firstProvider, HomeMenuCursor>();
+        const triedTracks = new Set<string>();
+        let selectedBatch: { selected: Track; tracks: Track[]; source: QueueSource } | undefined;
+        let lastPageError: unknown = new Error('默认模式没有可用歌曲');
+        while (selectionIsCurrent()) {
+          const health = latestHealth ?? platformHealth;
+          const providers = [...new Set([firstProvider, ...(health.passedOrder ?? health.healthy)])];
+          const provider = providers.find(id => !openedProviders.has(id)) ??
+            providers.find(id => continuationByProvider.has(id));
+          if (!provider) {
+            if (health.completed !== false) break;
+            await healthChanged;
+            continue;
           }
-          throw error;
+          const previous = continuationByProvider.get(provider);
+          continuationByProvider.delete(provider);
+          openedProviders.add(provider);
+          const page = previous ? 'continuation' : 'first';
+          console.info('[startup-sequence]', JSON.stringify({ stage: 'mix-start', provider, page }));
+          const platforms = launchState.platforms
+            .filter(platform => platform.id === provider)
+            .map(platform => ({ ...platform, enabled: true }));
+          try {
+            const mix = previous
+              ? await loadHomeMenuPage('mode-default', platforms, profile, launchState.history,
+                HOME_MENU_FIRST_BATCH_SIZE, previous, { signal: catalogAbort.signal })
+              : await loadHomeMenuFirstBatch('mode-default', platforms, profile, launchState.history, {
+                signal: catalogAbort.signal,
+                progress: advanceExhaustedMenuRound(
+                  menuProgressEntry(launchState.menuRecommendationProgress, 'mode-default', provider),
+                ),
+              });
+            if (!selectionIsCurrent()) break;
+            // Try one new catalog page per provider before leaving startup.
+            if (!previous && mix.hasMore) continuationByProvider.set(provider, mix.cursor);
+            if (!mix.tracks.length) continue;
+            rememberHomeMenuBatch(mix.cursor, mix.tracks);
+            const startupCandidates = mix.tracks.slice(0, QUEUE_BATCH_SIZE).filter(track => {
+              const key = trackQueueKey(track);
+              if (triedTracks.has(key)) return false;
+              triedTracks.add(key);
+              return true;
+            });
+            if (!startupCandidates.length) continue;
+            releaseStartupPrewarm ??= urlPrewarmScheduler.current!.hold();
+            if (!homeRevealed) setStartup({ visible: true, label: '正在为您准备歌曲', progress: 0.82 });
+            const startupSourceFor = (tracks: Track[]): QueueSource => ({
+              kind: 'home-menu', startup: true, cursor: mix.cursor, hasMore: mix.hasMore,
+              seenKeys: tracks.map(trackQueueKey),
+              ...(mix.hasMore ? { initialMenuBatch: {
+                remaining: QUEUE_BATCH_SIZE - tracks.length,
+                artists: [...new Set(tracks.flatMap(item => constituentArtists(item.artist)))],
+              } } : {}),
+            });
+            let attemptedIndex = 0;
+            try {
+              const resolvedFirst = await selectFirstResolvableTrack(
+                startupCandidates,
+                async (track, signal) => {
+                  attemptedIndex = startupCandidates.indexOf(track);
+                  const triedSources = new Set<string>();
+                  let lastError: unknown = new Error('本平台没有可用音源');
+                  while (selectionIsCurrent()) {
+                    const currentHealth = latestHealth ?? platformHealth;
+                    const sources = startupRuntime.current.playbackSourcesFor(track)
+                      .filter(source => source.healthy !== false && !triedSources.has(source.id));
+                    if (sources.length) {
+                      sources.forEach(source => triedSources.add(source.id));
+                      try {
+                        const playUrl = await resolvePlaybackAddress(track, sources,
+                          playbackNetworkQuality(launchState.settings), signal, true);
+                        return { ...track, playUrl };
+                      } catch (error) {
+                        if (signal.aborted) throw error;
+                        lastError = error;
+                        continue;
+                      }
+                    }
+                    if (currentHealth.completed !== false || currentHealth.completedProviders?.includes(provider)) throw lastError;
+                    await healthChanged;
+                  }
+                  throw lastError;
+                },
+                { signal: catalogAbort.signal },
+              );
+              const tracks = resolvedFirst.tracks.slice(0, QUEUE_BATCH_SIZE);
+              selectedBatch = { selected: resolvedFirst.selected, tracks, source: startupSourceFor(tracks) };
+              break;
+            } catch (error) {
+              if (isSourceRateLimited(error) && selectionIsCurrent() && AppState.currentState === 'active') {
+                // Keep this selection available for an explicit retry.
+                const retryTracks = startupCandidates.slice(attemptedIndex);
+                setQueueSource(startupSourceFor(retryTracks));
+                publishPendingSelection(retryTracks, 0,
+                  startupRuntime.current.captureQueueOrigin('默认模式', {
+                    tab: 'discovery', page: 'root', menuChoiceId: 'mode-default',
+                  }), 0, sanitizeStartupError(error));
+              }
+              throw error;
+            }
+          } catch (error) {
+            if (!selectionIsCurrent()) break;
+            if (isSourceRateLimited(error)) throw error;
+            lastPageError = error;
+            console.info('[startup-sequence]', JSON.stringify({ stage: 'mix-page-failed', provider, page }));
+          }
         }
-        if (!sourceGenerationIsCurrent()) return;
-        if (startupAutoplayCancelled.current) {
-          await reveal();
-          return;
-        }
-        const startupTracks: Track[] = resolvedFirst.tracks.slice(
-          0,
-          QUEUE_BATCH_SIZE,
-        );
-        const startupSource = startupSourceFor(startupTracks);
+        if (!selectionIsCurrent()) { await reveal(); return; }
+        if (!selectedBatch) throw lastPageError;
+        const { selected, tracks: startupTracks, source: startupSource } = selectedBatch;
         // A short catalog page still has a playable selected song. The shared
         // post-PLAYING pagination path fills it without blocking startup or
         // discarding this page when a later directory request fails.
@@ -4091,7 +4053,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         // The shared selected-song path validates and retries while the splash
         // remains visible. Its native-load barrier reveals Home only after a
         // song is ready, then loads immediately after Home's display commit.
-        await startFeedRef.current(resolvedFirst.selected, startupTracks, 0, {
+        await startFeedRef.current(selected, startupTracks, 0, {
           openPlayer: false,
           queueSource: startupSource,
           allowFailureFallback: true,
