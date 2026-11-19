@@ -1,4 +1,5 @@
 import type { Track } from '../src/domain/types';
+import { SourceRateLimitedError } from '../src/services/playbackSourceAvailability';
 import {
   prepareValidatedTracks,
   selectFirstResolvableTrack,
@@ -52,22 +53,39 @@ test('startup promotes only the first URL-resolvable candidate without touching 
   ]);
 });
 
-test('startup tries the next candidate when one URL resolution exceeds its attempt budget', async () => {
-  const pending = new Promise<Track>(() => undefined);
-  const started: string[] = [];
-  const resultPromise = selectFirstResolvableTrack(
-    [track('slow'), track('next')],
-    async value => {
-      started.push(value.id);
-      if (value.id === 'slow') return pending;
-      return { ...value, playUrl: `https://audio/${value.id}` };
-    },
-    { budgetMs: 100, attemptTimeoutMs: 10 },
-  );
-  await new Promise<void>(resolve => setTimeout(resolve, 20));
-  await expect(resultPromise).resolves.toMatchObject({
-    index: 1,
-    selected: expect.objectContaining({ id: 'next' }),
+test('startup does not skip a pending source or song at five or thirty seconds', async () => {
+  jest.useFakeTimers();
+  try {
+    let finish!: (value: Track) => void;
+    const pending = new Promise<Track>(resolve => { finish = resolve; });
+    const resolve = jest.fn((value: Track) => value.id === 'slow' ? pending : Promise.resolve(value));
+    const result = selectFirstResolvableTrack([track('slow'), track('untouched')], resolve);
+    await jest.advanceTimersByTimeAsync(60000);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    finish({ ...track('slow'), playUrl: 'https://audio/slow' });
+    await expect(result).resolves.toMatchObject({ index: 0, selected: { id: 'slow' } });
+    expect(resolve).toHaveBeenCalledTimes(1);
+  } finally { jest.useRealTimers(); }
+});
+
+test('startup cancellation rejects immediately and cancels its pending resolver', async () => {
+  const controller = new AbortController();
+  let signal!: AbortSignal;
+  const resolve = jest.fn((_track: Track, input: AbortSignal) => {
+    signal = input;
+    return new Promise<Track>(() => {});
   });
-  expect(started).toEqual(['slow', 'next']);
+  const result = selectFirstResolvableTrack([track('first'), track('untouched')], resolve, { signal: controller.signal });
+  const observed = result.catch(error => error);
+  controller.abort();
+  expect(await observed).toMatchObject({ name: 'AbortError' });
+  expect(signal.aborted).toBe(true);
+  expect(resolve).toHaveBeenCalledTimes(1);
+});
+
+test('startup service throttling stops the candidate loop without treating other songs as failures', async () => {
+  const error = new SourceRateLimitedError();
+  const resolve = jest.fn(async () => { throw error; });
+  await expect(selectFirstResolvableTrack([track('first'), track('untouched')], resolve)).rejects.toBe(error);
+  expect(resolve).toHaveBeenCalledTimes(1);
 });

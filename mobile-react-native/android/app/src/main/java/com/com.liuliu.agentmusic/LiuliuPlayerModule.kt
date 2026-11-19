@@ -253,6 +253,7 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
       putDouble("sleepDeadline", sleepDeadline.toDouble())
       putUrlRecovery(this, controller)
       putPreviousItem(this)
+      putListening(this, controller)
     }
     context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("playbackState", map)
   }
@@ -261,6 +262,21 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     if (controller.duration <= 0) return
     observedDurations[id] = controller.duration
     while (observedDurations.size > 256) observedDurations.remove(observedDurations.keys.first())
+  }
+  private fun putListening(map: WritableMap, controller: MediaController) {
+    val snapshot = MusicPlaybackService.listeningSnapshot(controller.currentMediaItem?.mediaId) ?: return
+    map.putMap("listening", Arguments.createMap().apply {
+      putString("mediaId", snapshot.mediaId)
+      putDouble("sequence", snapshot.sequence.toDouble())
+      putDouble("seconds", snapshot.listenedMs.toDouble() / 1000)
+      putArray("qualified", Arguments.createArray().apply {
+        snapshot.qualified.forEach { play -> pushMap(Arguments.createMap().apply {
+          putDouble("sequence", play.sequence.toDouble())
+          putString("mediaId", play.mediaId)
+          putDouble("seconds", play.listenedMs.toDouble() / 1000)
+        }) }
+      })
+    })
   }
   private fun putPreviousItem(map: WritableMap) {
     val item = previousItem ?: return
@@ -368,7 +384,12 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
     MusicPlaybackService.cancelUrlRecovery()
     // Seeking an already admitted playlist item switches the provider in the
     // same player. stop/prepare would discard its existing prepared state.
-    controller.seekTo(index.coerceIn(0,(controller.mediaItemCount-1).coerceAtLeast(0)),
+    val targetIndex = index.coerceIn(0, (controller.mediaItemCount - 1).coerceAtLeast(0))
+    if (targetIndex < controller.mediaItemCount) {
+      // A new selection of the same media item may not emit a Media3 item transition.
+      MusicPlaybackService.restartListeningForSelection(controller.getMediaItemAt(targetIndex).mediaId)
+    }
+    controller.seekTo(targetIndex,
       (if (position.isFinite()) position.coerceAtLeast(0.0) * 1000 else 0.0).toLong())
     if (controller.playbackState == androidx.media3.common.Player.STATE_IDLE) controller.prepare()
     controller.play()
@@ -497,6 +518,7 @@ class LiuliuPlayerModule(private val context: ReactApplicationContext) : ReactCo
           putDouble("sleepDeadline", sleepDeadline.toDouble())
           putUrlRecovery(this, controller)
           putPreviousItem(this)
+          putListening(this, controller)
         })
     }, { error ->
         promise.reject("PLAYER_ERROR", error.message, error)

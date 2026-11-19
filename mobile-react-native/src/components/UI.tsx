@@ -23,6 +23,7 @@ import { platformLabel, isSpokenCollection } from './platformLabels';
 import { PlayerGestureArrow } from './PlayerGestureArrow';
 import { useDrawerSwipe } from './useDrawerSwipe';
 import { TrackActionIcon } from './TrackActionIcon';
+import { PlayerActivityRing } from './PlayerActivityRing';
 
 export function Glyph({
   children,
@@ -525,9 +526,9 @@ export function BottomNav({
   const app = useApp();
   const theme = useTheme();
   const layout = useLayout();
-  const playerPage = ['player', 'lyrics', 'effects', 'queue'].includes(
-    app.page,
-  );
+  const playerMenu = app.page === 'home-menu' && app.homeMenuOrigin === 'player';
+  const playerPage = ['player', 'lyrics', 'effects', 'queue'].includes(app.page) || playerMenu;
+  const playerRing = ['player', 'lyrics'].includes(app.page) || playerMenu;
   const playerNavAppearance = playerPage && app.page !== 'effects';
   const miniPlayerSurface = !playerPage || app.page === 'effects';
   const transparentNav = transparent || playerNavAppearance;
@@ -618,7 +619,7 @@ export function BottomNav({
           key={item.id}
           testID={`nav-${item.id}`}
           accessibilityRole="tab"
-          accessibilityState={{ selected: app.tab === item.id }}
+          accessibilityState={{ selected: !playerPage && app.tab === item.id }}
           onPress={() => {
             if (drawerSwipe.swipeActive.current) return;
             return item.id === 'discovery' &&
@@ -634,7 +635,10 @@ export function BottomNav({
             style={[
               s.navLabel,
               {
-                color: app.tab === item.id ? colors.accent : colors.muted,
+                color:
+                  !playerPage && app.tab === item.id
+                    ? colors.accent
+                    : colors.muted,
                 fontSize: layout.bottomNavLabelFontSize,
               },
             ]}
@@ -653,57 +657,72 @@ export function BottomNav({
         hitSlop={8}
       >
         <View
-          testID="nav-player-button"
-          style={[
-            s.navPlayerButton,
-            {
-              width: layout.bottomNavPlayerSize,
-              height: layout.bottomNavPlayerSize,
-              borderRadius: layout.bottomNavPlayerSize / 2,
-            },
-            {
-              backgroundColor: playerNavAppearance ? 'transparent' : '#B17CFA',
-              borderColor: playerNavAppearance ? colors.playerBorder : 'transparent',
-            },
-            ['player', 'lyrics'].includes(app.page) &&
-              s.navPlayerRing,
-          ]}
+          style={{
+            width: layout.bottomNavPlayerSize,
+            height: layout.bottomNavPlayerSize,
+          }}
         >
-          {playerNavAppearance ? (
-            <PlayPauseIcon
-              playing={app.player.playing}
-              color={app.player.playing ? '#fff' : colors.text}
-              size={Math.round(layout.bottomNavPlayerSize * 0.52)}
+          <View
+            testID="nav-player-button"
+            style={[
+              s.navPlayerButton,
+              {
+                width: layout.bottomNavPlayerSize,
+                height: layout.bottomNavPlayerSize,
+                borderRadius: layout.bottomNavPlayerSize / 2,
+              },
+              {
+                backgroundColor: playerNavAppearance ? 'transparent' : '#B17CFA',
+                borderColor: playerNavAppearance ? colors.playerBorder : 'transparent',
+              },
+              playerRing &&
+                s.navPlayerRing,
+            ]}
+          >
+            {playerNavAppearance ? (
+              <PlayPauseIcon
+                playing={app.player.playing}
+                color={app.player.playing ? '#fff' : colors.text}
+                size={Math.round(layout.bottomNavPlayerSize * 0.52)}
+              />
+            ) : app.player.playing ? (
+              <View testID="nav-player-playing" style={s.navPlayerBars}>
+                {[0.55, 1, 0.7].map((scale, index) => (
+                  <Animated.View
+                    key={index}
+                    style={[
+                      s.navPlayerBar,
+                      {
+                        backgroundColor: playerPage ? colors.text : '#FFFFFF',
+                        transform: [
+                          {
+                            scaleY: pulse.interpolate({
+                              inputRange: [0.35, 1],
+                              outputRange: [scale, 1],
+                            }),
+                          },
+                        ],
+                      },
+                    ]}
+                  />
+                ))}
+              </View>
+            ) : (
+              <PlayPauseIcon
+                playing={false}
+                color={playerPage ? colors.text : '#FFFFFF'}
+                size={Math.round(layout.bottomNavPlayerSize * 0.52)}
+              />
+            )}
+          </View>
+          {playerRing ? (
+            <PlayerActivityRing
+              size={layout.bottomNavPlayerSize}
+              color={colors.playerBorder}
+              playing={Boolean(app.player.playing)}
+              identity={app.current ? `${app.current.provider}:${app.current.providerId ?? app.current.id}` : ''}
             />
-          ) : app.player.playing ? (
-            <View testID="nav-player-playing" style={s.navPlayerBars}>
-              {[0.55, 1, 0.7].map((scale, index) => (
-                <Animated.View
-                  key={index}
-                  style={[
-                    s.navPlayerBar,
-                    {
-                      backgroundColor: playerPage ? colors.text : '#FFFFFF',
-                      transform: [
-                        {
-                          scaleY: pulse.interpolate({
-                            inputRange: [0.35, 1],
-                            outputRange: [scale, 1],
-                          }),
-                        },
-                      ],
-                    },
-                  ]}
-                />
-              ))}
-            </View>
-          ) : (
-            <PlayPauseIcon
-              playing={false}
-              color={playerPage ? colors.text : '#FFFFFF'}
-              size={Math.round(layout.bottomNavPlayerSize * 0.52)}
-            />
-          )}
+          ) : null}
         </View>
       </Pressable>
       {tabs.slice(2).map(item => (
@@ -711,7 +730,7 @@ export function BottomNav({
           key={item.id}
           testID={`nav-${item.id}`}
           accessibilityRole="tab"
-          accessibilityState={{ selected: app.tab === item.id }}
+          accessibilityState={{ selected: !playerPage && app.tab === item.id }}
           onPress={() => {
             if (!drawerSwipe.swipeActive.current) app.setTab(item.id);
           }}
@@ -722,7 +741,10 @@ export function BottomNav({
             style={[
               s.navLabel,
               {
-                color: app.tab === item.id ? colors.accent : colors.muted,
+                color:
+                  !playerPage && app.tab === item.id
+                    ? colors.accent
+                    : colors.muted,
                 fontSize: layout.bottomNavLabelFontSize,
               },
             ]}

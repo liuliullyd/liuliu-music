@@ -177,7 +177,9 @@ function queriesFor(
   if (choice.id === 'mode-default' || choice.id === 'mode-memory') {
     const directions = preferenceQueries(statisticsFor(choice, profile, history)).slice(0, 6);
     queries = choice.id === 'mode-memory'
-      ? [...directions, ...directions.slice(0, 2).map(query => `${query} 新歌`)]
+      ? directions.flatMap((query, index) => index < 2
+          ? [query, `${query.replace(/\s*歌曲$/, '')} ${new Date().getUTCFullYear()}`]
+          : [query])
       : directions.length ? [...directions, DEFAULT_POPULAR_QUERY, ...DEFAULT_MULTILINGUAL_QUERIES.map(([query]) => query)]
       : [DEFAULT_POPULAR_QUERY];
   }
@@ -516,9 +518,15 @@ async function loadSceneCollectionCandidates(
   // Unconsumed members already belong to this queue. A remote failure must
   // not make a fully buffered batch wait for another request.
   if (enough() && (choice.kind === 'mode' || !pendingRoutes.size)) return { candidates, failed: false };
-  const readCollection = async (collection: (typeof collections)[number]) => {
-    if (requestContext && detailsInFlight.has(collection)) return detailsInFlight.get(collection)!;
-    if (detailRequests >= detailLimit || detailBudget.remaining<=0) return false;
+  const readCollection = async (collection: (typeof collections)[number], onCatalogReady?: () => void) => {
+    if (requestContext && detailsInFlight.has(collection)) {
+      onCatalogReady?.();
+      return detailsInFlight.get(collection)!;
+    }
+    if (detailRequests >= detailLimit || detailBudget.remaining<=0) {
+      onCatalogReady?.();
+      return false;
+    }
     detailRequests += 1;
     detailBudget.remaining -= 1;
     const startedAt = Date.now();
@@ -537,10 +545,6 @@ async function loadSceneCollectionCandidates(
           result = await (requestContext ? requestContext.wait(retry) : retry);
         }
         requestContext?.assertActive();
-        const prepared = exploring
-          ? await supplementMenuTrackMetadata(result.tracks.map(track => withMenuCollectionLanguage(track, collection.item)), choice.id, requestContext, undefined, albums, albumRequests)
-          : result.tracks.map(track => normalizeMenuTrackMetadata(withMenuCollectionLanguage(track, collection.item)));
-        requestContext?.assertActive();
         const existingArtists = choice.id === 'mode-default' ? new Set([...excludedArtists,
           ...candidates.flatMap(candidate => menuDiversityArtists(candidate.track, choice))]) : undefined;
         const freshArtists = new Set<string>();
@@ -551,6 +555,7 @@ async function loadSceneCollectionCandidates(
               track.provider === platform.id &&
               !seen.has(menuSongKey(track)) &&
               !cursor.recentTrackKeys?.includes(trackQueueKey(track)) &&
+              (choice.id !== 'mode-memory' || !candidates.some(item => menuSongKey(item.track) === menuSongKey(track))) &&
               matchesChoice(track, choice, collection.query ?? '', collection.item)) {
             candidates.push({track,query:collection.query ?? '',collection:collection.item});
             if (existingArtists) {
@@ -562,7 +567,30 @@ async function loadSceneCollectionCandidates(
             }
           }
         };
-        prepared.forEach(appendCollectionTrack);
+        const remembering = choice.id === 'mode-memory';
+        // An early memory batch leaves this member page at the same offset.
+        // Published songs and buffered candidates have already been prepared;
+        // only its unconsumed rows need album work on continuation.
+        const preparedMemoryKeys = remembering
+          ? new Set([...seen, ...candidates.map(item => menuSongKey(item.track))])
+          : undefined;
+        const members = result.tracks
+          .filter(track => !preparedMemoryKeys?.has(menuSongKey(track)))
+          .map(track => withMenuCollectionLanguage(track, collection.item));
+        // Album validation has its own shared queue. Let the catalog scheduler
+        // discover later memory directions while this member page is prepared.
+        onCatalogReady?.();
+        const prepared = exploring || remembering
+          ? await supplementMenuTrackMetadata(members, choice.id, requestContext, remembering ? track => {
+              appendCollectionTrack(track);
+              // A verified recent album may complete the quota immediately.
+              // Leave this member page's offset unchanged if that closes the
+              // scope; the remaining rows are safely read on continuation.
+              onProgress?.();
+            } : undefined, albums, albumRequests)
+          : members.map(normalizeMenuTrackMetadata);
+        requestContext?.assertActive();
+        if (!remembering) prepared.forEach(appendCollectionTrack);
         if (existingArtists) collection.artistYield = artistYield;
         // Publish a complete member page and its position before the shared
         // selector may close the request scope. Cancellation cannot skip rows.
@@ -576,6 +604,7 @@ async function loadSceneCollectionCandidates(
         failed = true;
         return false;
       } finally {
+        onCatalogReady?.();
         detailsInFlight.delete(collection);
         if (requestContext) console.info('[menu-scene-timing]', JSON.stringify({ choice: choice.id, provider: platform.id,
           route: cursor.queries.findIndex(route => route.query === collection.query), stage: 'catalog-detail',
@@ -679,6 +708,7 @@ async function loadSceneCollectionCandidates(
       if (!progressed) break;
     }
   } else if (requestContext && scheduler) {
+    const memoryPreparation: Promise<void>[] = [];
     const modeRoutes = [...cursor.queries];
     const routes = prioritizePending(choice.kind === 'mode' ? modeRoutes : random
       ? shuffleHomeMenuSceneValues(cursor.queries, random)
@@ -696,6 +726,15 @@ async function loadSceneCollectionCandidates(
             completed = await discoverCollections(route);
             requestContext.assertActive();
             collection = orderedCollections(collections.filter(item => item.query === route.query && item.hasMore))[0];
+          }
+          if (collection && choice.id === 'mode-memory' && cursor.queries.length > 1) {
+            let catalogReady!: () => void;
+            const ready = new Promise<void>(resolve => { catalogReady = resolve; });
+            memoryPreparation.push(readCollection(collection, catalogReady).then(done => {
+              if (done && !requestContext.signal.aborted) pendingRoutes.delete(route.query);
+            }));
+            await ready;
+            return;
           }
           if (collection) completed = await readCollection(collection);
           // A literal decade search has one direction; use its existing
@@ -718,6 +757,9 @@ async function loadSceneCollectionCandidates(
       });
     });
     await Promise.all(work);
+    // Cursor positions still commit only after the whole member page finishes;
+    // cancellation keeps partial pages and rejects all late album evidence.
+    await Promise.all(memoryPreparation);
     if (choice.kind === 'mode' && !enough() && !requestContext.signal.aborted)
       await consumeCollections();
   } else if (scene && (scene.balancedRecall || allowsSceneLanguageDiversity(scene))) {

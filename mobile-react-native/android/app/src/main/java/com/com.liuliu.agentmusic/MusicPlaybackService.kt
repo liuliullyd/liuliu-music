@@ -98,12 +98,25 @@ class MusicPlaybackService : MediaLibraryService() {
   )
   private var urlRecovery: UrlRecovery? = null
   private val interruption = PlaybackInterruption()
+  private val listeningClock = PlaybackListeningClock { android.os.SystemClock.elapsedRealtime() }
+  private val listeningHandler = Handler(Looper.getMainLooper())
+  private val listeningDeadline = Runnable { updateListeningClock() }
+  private var loggedListeningSequence = 0L
   private var released = false
 
   companion object {
     internal val taskLifecycle = PlaybackTaskLifecycle()
     private var active: MusicPlaybackService? = null
     fun isNotificationPlaybackActive(): Boolean = active?.player?.isPlaying == true
+    internal fun listeningSnapshot(mediaId: String?): PlaybackListeningClock.Snapshot? = active?.let { service ->
+      if (service.released || service.player.currentMediaItem?.mediaId != mediaId) null
+      else { service.updateListeningClock(); service.listeningClock.snapshot() }
+    }
+    internal fun restartListeningForSelection(mediaId: String) {
+      val service = active ?: return
+      if (service.released || service.player.currentMediaItem?.mediaId != mediaId) return
+      service.updateListeningClock(restart = true)
+    }
     fun refreshMediaNotification() { active?.mediaNotificationController?.refresh() }
     private val recoverySequence = AtomicLong()
     internal fun recovery(mediaId: String?): UrlRecovery? = active?.let { service ->
@@ -239,6 +252,7 @@ class MusicPlaybackService : MediaLibraryService() {
       repeatMode = Player.REPEAT_MODE_OFF
       addListener(object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+          updateListeningClock(reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT || reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
           if (mediaItem?.mediaId != urlRecovery?.mediaId) urlRecovery = null
           interruption.mediaChanged(mediaItem?.mediaId, mediaItem?.localConfiguration?.uri?.toString())
           failures = 0
@@ -259,10 +273,12 @@ class MusicPlaybackService : MediaLibraryService() {
           } else fallbackAfterError(true)
         }
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+          updateListeningClock()
           if (isPlaying) { urlRecovery = null; expiredFailures = 0 }
         }
         override fun onVolumeChanged(volume: Float) { updateEffectVolume() }
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+          updateListeningClock()
           if (reason == Player.DISCONTINUITY_REASON_SEEK) interruption.cancel()
         }
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -475,6 +491,8 @@ class MusicPlaybackService : MediaLibraryService() {
   private fun releasePlayback() {
     if (released) return
     released = true
+    listeningHandler.removeCallbacks(listeningDeadline)
+    listeningClock.observe(null, false)
     urlRecovery = null
     expiredFailures = 0
     interruption.cancel()
@@ -510,5 +528,16 @@ class MusicPlaybackService : MediaLibraryService() {
   override fun onDestroy() {
     releasePlayback()
     super.onDestroy()
+  }
+
+  private fun updateListeningClock(restart: Boolean = false) {
+    if (released || !::player.isInitialized) return
+    listeningClock.observe(player.currentMediaItem?.mediaId, player.isPlaying, restart)
+    listeningHandler.removeCallbacks(listeningDeadline)
+    listeningClock.untilQualification()?.let { listeningHandler.postDelayed(listeningDeadline, it) }
+    for (play in listeningClock.snapshot().qualified) if (play.sequence > loggedListeningSequence) {
+      loggedListeningSequence = play.sequence
+      Log.i("LiuliuListening", "qualified sequence=${play.sequence} mediaId=${play.mediaId} listenedMs=${play.listenedMs}")
+    }
   }
 }

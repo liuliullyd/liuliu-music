@@ -1,10 +1,10 @@
 import type { Track, CatalogItem } from '../domain/types';
 import { constituentArtists } from './liveDiscovery';
 import { CatalogRequestBudget } from './catalogRequestBudget';
-import { exploreLanguage } from './musicPreferenceStatistics';
+import { confirmedReleaseDate, exploreLanguage } from './musicPreferenceStatistics';
 import { sceneCollectionSungLanguage } from './homeMenuLanguages';
 import { isMusicOnlyRecommendationTrack } from './recommendationContentPolicy';
-import { parsePlatformJsonText } from './onlineCatalog';
+import { normalizeKuwoTrack, parsePlatformJsonText } from './onlineCatalog';
 
 type RecordValue = Record<string, unknown>;
 
@@ -42,7 +42,7 @@ const text = (value: unknown) =>
 const first = (...values: unknown[]) =>
   values.find(value => value !== undefined && value !== null && value !== '');
 export const usesMenuTrackMetadata = (choice: string) =>
-  ['mode-explore', 'scene-80s', 'scene-90s'].includes(choice);
+  ['mode-memory', 'mode-explore', 'scene-80s', 'scene-90s'].includes(choice);
 export const usesMenuSongRecall = (choice: string) =>
   choice === 'scene-phonk';
 
@@ -220,6 +220,7 @@ export function normalizeMenuTrackMetadata(track: Track): Track {
 const identity = (value: string) =>
   value
     .toLowerCase()
+    .replace(/&nbsp;|&#160;/gi, ' ')
     .replace(/\(explicit\)|（explicit）/gi, '')
     .replace(/[\s\p{P}]/gu, '');
 
@@ -258,10 +259,26 @@ function matchedAlbumEvidence(track: Track, id: string, response: RecordValue): 
   if(actualId!==id) return undefined;
   const name=text(first(album.albumname,album.albumName,album.name));
   const artists=artistNames(first(album.singername,album.artist,album.artists,album.singerName,album.singer));
-  if(!name || identity(name)!==identity(track.album) || !constituentArtists(artists).some(artist=>constituentArtists(track.artist).includes(artist))) return undefined;
+  if (!name || identity(name) !== identity(track.album)) return undefined;
+  const artistMatches = constituentArtists(artists).some(artist =>
+    constituentArtists(track.artist).includes(artist),
+  );
+  const memberMatches = track.provider === 'kuwo' && Array.isArray(album.musiclist) &&
+    album.musiclist.some(value => {
+      const member = normalizeKuwoTrack(record(value));
+      const memberArtists = constituentArtists(member.artist);
+      const trackArtists = constituentArtists(track.artist);
+      return member.providerId === track.providerId &&
+        String(member.metadata?.albumId) === id &&
+        identity(member.album) === identity(track.album) &&
+        identity(member.title) === identity(track.title) &&
+        memberArtists.length > 0 && memberArtists.length === trackArtists.length &&
+        memberArtists.every(artist => trackArtists.includes(artist));
+    });
+  if (!artistMatches && !memberMatches) return undefined;
   return {
     ...album,
-    // Album language is accepted only after this exact album/artist check.
+    // The matching album artist or exact compilation member supplies evidence.
     language:first(album.language,album.languageName,album.lang,album.lan,album.LANGUAGE),
   };
 }
@@ -278,48 +295,53 @@ export async function supplementMenuTrackMetadata(
   if (!usesMenuTrackMetadata(choice)) return tracks;
   const scope = budget ?? new CatalogRequestBudget(8_000);
   try {
-    return await Promise.all(
-      normalized
-        .map(async track => {
-          if (
-            !['netease','qq','kugou','kuwo','migu'].includes(track.provider) ||
-            (menuTrackReleaseYear(track) !== undefined && (choice !== 'mode-explore' || exploreLanguage(track) || track.provider==='netease'))
-          )
-            return track;
-          const raw = track.metadata ?? {};
-          const rawAlbum=record(raw.album ?? raw.al);
-          const albumId = String(first(raw.albumId,raw.album_id,raw.AlbumID,raw.ALBUMID,raw.albumMid,raw.albummid,rawAlbum.id,rawAlbum.mid) ?? '');
-          if (!/^[a-z\d]+$/i.test(albumId) || albumId === '0') return track;
-          const cacheKey=`${track.provider}:${albumId}`;
-          let request = albums.get(cacheKey);
-          if (!request) {
-            request = albumRequests.run(scope,()=>readMenuAlbum(track,albumId,scope));
-            albums.set(cacheKey, request);
-          }
-          try {
-            const album = matchedAlbumEvidence(track,albumId,await request);
-            budget?.assertActive();
-            if (!album) return track;
-            return normalizeMenuTrackMetadata({
-              ...track,
-              metadata: {
-                ...raw,
-                ...(choice==='mode-explore' && !exploreLanguage(track) && album.language ? {language:album.language} : {}),
-                album: { ...rawAlbum, ...album },
-              },
-            });
-          } catch {
-            return track;
-          }
-        })
-        .map(work =>
-          work.then(track => {
-            scope.assertActive();
-            onTrack?.(track);
-            return track;
-          }),
-        ),
-    );
+    const prepare = async (track: Track) => {
+      const prepared = await (async () => {
+        if (
+          !['netease','qq','kugou','kuwo','migu'].includes(track.provider) ||
+          (choice === 'mode-memory' ? confirmedReleaseDate(track) !== undefined
+            : menuTrackReleaseYear(track) !== undefined && (choice !== 'mode-explore' || exploreLanguage(track) || track.provider==='netease'))
+        )
+          return track;
+        const raw = track.metadata ?? {};
+        const rawAlbum=record(raw.album ?? raw.al);
+        const albumId = String(first(raw.albumId,raw.album_id,raw.AlbumID,raw.ALBUMID,raw.albumMid,raw.albummid,rawAlbum.id,rawAlbum.mid) ?? '');
+        if (!/^[a-z\d]+$/i.test(albumId) || albumId === '0') return track;
+        const cacheKey=`${track.provider}:${albumId}`;
+        let request = albums.get(cacheKey);
+        if (!request) {
+          request = albumRequests.run(scope,()=>readMenuAlbum(track,albumId,scope));
+          albums.set(cacheKey, request);
+        }
+        try {
+          const album = matchedAlbumEvidence(track,albumId,await request);
+          budget?.assertActive();
+          if (!album) return track;
+          return normalizeMenuTrackMetadata({
+            ...track,
+            metadata: {
+              ...raw,
+              ...(choice==='mode-explore' && !exploreLanguage(track) && album.language ? {language:album.language} : {}),
+              album: { ...rawAlbum, ...album },
+            },
+          });
+        } catch {
+          return track;
+        }
+      })();
+      scope.assertActive();
+      onTrack?.(prepared);
+      return prepared;
+    };
+    if (choice !== 'mode-memory') return await Promise.all(normalized.map(prepare));
+    // Keep the shared provider queue available to sibling recall collections.
+    // Each worker publishes its completed evidence without waiting for a batch.
+    const remaining = normalized.entries();
+    const prepared = [...normalized];
+    await Promise.all(Array.from({ length: 2 }, async () => {
+      for (const [index, track] of remaining) prepared[index] = await prepare(track);
+    }));
+    return prepared;
   } finally {
     if (!budget) scope.close();
   }

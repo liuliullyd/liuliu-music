@@ -78,14 +78,14 @@ export function artistIdentityId(track: Track) {
     const id =
       track.provider === 'qq'
         ? values
-            .map(value => {
+            .map((value) => {
               if (!value || typeof value !== 'object') return '';
               const item = value as Record<string, unknown>;
               return textId(
                 item.mid ?? item.singermid ?? item.id ?? item.singerId,
               );
             })
-            .map(value => (value === '0' || value === '-1' ? '' : value))
+            .map((value) => (value === '0' || value === '-1' ? '' : value))
             .find(Boolean)
         : values.map(entityId).find(Boolean);
     if (id) return id;
@@ -122,9 +122,9 @@ export function albumIdentityId(track: Track) {
   );
 }
 const enabledIds = (platforms?: PlatformSetting[]) =>
-  (platforms ?? Object.keys(providerNames).map(id => ({ id, enabled: true })))
-    .filter(value => value.enabled)
-    .map(value => value.id as OnlineProvider);
+  (platforms ?? Object.keys(providerNames).map((id) => ({ id, enabled: true })))
+    .filter((value) => value.enabled)
+    .map((value) => value.id as OnlineProvider);
 type RequestTimeoutMs = number | null;
 const request = async (
   url: string,
@@ -155,7 +155,7 @@ const textJson = async (
   requestContext?: CatalogRequestBudget,
 ) => {
   const text = await request(url, init, timeoutMs, requestContext).then(
-    response => response.text(),
+    (response) => response.text(),
   );
   return parsePlatformJsonText(text);
 };
@@ -190,7 +190,7 @@ async function searchNetease(
       { headers },
       timeoutMs,
       requestContext,
-    ).then(response => parsePlatformJsonTextFromResponse(response));
+    ).then((response) => parsePlatformJsonTextFromResponse(response));
     const songs = songsFrom(body);
     if (songs.length) return songs.map(normalizeNeteaseTrack);
   } catch (error) {
@@ -202,7 +202,7 @@ async function searchNetease(
       { headers },
       timeoutMs,
       requestContext,
-    ).then(response => parsePlatformJsonTextFromResponse(response));
+    ).then((response) => parsePlatformJsonTextFromResponse(response));
     return songsFrom(body).map(normalizeNeteaseTrack);
   } catch (error) {
     throw primaryError ?? error;
@@ -260,7 +260,7 @@ async function searchQq(
       },
       timeoutMs,
       requestContext,
-    ).then(response => response.json());
+    ).then((response) => response.json());
   if (body.code !== 0 || body.req?.code !== 0)
     throw new Error(`秋秋 搜索错误 ${body.req?.code ?? body.code ?? '未知'}`);
   return (body.req?.data?.body?.item_song ?? []).map(normalizeQqTrack);
@@ -268,7 +268,7 @@ async function searchQq(
 const stripMarkup = (value: unknown) =>
   String(value ?? '')
     .replace(/<[^>]*>/g, '')
-    .replace(/&(?:amp|nbsp|lt|gt);/gi, match =>
+    .replace(/&(?:amp|nbsp|lt|gt);/gi, (match) =>
       match.toLowerCase() === '&amp;'
         ? '&'
         : match.toLowerCase() === '&lt;'
@@ -330,7 +330,7 @@ async function searchQqPlaylists(
     },
     timeoutMs,
     requestContext,
-  ).then(response => response.json());
+  ).then((response) => response.json());
   if (body.code !== 0 || body.req?.code !== 0)
     throw new Error(
       `秋秋 歌单搜索错误 ${body.req?.code ?? body.code ?? '未知'}`,
@@ -388,7 +388,7 @@ async function loadQqArtistTracks(
       }),
     },
     timeoutMs,
-  ).then(response => response.json());
+  ).then((response) => response.json());
   const data = body.singer?.data ?? body.data ?? {};
   const values = data.songlist ?? data.songList ?? [];
   return {
@@ -421,7 +421,7 @@ async function searchKugou(
       { headers: { Referer: 'https://www.kugou.com/' } },
       timeoutMs,
       requestContext,
-    ).then(response => response.json());
+    ).then((response) => response.json());
     // Startup, Home, recommendations and queue continuation keep their original
     // single-request contract. Only an explicit search-page request opts in.
     if (!recheckEmpty) return (body.data?.lists ?? []).map(normalizeKugouTrack);
@@ -440,10 +440,10 @@ async function searchKugou(
     { headers: { Referer: 'http://m.kugou.com/' } },
     timeoutMs,
     requestContext,
-  ).then(response => response.json());
+  ).then((response) => response.json());
   const rows = kugouSearchRows(body, 'info');
   if (!rows.length && primaryError) throw primaryError;
-  return rows.map(value => {
+  return rows.map((value) => {
     const hash = String(value.hash ?? value.FileHash ?? '');
     return normalizeKugouTrack({
       ...value,
@@ -571,7 +571,7 @@ export async function searchOnline(
     provider !== 'all' &&
     provider !== 'custom' &&
     platforms &&
-    !platforms.some(item => item.enabled && item.id === provider)
+    !platforms.some((item) => item.enabled && item.id === provider)
   ) {
     return {
       tracks: [],
@@ -586,7 +586,7 @@ export async function searchOnline(
       ? []
       : [provider];
   const settled = await Promise.allSettled(
-    ids.map(async id => {
+    ids.map(async (id) => {
       if (id === 'kugou' && searchOptions?.recheckKugouEmpty)
         return searchKugou(
           query.trim(),
@@ -632,7 +632,7 @@ export async function searchOnline(
   });
   const unique = filterPlayableCandidates([
     ...new Map(
-      tracks.map(track => [
+      tracks.map((track) => [
         `${track.provider}:${track.providerId ?? track.id}`,
         track,
       ]),
@@ -644,7 +644,7 @@ export async function searchOnline(
     // Pagination must distinguish a filtered full page from remote exhaustion,
     // and a failed request from a successfully empty page. Other callers keep
     // consuming the same filtered tracks and errors as before.
-    rawCount: settled.some(result => result.status === 'rejected')
+    rawCount: settled.some((result) => result.status === 'rejected')
       ? null
       : rawTracks.length,
     providerRawCounts: Object.fromEntries(
@@ -741,7 +741,7 @@ export async function searchOnlinePlaylists(
 ) {
   const ids = provider === 'all' ? enabledIds(platforms) : [provider];
   const settled = await Promise.allSettled(
-    ids.map(async id => {
+    ids.map(async (id) => {
       let body: any;
       if (id === 'qishui')
         return searchQishuiPlaylists(query, page, limit, { requestContext });
@@ -806,7 +806,7 @@ export async function searchOnlinePlaylists(
           { headers: { Referer: 'http://m.kugou.com/' } },
           12000,
           requestContext,
-        ).then(value => value.json());
+        ).then((value) => value.json());
         return (body.data?.info ?? []).map((value: any) => ({
           id: String(value.specialid),
           title: String(value.specialname ?? ''),
@@ -941,7 +941,7 @@ async function searchArtistFallback(
   )
     throw new Error(searched.errors.join('；'));
   const wanted = normalizedArtistName(name);
-  const exact = searched.tracks.filter(value => {
+  const exact = searched.tracks.filter((value) => {
     if (value.provider !== provider) return false;
     const metadata = (value.metadata as Record<string, any> | undefined) ?? {};
     const groups = [
@@ -952,7 +952,7 @@ async function searchArtistFallback(
       metadata.ar,
       metadata.artists,
     ];
-    const entities = groups.flatMap(group =>
+    const entities = groups.flatMap((group) =>
       Array.isArray(group)
         ? group
         : group && typeof group === 'object'
@@ -960,10 +960,10 @@ async function searchArtistFallback(
         : [],
     );
     return (
-      (id && entities.some(entity => entityId(entity) === id)) ||
+      (id && entities.some((entity) => entityId(entity) === id)) ||
       value.artist
         .split(/[/、,&·]|feat\.?|ft\.?/i)
-        .some(candidate => normalizedArtistName(candidate) === wanted)
+        .some((candidate) => normalizedArtistName(candidate) === wanted)
     );
   });
   return {
@@ -1020,7 +1020,7 @@ export async function getArtistTracks(
             '&offset=' +
             offset,
           { headers: { Referer: 'https://music.163.com/' } },
-        ).then(value => value.json());
+        ).then((value) => value.json());
         tracks = (body.hotSongs ?? body.songs ?? []).map(normalizeNeteaseTrack);
         // This route can ignore offset and return its complete hot-song list.
         // Slice that payload at the requested offset and use its actual length,
@@ -1046,7 +1046,7 @@ export async function getArtistTracks(
             size,
           { headers: { Referer: 'http://m.kugou.com/' } },
         )
-          .then(value => value.text())
+          .then((value) => value.text())
           .then(parsePlatformJsonText);
         tracks = (body.data?.info ?? []).map(normalizeKugouTrack);
         total = Number(body.data?.total);
@@ -1072,7 +1072,7 @@ export async function getArtistTracks(
             '&pageSize=' +
             size,
           { headers: { Referer: 'https://music.migu.cn/' } },
-        ).then(value => value.json());
+        ).then((value) => value.json());
         if (body.code && body.code !== '000000')
           throw new Error('迷谷歌手接口错误 ' + body.code);
         tracks = (
@@ -1130,7 +1130,7 @@ export async function getAlbumDetail(track: Track, page = 1, size = 20) {
     throw new Error(searched.errors.join('；'));
   const wanted = track.album.trim().toLocaleLowerCase();
   const tracks = searched.tracks.filter(
-    value =>
+    (value) =>
       value.provider === track.provider &&
       value.album.trim().toLocaleLowerCase() === wanted,
   );
@@ -1192,7 +1192,7 @@ const lyricIdentityMatches = (track: Track, metadata: Record<string, any>) => {
       metadata.contentId,
       metadata.id,
     ]
-      .map(value => String(value ?? '').trim())
+      .map((value) => String(value ?? '').trim())
       .filter(Boolean),
   );
   const lyricIds = [
@@ -1203,9 +1203,11 @@ const lyricIdentityMatches = (track: Track, metadata: Record<string, any>) => {
     metadata.lrcId,
     metadata.lyricTrackId,
   ]
-    .map(value => String(value ?? '').trim())
+    .map((value) => String(value ?? '').trim())
     .filter(Boolean);
-  return lyricIds.length === 0 || lyricIds.some(value => currentIds.has(value));
+  return (
+    lyricIds.length === 0 || lyricIds.some((value) => currentIds.has(value))
+  );
 };
 export type LyricLine = {
   time: number;
@@ -1268,7 +1270,9 @@ async function loadTrackLyrics(
   presentation = enrichTrackPresentation(track);
   const ids = (...values: unknown[]) =>
     Array.from(
-      new Set(values.map(value => String(value ?? '').trim()).filter(Boolean)),
+      new Set(
+        values.map((value) => String(value ?? '').trim()).filter(Boolean),
+      ),
     );
   let lastError: unknown;
   const tryText = async (load: () => Promise<string>) => {
@@ -1294,7 +1298,7 @@ async function loadTrackLyrics(
             id,
           )}&lv=-1&kv=-1&tv=-1`,
           { headers: { Referer: 'https://music.163.com/' } },
-        ).then(value => value.json());
+        ).then((value) => value.json());
         const original = lyricPayload(
           body.lrc?.lyric,
           body.klyric?.lyric,
@@ -1348,7 +1352,7 @@ async function loadTrackLyrics(
               'User-Agent': 'Mozilla/5.0 (Linux; Android 11)',
             },
           },
-        ).then(value => value.json());
+        ).then((value) => value.json());
         return (body.data?.lrclist ?? [])
           .map(
             (value: any) =>
@@ -1385,7 +1389,7 @@ async function loadTrackLyrics(
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 11)',
               },
             },
-          ).then(value => value.json());
+          ).then((value) => value.json());
           const candidates = Array.isArray(search.candidates)
             ? search.candidates.slice(0, 5)
             : [];
@@ -1404,7 +1408,7 @@ async function loadTrackLyrics(
                     'User-Agent': 'Mozilla/5.0 (Linux; Android 11)',
                   },
                 },
-              ).then(value => value.json());
+              ).then((value) => value.json());
               if (body.content) return decodeBase64Utf8(body.content);
             } catch {}
           }
@@ -1428,7 +1432,7 @@ async function loadTrackLyrics(
             Referer: 'https://music.migu.cn/',
             'User-Agent': 'Mozilla/5.0 (Linux; Android 11)',
           },
-        }).then(value => value.text()),
+        }).then((value) => value.text()),
       );
       if (text) return parseLrc(text);
     }
@@ -1450,7 +1454,7 @@ async function loadTrackLyrics(
               'User-Agent': 'Mozilla/5.0 (Linux; Android 11)',
             },
           },
-        ).then(value => value.json());
+        ).then((value) => value.json());
         return lyricPayload(
           body.lyric,
           body.data?.lyric,
@@ -1472,7 +1476,7 @@ async function loadTrackLyrics(
       );
       const candidate = searched.tracks
         .filter(
-          value => value.id !== track.id && lyricsMatchTrack(track, value),
+          (value) => value.id !== track.id && lyricsMatchTrack(track, value),
         )
         .sort((left, right) => {
           const wanted = String(track.providerId ?? '');
@@ -1503,7 +1507,7 @@ async function loadTrackLyrics(
       );
       const alternateCandidates = crossProvider.tracks
         .filter(
-          value =>
+          (value) =>
             value.provider !== presentation.provider &&
             lyricsMatchRecording(track, value),
         )
@@ -1528,7 +1532,7 @@ export async function getTrackLyrics(
   if (pending) return pending;
   const generation = lyricCacheGeneration;
   const request = loadTrackLyrics(track, fallbackDepth)
-    .then(lines => {
+    .then((lines) => {
       if (lines.length && generation === lyricCacheGeneration)
         lyricCache.set(key, lines);
       return lines;
@@ -1572,12 +1576,12 @@ const parseLrc = (value: string) =>
       const offset = offsetMatch ? Number(offsetMatch[1]) / 1000 : 0;
       const timestamp =
         /\[(\d{1,3}):(\d{1,2})(?:(?::(\d{1,2})(?:\.(\d+))?)|(?:\.(\d+)))?\]/g;
-      return normalized.split(/\r?\n/).flatMap(line => {
+      return normalized.split(/\r?\n/).flatMap((line) => {
         const tags = Array.from(line.matchAll(timestamp));
         if (!tags.length) return [];
         const text = line.replace(timestamp, '').trim();
         if (!text) return [];
-        return tags.map(match => {
+        return tags.map((match) => {
           const hasHours = match[3] !== undefined;
           const seconds = Number(match[2]);
           const third = match[3] === undefined ? 0 : Number(match[3]);
@@ -1678,7 +1682,7 @@ export async function resolvePlayback(
   if (!isCatalogTrackEligible(track)) rejectCatalogShortTrack(track);
   const prewarmed = track.metadata?._prewarmedUrl === true;
   if (track.playUrl && !prewarmed) return track.playUrl;
-  if (sources.some(source => source.enabled && source.script)) {
+  if (sources.some((source) => source.enabled && source.script)) {
     const resolved = await resolveWithImportedSource(
       prewarmed ? { ...track, playUrl: undefined } : track,
       sources,
@@ -1707,7 +1711,11 @@ export async function resolvePlaybackWithQuality(
   refreshExpiredUrl = false,
   timing?: PlaybackTimingObserver,
   cachedUrlOnly = false,
+  parallelInterfaces = false,
+  signal?: AbortSignal,
 ) {
+  if (signal?.aborted)
+    throw Object.assign(new Error('播放解析已取消'), { name: 'AbortError' });
   const prewarmed = track.metadata?._prewarmedUrl === true;
   if (track.playUrl && !refreshExpiredUrl && !prewarmed && !cachedUrlOnly)
     return {
@@ -1722,7 +1730,7 @@ export async function resolvePlaybackWithQuality(
     };
   const input =
     refreshExpiredUrl || prewarmed ? { ...track, playUrl: undefined } : track;
-  if (sources.some(source => source.enabled && source.script)) {
+  if (sources.some((source) => source.enabled && source.script)) {
     const resolved = await resolveWithImportedSource(
       input,
       sources,
@@ -1730,6 +1738,8 @@ export async function resolvePlaybackWithQuality(
       refreshExpiredUrl,
       timing,
       cachedUrlOnly,
+      parallelInterfaces,
+      signal,
     );
     return {
       url: resolved.url,
@@ -1751,6 +1761,7 @@ export async function resolvePlaybackAddress(
   sources: SourceSetting[] = [],
   quality: AppSettings['quality'] = '320k',
   signal?: AbortSignal,
+  parallelInterfaces = false,
 ) {
   if (signal?.aborted) {
     const error = new Error('URL 预解析已取消');
@@ -1761,13 +1772,14 @@ export async function resolvePlaybackAddress(
   if (!isCatalogTrackEligible(track)) rejectCatalogShortTrack(track);
   const prewarmed = track.metadata?._prewarmedUrl === true;
   if (track.playUrl && !prewarmed) return track.playUrl;
-  if (!sources.some(source => source.enabled && source.script))
+  if (!sources.some((source) => source.enabled && source.script))
     throw new Error('该平台需要先在设置中导入并启用兼容音乐源');
   const resolved = await resolveWithImportedSourceAddress(
     prewarmed ? { ...track, playUrl: undefined } : track,
     sources,
     quality,
     signal,
+    parallelInterfaces,
   );
   return resolved.url;
 }
@@ -1777,7 +1789,7 @@ export async function resolvePlaybackPrewarm(
   quality: AppSettings['quality'],
   signal?: AbortSignal,
 ) {
-  if (!sources.some(source => source.enabled && source.script))
+  if (!sources.some((source) => source.enabled && source.script))
     throw new Error('该平台需要先在设置中导入并启用兼容音乐源');
   return resolveWithImportedSourceAddress(
     { ...track, playUrl: undefined },

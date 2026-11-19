@@ -3,6 +3,16 @@ import {
   type PageGesture,
   type PageMotionHandle,
 } from '../components/PlayerPageMotion';
+import { EffectsScreen } from './EffectsScreen';
+import {
+  OrderedCoverScope,
+  OrderedCoverBatch,
+  OrderedRemoteCover,
+} from '../components/OrderedRemoteCover';
+import { covers } from '../assets/covers';
+import { ListPagingFooter } from '../components/ListPaging';
+import { usePlaybackListFollow } from '../components/usePlaybackListFollow';
+import { mediaPlaybackKey } from '../services/mediaPlaybackProgress';
 import React, {
   useCallback,
   useEffect,
@@ -22,35 +32,16 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
-import { covers } from '../assets/covers';
 import { getSelectedHomeMenuChoice } from '../components/HomeMenuDrawer';
-import { ListPagingFooter } from '../components/ListPaging';
-import {
-  OrderedCoverBatch,
-  OrderedCoverScope,
-  OrderedRemoteCover,
-} from '../components/OrderedRemoteCover';
-import { PlaybackModePicker } from '../components/PlaybackModePicker';
-import { PlayerQueueButton } from '../components/PlayerQueueButton';
-import { QueueOrderButton } from '../components/QueueOrderButton';
-import { QueueTrackActions } from '../components/QueueTrackActions';
+import { createThemedStyles, serif } from '../theme';
+import { useApp } from '../state/AppContext';
 import { AppHeader, Cover, Glyph, TrackRow } from '../components/UI';
-import { useLibraryTrackArtwork } from '../components/useLibraryTrackArtwork';
-import { usePlaybackListFollow } from '../components/usePlaybackListFollow';
+import { QueueTrackActions } from '../components/QueueTrackActions';
+import { PlaybackModePicker } from '../components/PlaybackModePicker';
+import { QueueOrderButton } from '../components/QueueOrderButton';
+import { PlayerQueueButton } from '../components/PlayerQueueButton';
+import { StickyPressable } from '../components/StickyPressable';
 import { useQueueListPrefetch } from '../components/useQueueListPrefetch';
-import {
-  playbackQualityOptions,
-  trackQueueKey,
-  type PlaybackQuality,
-} from '../domain/types';
-import { localPlaybackReference } from '../services/libraryPlayback';
-import { mediaPlaybackKey } from '../services/mediaPlaybackProgress';
-import { playbackNetworkQuality } from '../services/networkQuality';
-import {
-  enrichTrackPresentation,
-  playerCoverCandidates,
-  trackCoverCandidates,
-} from '../services/onlineCatalog';
 import {
   getCachedTrackLyrics,
   getTrackLyrics,
@@ -58,30 +49,48 @@ import {
   trackLyricsKey,
   type LyricLine,
 } from '../services/onlineMusic';
+import { subscribePlayerLyrics } from '../services/playerLyrics';
+import {
+  enrichTrackPresentation,
+  playerCoverCandidates,
+  trackCoverCandidates,
+} from '../services/onlineCatalog';
 import {
   playerForegroundForTone,
   preloadPlayerArtworkTone,
   usePlayerBackdropSurfaceTone,
 } from '../services/playerAppearance';
-import { subscribePlayerLyrics } from '../services/playerLyrics';
-import { playerQuality } from '../services/playerQuality';
-import { useApp } from '../state/AppContext';
 import { useLayout } from '../state/LayoutContext';
-import { createThemedStyles, serif } from '../theme';
-import { EffectsScreen } from './EffectsScreen';
+import {
+  playbackQualityOptions,
+  trackQueueKey,
+  type PlaybackQuality,
+} from '../domain/types';
+import { playerQuality } from '../services/playerQuality';
+import { playbackNetworkQuality } from '../services/networkQuality';
+import { localPlaybackReference } from '../services/libraryPlayback';
+import { useLibraryTrackArtwork } from '../components/useLibraryTrackArtwork';
+import {
+  LyricStylePicker,
+  LyricStyleButton,
+  StyledLyricLine,
+  LyricPerformanceStage,
+  useLyricMotionEnabled,
+  type LyricStyle,
+} from '../components/LyricPresentation';
+import { normalizeLyricStyle } from '../domain/lyricStyle';
+
 type PlayerTrack = NonNullable<ReturnType<typeof useApp>['current']>;
 const supplementalPlayerCovers = new Map<string, string[]>();
 const pendingPlayerCovers = new Map<string, Promise<string[]>>();
-const isSpokenMediaPresentation = (track: Pick<PlayerTrack, 'metadata'>) => {
-  const mediaType = String(track.metadata?.mediaType ?? '').toLowerCase();
-  return mediaType === 'long-audio';
-};
+
 function withAlpha(hex: string, alpha: number) {
   const match = /^#([0-9a-f]{6})$/i.exec(hex);
   if (!match) return `rgba(78,59,54,${alpha})`;
   const value = parseInt(match[1]!, 16);
   return `rgba(${value >> 16},${(value >> 8) & 255},${value & 255},${alpha})`;
 }
+
 function formatTime(seconds: number) {
   const value = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
   return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(
@@ -89,6 +98,7 @@ function formatTime(seconds: number) {
     '0',
   )}`;
 }
+
 const PROGRESS_WAVE_HEIGHT = 8;
 const PROGRESS_WAVE_CYCLE = 36;
 // The motion viewport is twice this width. Keep two complete path bands so
@@ -105,12 +115,15 @@ const PROGRESS_WAVE_PATH = `M 0 4 ${Array.from(
     } 8 ${end} 4`;
   },
 ).join(' ')}`;
+
 const playerCoverFallbacks = (track: PlayerTrack) =>
   playerCoverCandidates(track);
+
 const normalizedMatchText = (value: string) =>
   value
     .toLocaleLowerCase()
     .replace(/[\s\u3000'"“”‘’·•,，.。!！?？:：/\\|、()[\]{}<>《》]/g, '');
+
 /** Search results are presentation metadata only; accept a cover only when the
  * provider and the song identity still match the playing track. */
 export const isMatchingCoverTrack = (
@@ -136,6 +149,7 @@ export const isMatchingCoverTrack = (
     Math.abs(sourceDuration - candidateDuration) <= 12
   );
 };
+
 function usePlayerCover(track: PlayerTrack | null, enabled = true) {
   const requestKey = useRef('');
   const requestGeneration = useRef(0);
@@ -155,6 +169,7 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
     key: trackKey,
     uris: supplementalPlayerCovers.get(trackKey) ?? [],
   }));
+
   const requestSupplement = useCallback(() => {
     if (!enabled || !track || !presentation || requestKey.current === trackKey)
       return;
@@ -192,6 +207,7 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
         setSupplemental({ key: trackKey, uris });
     });
   }, [enabled, presentation, track, trackKey]);
+
   useEffect(() => {
     requestGeneration.current += 1;
     setSupplemental({
@@ -206,6 +222,8 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
     )
       return;
     requestSupplement();
+    // The request is intentionally keyed to the playing track.  It is a
+    // low-priority presentation lookup and never participates in playback.
   }, [
     metadataCandidates.length,
     metadataKey,
@@ -213,6 +231,7 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
     track,
     trackKey,
   ]);
+
   const candidates = Array.from(
     new Set([
       ...metadataCandidates,
@@ -227,14 +246,30 @@ function usePlayerCover(track: PlayerTrack | null, enabled = true) {
     onExhausted: requestSupplement,
   };
 }
-export function PlayerScreen() {
+
+export function PlayerScreen({ visible = true }: { visible?: boolean }) {
   const app = useApp();
-  if (app.page === 'lyrics') return <Lyrics />;
-  if (app.page === 'effects') return <Effects />;
-  if (app.page === 'queue') return <Queue />;
-  return <NowPlaying />;
+  const lyricStyle = normalizeLyricStyle(app.state.settings.lyricStyle);
+  const detail = visible && ['lyrics', 'effects', 'queue'].includes(app.page);
+  const nowPlayingVisible = visible && !detail;
+  return (
+    <View testID="player-page-host" style={[s.retainedPage, !visible && s.retainedHidden]}
+      pointerEvents={visible ? 'auto' : 'none'} accessibilityElementsHidden={!visible}
+      importantForAccessibility={visible ? 'auto' : 'no-hide-descendants'}>
+      <View testID="player-retained-page" style={[s.retainedPage, !nowPlayingVisible && s.retainedHidden]}
+        pointerEvents={nowPlayingVisible ? 'auto' : 'none'} accessibilityElementsHidden={!nowPlayingVisible}
+        importantForAccessibility={nowPlayingVisible ? 'auto' : 'no-hide-descendants'}>
+        <NowPlaying active={nowPlayingVisible} />
+      </View>
+      {detail ? <View testID="player-detail-page" style={s.retainedPage}>
+        {app.page === 'queue' ? <PlayerBackdrop /> : null}
+        {app.page === 'lyrics' ? <Lyrics lyricStyle={lyricStyle} onStyleChange={value => app.setSetting('lyricStyle', value)} />
+          : app.page === 'effects' ? <EffectsScreen /> : <Queue />}
+      </View> : null}
+    </View>
+  );
 }
-function NowPlaying() {
+function NowPlaying({ active: pageActive }: { active: boolean }) {
   const app = useApp(),
     layout = useLayout(),
     appTrack = app.current;
@@ -262,10 +297,7 @@ function NowPlaying() {
     slot: number;
     token: number;
   } | null>(null);
-  const committedFallback = useRef<{
-    key: string;
-    token: number;
-  } | null>(null);
+  const committedFallback = useRef<{ key: string; token: number } | null>(null);
   const resetFallbackPage = useCallback(() => {
     committedFallback.current = null;
     setFallbackPage(null);
@@ -298,6 +330,10 @@ function NowPlaying() {
   );
   const [timerOpen, setTimerOpen] = useState(false);
   const [qualityOpen, setQualityOpen] = useState(false);
+  const closePlayerOverlay = useCallback(() => {
+    setTimerOpen(false);
+    setQualityOpen(false);
+  }, []);
   // Keep the outgoing page mounted while the native target is resolving and
   // the swipe animation is running. The target preview is promoted only when
   // settleTransition has both the accepted target and the finished animation.
@@ -310,10 +346,11 @@ function NowPlaying() {
   const appPage = app.page;
   const queueListOpen = app.queueListOpen;
   const setPlayerOverlayOpen = app.setPlayerOverlayOpen;
-  useEffect(() => {
-    setPlayerOverlayOpen(timerOpen || qualityOpen);
+  useLayoutEffect(() => {
+    setPlayerOverlayOpen(pageActive && (timerOpen || qualityOpen), closePlayerOverlay);
+    if (!pageActive) closePlayerOverlay();
     return () => setPlayerOverlayOpen(false);
-  }, [qualityOpen, setPlayerOverlayOpen, timerOpen]);
+  }, [closePlayerOverlay, pageActive, qualityOpen, setPlayerOverlayOpen, timerOpen]);
   const duration = app.player.duration || track?.duration || 0,
     coverSize = layout.playerCoverSize;
   const backdropTone = usePlayerBackdropSurfaceTone(track, true);
@@ -339,29 +376,50 @@ function NowPlaying() {
   const centerSlot = visualSlotRef.current;
   const pages = new Map<
     string,
-    {
-      track: PlayerTrack;
-      offset: number;
-      slot: number;
-    }
+    { track: PlayerTrack; offset: number; slot: number }
   >();
-  for (const offset of [0, 1, 2, -1]) {
-    const item = offset === 0 ? track : app.queue[centerIndex + offset];
-    if (item && !pages.has(trackQueueKey(item)))
+  const pendingPage = transitionTargetRef.current;
+  const preparationTarget =
+    transitionActive.current && pendingPage?.token === pagerToken.current
+      ? pendingPage
+      : null;
+  const preparationTrack = preparationTarget?.track ?? track;
+  const preparationQueueIndex = preparationTarget
+    ? app.queue.findIndex(
+        item => trackQueueKey(item) === trackQueueKey(preparationTarget.track),
+      )
+    : centerIndex;
+  const preparationIndex =
+    preparationQueueIndex >= 0
+      ? preparationQueueIndex
+      : preparationTarget?.index ?? centerIndex;
+  const preparationSlot = preparationTarget?.slot ?? centerSlot;
+  // Prepare both directions from the released target even while playback is
+  // resolving. Preparing from the outgoing page leaves the next fast gesture
+  // waiting for React to mount its destination after touch-up.
+  for (const offset of [0, 1, 2, -1, -2]) {
+    const item =
+      offset === 0
+        ? preparationTrack
+        : app.queue[preparationIndex + offset];
+    if (item && !pages.has(trackQueueKey(item))) {
+      const slot =
+        transitionActive.current || gestureActiveRef.current
+          ? pageSlotsRef.current.get(trackQueueKey(item)) ??
+            preparationSlot + offset
+          : preparationSlot + offset;
       pages.set(trackQueueKey(item), {
         track: item,
-        offset,
-        slot:
-          transitionActive.current || gestureActiveRef.current
-            ? pageSlotsRef.current.get(trackQueueKey(item)) ??
-              centerSlot + offset
-            : centerSlot + offset,
+        offset: slot - centerSlot,
+        slot,
       });
+    }
   }
+  if (track && !pages.has(visualKey))
+    pages.set(visualKey, { track, offset: 0, slot: centerSlot });
   for (const [key, page] of retainedPages.current) {
     pages.set(key, { ...page, offset: page.slot - centerSlot });
   }
-  const pendingPage = transitionTargetRef.current;
   if (transitionActive.current && pendingPage?.token === pagerToken.current) {
     const pendingKey = trackQueueKey(pendingPage.track);
     pages.set(pendingKey, {
@@ -407,6 +465,11 @@ function NowPlaying() {
   // opaque while native motion crosses them, including spring cancellation.
   visiblePages.current = new Map(pages);
   const orderedPages = [...pages].sort((a, b) => a[1].slot - b[1].slot);
+  // Native motion translates this track, while Android/Fabric hit testing still
+  // traverses its layout bounds. Enclose every retained page in those bounds.
+  // Rebase both layout offsets together; slot * extent + native motion is unchanged.
+  const firstSlot = orderedPages[0]?.[1].slot ?? centerSlot;
+  const lastSlot = orderedPages[orderedPages.length - 1]?.[1].slot ?? firstSlot;
   const settleTransition = useCallback(() => {
     const pending = transitionTargetRef.current;
     if (
@@ -472,6 +535,31 @@ function NowPlaying() {
     };
     settleTransition();
   }, [fallbackPage, settleTransition]);
+  useLayoutEffect(() => {
+    // A hidden pager cannot keep ownership of a later catalog selection.
+    // Stationary detail/menu navigation never touches the native position.
+    if (appPage === 'player' || (!transitionActive.current && !gestureActiveRef.current)) return;
+    const token = ++pagerToken.current;
+    const live = appRef.current.current;
+    gestureActiveRef.current = false;
+    transitionActive.current = false;
+    visualTrackRef.current = live;
+    visualIndexRef.current = appRef.current.player.index;
+    visualSlotRef.current = live
+      ? pageSlotsRef.current.get(trackQueueKey(live)) ?? visualSlotRef.current
+      : visualSlotRef.current;
+    restingYRef.current = -visualSlotRef.current * stageExtentRef.current;
+    outgoingTrackKeys.current.clear();
+    retainedPages.current.clear();
+    transitionTargetRef.current = null;
+    transitionAnimationDone.current = false;
+    transitionNavigationDone.current = false;
+    previewTrackRef.current = null;
+    setPreviewTrack(null);
+    resetFallbackPage();
+    stopSwipeAnimation(token, () => motionRef.current?.setPosition(restingYRef.current));
+    setPagerRevision(value => value + 1);
+  }, [appPage, resetFallbackPage, stopSwipeAnimation]);
   useEffect(() => {
     if (gestureActiveRef.current) return;
     // A selection made from the shared queue can supersede an unfinished
@@ -565,6 +653,45 @@ function NowPlaying() {
     },
     [resetFallbackPage, stopSwipeAnimation],
   );
+  const returnToRest = useCallback((navigate?: () => Promise<void>) => {
+    previewTrackRef.current = null;
+    setPreviewTrack(null);
+    const token = navigate ? ++pagerToken.current : pagerToken.current;
+    if (transitionTargetRef.current) {
+      transitionTargetRef.current = { ...transitionTargetRef.current, token };
+    }
+    if (!transitionTargetRef.current && visualTrackRef.current) {
+      transitionTargetRef.current = {
+        track: visualTrackRef.current,
+        index: visualIndexRef.current,
+        slot: visualSlotRef.current,
+        token,
+      };
+      transitionNavigationDone.current = true;
+    }
+    if (navigate) transitionNavigationDone.current = false;
+    transitionActive.current = true;
+    transitionAnimationDone.current = false;
+    motionRef.current?.animateTo(restingYRef.current, true, ({ finished }) => {
+      if (!finished || token !== pagerToken.current) return;
+      transitionAnimationDone.current = true;
+      settleTransition();
+      setPagerRevision(value => value + 1);
+    });
+    if (navigate) {
+      const navigation = navigate();
+      if (transitionTargetRef.current?.token === token)
+        transitionTargetRef.current.navigation = navigation;
+      navigation.then(
+        () => {
+          if (token !== pagerToken.current) return;
+          transitionNavigationDone.current = true;
+          settleTransition();
+        },
+        () => cancelTransition(token),
+      );
+    }
+  }, [cancelTransition, settleTransition]);
   const pageGestures = useMemo(
     () => ({
       onGrant: (event: PageGesture) => {
@@ -626,29 +753,7 @@ function NowPlaying() {
       onRelease: ({ dx, dy }: PageGesture) => {
         gestureActiveRef.current = false;
         if (Math.max(Math.abs(dx), Math.abs(dy)) < 64) {
-          previewTrackRef.current = null;
-          setPreviewTrack(null);
-          const token = pagerToken.current;
-          if (!transitionTargetRef.current && visualTrackRef.current) {
-            transitionTargetRef.current = {
-              track: visualTrackRef.current,
-              index: visualIndexRef.current,
-              slot: visualSlotRef.current,
-              token,
-            };
-            transitionNavigationDone.current = true;
-          }
-          transitionActive.current = true;
-          transitionAnimationDone.current = false;
-          motionRef.current?.animateTo(
-            restingYRef.current,
-            true,
-            ({ finished }) => {
-              if (!finished || token !== pagerToken.current) return;
-              transitionAnimationDone.current = true;
-              settleTransition();
-            },
-          );
+          returnToRest();
           return;
         }
         if (Math.abs(dx) > Math.abs(dy)) {
@@ -664,29 +769,15 @@ function NowPlaying() {
         const targetIndex = currentIndex + (direction < 0 ? 1 : -1);
         const target = appRef.current.queue[targetIndex] ?? null;
         if (!target) {
-          motionRef.current?.setPosition(restingYRef.current);
-          previewTrackRef.current = null;
-          setPreviewTrack(null);
-          // The first queue entry has no previous target.  Treat this as a
-          // synchronous edge bounce instead of entering the shared async
-          // navigation path (which stops the provider even though there is no
-          // song to load and can leave the gesture locked on a slow native
-          // stop).  The queue-bottom `next()` path remains asynchronous so it
-          // can request the next page as before.
+          // An edge bounce still owns any interrupted selection until both
+          // its navigation and return motion finish. Do not snap or abandon
+          // that selection's display ownership at the start of the queue.
           if (direction > 0) {
-            transitionActive.current = false;
-            motionRef.current?.animateTo(restingYRef.current, true);
+            returnToRest();
             return;
           }
-          const change =
-            direction < 0 ? appRef.current.next : appRef.current.previous;
-          const token = ++pagerToken.current;
-          void change()
-            .catch(() => undefined)
-            .finally(() => {
-              if (token !== pagerToken.current) return;
-              transitionActive.current = false;
-            });
+          // The queue-bottom path can still request another page.
+          returnToRest(appRef.current.next);
           return;
         }
         const token = ++pagerToken.current;
@@ -710,15 +801,20 @@ function NowPlaying() {
         previewDirectionRef.current = direction;
         previewTrackRef.current = target;
         setPreviewTrack(target);
+        // MOVE may already have committed this preview. Release changes the
+        // preparation center even when that state value stays the same, so
+        // publish its next two pages before motion or audio acknowledgement.
+        setPagerRevision(value => value + 1);
         const change =
           direction < 0 ? appRef.current.next : appRef.current.previous;
-        const navigation = change();
-        transitionTargetRef.current.navigation = navigation;
         motionRef.current?.animateTo(exitY, false, ({ finished }) => {
           if (!finished || token !== pagerToken.current) return;
           transitionAnimationDone.current = true;
           settleTransition();
+          setPagerRevision(value => value + 1);
         });
+        const navigation = change();
+        transitionTargetRef.current.navigation = navigation;
         navigation.then(
           () => {
             if (token !== pagerToken.current) return;
@@ -759,7 +855,7 @@ function NowPlaying() {
         });
       },
     }),
-    [cancelTransition, resetFallbackPage, settleTransition, stopSwipeAnimation],
+    [cancelTransition, resetFallbackPage, returnToRest, settleTransition, stopSwipeAnimation],
   );
   if (!track)
     return (
@@ -786,6 +882,13 @@ function NowPlaying() {
         <PlayerPageMotion
           ref={motionRef}
           pageExtent={stageExtent}
+          releaseTargets={stageHeight > 0 ? {
+            center: -(pendingPage?.slot ?? centerSlot) * stageExtent,
+            pages: app.queue.flatMap(item => {
+              const slot = pageSlotsRef.current.get(trackQueueKey(item));
+              return slot === undefined ? [] : [-slot * stageExtent];
+            }),
+          } : null}
           onGesture={event => {
             if (progressTouchActive.current) return;
             if (event.phase === 'grant') pageGestures.onGrant(event);
@@ -808,10 +911,23 @@ function NowPlaying() {
           <View
             collapsable={false}
             testID="player-swipe-track"
-            style={[s.playerSwipeTrack, { height: stageExtent }]}
+            style={[
+              s.playerSwipeTrack,
+              { top: firstSlot * stageExtent, height: (lastSlot - firstSlot + 1) * stageExtent },
+            ]}
           >
             {orderedPages.map(([key, page]) => {
               const active = page.offset === 0;
+              // Native page geometry owns touch targeting. Its animation can
+              // finish before JS receives the completion callback, so every
+              // mounted page keeps its controls available throughout motion.
+              const accessibilityKey = transitionAnimationDone.current
+                ? committedFallback.current?.key ??
+                  (transitionTargetRef.current && trackQueueKey(transitionTargetRef.current.track))
+                : null;
+              const accessiblePage = accessibilityKey
+                ? key === accessibilityKey
+                : active;
               const isPreview =
                 !active &&
                 Boolean(previewTrack && trackQueueKey(previewTrack) === key);
@@ -819,14 +935,14 @@ function NowPlaying() {
                 <View
                   key={key}
                   testID={`player-song-page-${key}`}
-                  pointerEvents={active ? 'auto' : 'none'}
-                  accessibilityElementsHidden={!active}
+                  pointerEvents="auto"
+                  accessibilityElementsHidden={!accessiblePage}
                   importantForAccessibility={
-                    active ? 'auto' : 'no-hide-descendants'
+                    accessiblePage ? 'auto' : 'no-hide-descendants'
                   }
                   style={[
                     s.playerPreviewFrame,
-                    { top: page.slot * stageExtent },
+                    { top: (page.slot - firstSlot) * stageExtent },
                     s.playerPageVisible,
                     { height: stageExtent },
                   ]}
@@ -871,12 +987,12 @@ function NowPlaying() {
         id="player-progress-touch"
         duration={duration}
         position={app.player.position}
-        trackKey={appTrack ? trackQueueKey(appTrack) : undefined}
+        trackKey={appTrack ? trackQueueKey(appTrack) : ''}
         horizontalPadding={layout.playerHeaderHorizontalPadding}
         bottom={layout.playerProgressBottom}
         smoothDrag
         wave
-        wavePlaying={app.player.playing}
+        wavePlaying={pageActive && app.player.playing}
         foreground={foreground}
         onTouchActiveChange={active => {
           progressTouchActive.current = active;
@@ -899,6 +1015,7 @@ function NowPlaying() {
     </View>
   );
 }
+
 function PlayerSongPage({
   track,
   active,
@@ -958,14 +1075,14 @@ function PlayerSongPage({
           },
         ]}
       >
-        <Pressable
+        <StickyPressable
           accessibilityLabel="返回"
           accessibilityElementsHidden
           onPress={app.back}
           style={s.hiddenBackAction}
         />
         <View style={s.menuGroup}>
-          <Pressable
+          <StickyPressable
             testID={id('player-menu-button')}
             accessibilityRole="button"
             accessibilityLabel="打开主菜单"
@@ -985,7 +1102,7 @@ function PlayerSongPage({
             >
               ☰
             </Glyph>
-          </Pressable>
+          </StickyPressable>
           <Text
             testID={id('player-menu-choice')}
             numberOfLines={1}
@@ -1058,7 +1175,7 @@ function PlayerSongPage({
               color={foreground.primary}
             />
             <View style={s.titleTools}>
-              <Pressable
+              <StickyPressable
                 testID={id('player-timer-button')}
                 onPress={() => onTimer()}
                 style={[
@@ -1072,8 +1189,8 @@ function PlayerSongPage({
                 >
                   定时
                 </Text>
-              </Pressable>
-              <Pressable
+              </StickyPressable>
+              <StickyPressable
                 testID={id('player-quality-button')}
                 accessibilityLabel={actualQuality.description}
                 onPress={() => onQuality()}
@@ -1089,8 +1206,8 @@ function PlayerSongPage({
                 >
                   {qualityLabel}
                 </Text>
-              </Pressable>
-              <Pressable
+              </StickyPressable>
+              <StickyPressable
                 testID={id('player-effects-button')}
                 onPress={() => app.open('effects')}
                 style={[
@@ -1104,7 +1221,7 @@ function PlayerSongPage({
                 >
                   音效
                 </Text>
-              </Pressable>
+              </StickyPressable>
             </View>
           </View>
           <Text
@@ -1132,6 +1249,7 @@ function PlayerSongPage({
     </View>
   );
 }
+
 function PlayerActionRow({
   track,
   color,
@@ -1161,6 +1279,7 @@ function PlayerActionRow({
         showRemove={false}
         scope={scope}
         player
+        sticky
         scale={layout.playerActionScale}
         playerColor={color}
       />
@@ -1171,11 +1290,13 @@ function PlayerActionRow({
         <PlaybackModePicker
           testID={id('player-mode-button')}
           player
+          sticky
           scale={layout.playerActionScale}
           playerColor={color}
         />
         <PlayerQueueButton
           testID={id('player-queue-button')}
+          sticky
           scale={layout.playerActionScale}
           color={color}
         />
@@ -1183,6 +1304,7 @@ function PlayerActionRow({
     </View>
   );
 }
+
 export function ProgressScrubber({
   id,
   duration,
@@ -1497,6 +1619,7 @@ export function ProgressScrubber({
     </Pressable>
   );
 }
+
 function ScrollingTitle({
   title,
   color,
@@ -1584,6 +1707,7 @@ function ScrollingTitle({
     </View>
   );
 }
+
 export function PlayerBackdrop() {
   const app = useApp();
   const tone = usePlayerBackdropSurfaceTone(app.current);
@@ -1595,6 +1719,7 @@ export function PlayerBackdrop() {
     />
   );
 }
+
 function PlayerPageBackdrop({
   track,
   viewTestID,
@@ -1611,6 +1736,7 @@ function PlayerPageBackdrop({
     />
   );
 }
+
 function TimerSheet({ onClose }: { onClose: () => void }) {
   const app = useApp();
   const layout = useLayout();
@@ -1628,7 +1754,7 @@ function TimerSheet({ onClose }: { onClose: () => void }) {
       testID="player-timer-overlay"
       style={[s.timerOverlay, { bottom: -layout.bottomNavHeight }]}
     >
-      <Pressable style={s.timerBackdrop} onPress={onClose} />
+      <StickyPressable style={s.timerBackdrop} onPress={onClose} />
       <View
         testID="player-timer-sheet"
         style={[s.timerSheet, { backgroundColor: tone }]}
@@ -1643,7 +1769,7 @@ function TimerSheet({ onClose }: { onClose: () => void }) {
               {app.player.sleepMode === 'off' ? '未设置' : '已设置'}
             </Text>
           </View>
-          <Pressable
+          <StickyPressable
             testID="player-timer-close"
             accessibilityLabel="关闭"
             hitSlop={8}
@@ -1651,11 +1777,11 @@ function TimerSheet({ onClose }: { onClose: () => void }) {
             style={s.timerClose}
           >
             <Glyph color={foreground.icon}>×</Glyph>
-          </Pressable>
+          </StickyPressable>
         </View>
         <View style={s.timerGrid}>
           {options.map(([label, action]) => (
-            <Pressable
+            <StickyPressable
               key={label}
               style={s.timerOption}
               onPress={() => action().then(onClose).catch(onClose)}
@@ -1663,23 +1789,24 @@ function TimerSheet({ onClose }: { onClose: () => void }) {
               <Text style={[s.timerTrack, { color: foreground.primary }]}>
                 {label}
               </Text>
-            </Pressable>
+            </StickyPressable>
           ))}
         </View>
         {app.player.sleepMode !== 'off' ? (
-          <Pressable
+          <StickyPressable
             style={s.cancelTimer}
             onPress={() => app.cancelSleepTimer().then(onClose).catch(onClose)}
           >
             <Text style={[s.cancelTimerText, { color: foreground.primary }]}>
               取消定时
             </Text>
-          </Pressable>
+          </StickyPressable>
         ) : null}
       </View>
     </View>
   );
 }
+
 function QualitySheet({
   selected,
   actualDescription,
@@ -1705,7 +1832,7 @@ function QualitySheet({
       testID="player-quality-overlay"
       style={[s.timerOverlay, { bottom: -layout.bottomNavHeight }]}
     >
-      <Pressable style={s.timerBackdrop} onPress={onClose} />
+      <StickyPressable style={s.timerBackdrop} onPress={onClose} />
       <View
         testID="player-quality-sheet"
         style={[s.timerSheet, { backgroundColor: tone }]}
@@ -1728,7 +1855,7 @@ function QualitySheet({
               </Text>
             ) : null}
           </View>
-          <Pressable
+          <StickyPressable
             testID="player-quality-close"
             accessibilityLabel="关闭"
             hitSlop={8}
@@ -1736,11 +1863,11 @@ function QualitySheet({
             style={s.timerClose}
           >
             <Glyph color={foreground.icon}>×</Glyph>
-          </Pressable>
+          </StickyPressable>
         </View>
         <View style={s.timerGrid}>
           {options.map(([value, label]) => (
-            <Pressable
+            <StickyPressable
               key={value}
               testID={`player-quality-${value}`}
               disabled={switching}
@@ -1759,16 +1886,14 @@ function QualitySheet({
                   已选择
                 </Text>
               ) : null}
-            </Pressable>
+            </StickyPressable>
           ))}
         </View>
       </View>
     </View>
   );
 }
-function Effects() {
-  return <EffectsScreen />;
-}
+
 function LyricPreview({
   track,
   position,
@@ -1793,30 +1918,21 @@ function LyricPreview({
       key,
       lines: cached ?? ([] as LyricLine[]),
       loaded: Boolean(cached),
-      error: '',
     };
   });
   const lines =
     lyricState.key === key
       ? lyricState.lines
       : getCachedTrackLyrics(presentation) ?? [];
-  const spokenMedia = isSpokenMediaPresentation(presentation);
-  const emptyLabel = spokenMedia
-    ? lyricState.key === key && lyricState.error
-      ? lyricState.error
-      : lyricState.key !== key || !lyricState.loaded
-      ? '正在读取平台字幕…'
-      : '该章节暂无平台字幕'
-    : '暂无歌词';
   useEffect(() => {
     const cached = getCachedTrackLyrics(presentation);
     setLyricState(previous =>
       previous.key === key
         ? previous
-        : { key, lines: cached ?? [], loaded: Boolean(cached), error: '' },
+        : { key, lines: cached ?? [], loaded: Boolean(cached) },
     );
     return subscribePlayerLyrics(presentation, value =>
-      setLyricState({ key, lines: value, loaded: true, error: '' }),
+      setLyricState({ key, lines: value, loaded: true }),
     );
   }, [key, presentation]);
   useEffect(() => {
@@ -1826,7 +1942,7 @@ function LyricPreview({
       .then(
         value =>
           listening &&
-          setLyricState({ key, lines: value, loaded: true, error: '' }),
+          setLyricState({ key, lines: value, loaded: true }),
       )
       .catch(
         () =>
@@ -1835,7 +1951,6 @@ function LyricPreview({
             key,
             lines: [],
             loaded: true,
-            error: spokenMedia ? '平台字幕读取失败，请稍后重试' : '',
           }),
       );
     return () => {
@@ -1847,7 +1962,6 @@ function LyricPreview({
     lyricState.key,
     lyricState.loaded,
     presentation,
-    spokenMedia,
   ]);
   const index = lines.reduce(
     (result, line, itemIndex) => (line.time <= position ? itemIndex : result),
@@ -1858,7 +1972,7 @@ function LyricPreview({
   // the song and action blocks from jumping between tracks.
   const visibleLineCount = layout.playerLyricLines;
   return (
-    <Pressable
+    <StickyPressable
       testID={viewTestID}
       accessibilityRole="button"
       accessibilityLabel="打开歌词页"
@@ -1876,7 +1990,7 @@ function LyricPreview({
         const lineIndex = index + offset;
         const text =
           lines[lineIndex]?.text ??
-          (!lines.length && offset === 0 ? emptyLabel : '');
+          (!lines.length && offset === 0 ? '暂无歌词' : '');
         return (
           <Text
             key={`${lineIndex}-${offset}`}
@@ -1900,9 +2014,10 @@ function LyricPreview({
           </Text>
         );
       })}
-    </Pressable>
+    </StickyPressable>
   );
 }
+
 function LyricEdgeFade({
   tone,
   bottom = false,
@@ -1923,10 +2038,13 @@ function LyricEdgeFade({
     </Svg>
   );
 }
-function Lyrics() {
+
+function Lyrics({ lyricStyle, onStyleChange }: { lyricStyle: LyricStyle; onStyleChange: (style: LyricStyle) => void }) {
   const app = useApp(),
     layout = useLayout(),
     track = app.current;
+  const motionEnabled = useLyricMotionEnabled(app.player.playing);
+  const [stylePickerOpen, setStylePickerOpen] = useState(false);
   const presentation = useMemo(
     () => (track ? enrichTrackPresentation(track) : null),
     [track],
@@ -1937,13 +2055,7 @@ function Lyrics() {
   const [pageHeight, setPageHeight] = useState(0);
   const [viewport, setViewport] = useState({ y: 0, height: 0 });
   const [lineLayouts, setLineLayouts] = useState<
-    Record<
-      number,
-      {
-        y: number;
-        height: number;
-      }
-    >
+    Record<number, { y: number; height: number }>
   >({});
   const [lines, setLines] = useState<LyricLine[]>([]),
     [loaded, setLoaded] = useState(false),
@@ -1975,12 +2087,11 @@ function Lyrics() {
       line.time <= app.player.position ? index : result,
     -1,
   );
-  const spokenMedia = Boolean(
-    presentation && isSpokenMediaPresentation(presentation),
-  );
-  const spokenEmptyLabel = '该章节暂无平台字幕';
-  const centerY = pageHeight / 2 - viewport.y;
   const activeLayout = lineLayouts[activeIndex];
+  const styledLyrics = lyricStyle !== 'default';
+  const topFadeHeight = styledLyrics ? 32 : layout.playerLyricLineHeight * 3;
+  const bottomFadeHeight = styledLyrics ? 48 : layout.playerLyricLineHeight * 4;
+  const centerY = pageHeight / 2 - viewport.y;
   const topPadding = Math.max(0, centerY - (lineLayouts[0]?.height ?? 0) / 2);
   const bottomPadding = Math.max(
     0,
@@ -1989,13 +2100,14 @@ function Lyrics() {
       (lineLayouts[lines.length - 1]?.height ?? 0) / 2,
   );
   useEffect(() => {
-    if (!activeLayout || !pageHeight || !viewport.height) return;
+    if (styledLyrics || !activeLayout || !pageHeight || !viewport.height) return;
     lyricsRef.current?.scrollTo({
       y: Math.max(0, activeLayout.y + activeLayout.height / 2 - centerY),
       animated: true,
     });
-  }, [activeLayout, centerY, pageHeight, viewport.height]);
+  }, [activeLayout, centerY, pageHeight, viewport.height, styledLyrics]);
   const duration = app.player.duration || track?.duration || 0;
+  const seekToLyric = (seconds: number) => app.seek(seconds).catch(() => undefined);
   return (
     <View
       testID="lyrics-view"
@@ -2029,9 +2141,12 @@ function Lyrics() {
           </Glyph>
         </Pressable>
       </View>
-      <ScrollView
+      {styledLyrics && lines.length ? <LyricPerformanceStage styleId={lyricStyle}
+        lines={lines} activeIndex={activeIndex} playing={motionEnabled} duration={duration} onSeek={seekToLyric}
+        style={[s.lyricsViewport, {top:layout.playerHeaderHeight + layout.trackRowHeight + 16, bottom:layout.trackRowHeight + 34}]} /> : <ScrollView
         ref={lyricsRef}
         testID="lyrics-scroll"
+        accessibilityLabel={"歌词显示：" + lyricStyle}
         onLayout={event => {
           const { y, height } = event.nativeEvent.layout;
           setViewport(previous =>
@@ -2043,7 +2158,7 @@ function Lyrics() {
         style={[
           s.lyricsViewport,
           {
-            top: layout.playerHeaderHeight + 8,
+            top: layout.playerHeaderHeight + (styledLyrics ? layout.trackRowHeight + 16 : 8),
             bottom: layout.trackRowHeight + 34,
           },
         ]}
@@ -2059,12 +2174,7 @@ function Lyrics() {
       >
         {!lines.length ? (
           <Text style={[s.empty, { color: foreground.secondary }]}>
-            {error ||
-              (spokenMedia
-                ? loaded
-                  ? spokenEmptyLabel
-                  : '正在读取平台字幕…'
-                : '正在读取平台歌词…')}
+            {error || (loaded ? '暂无歌词' : '正在读取平台歌词…')}
           </Text>
         ) : null}
         {lines.map((line, index) => (
@@ -2082,36 +2192,28 @@ function Lyrics() {
             accessibilityLabel={`跳转到 ${line.text}${
               line.translation ? `，${line.translation}` : ''
             }`}
-            onPress={() => app.seek(line.time).catch(() => undefined)}
+            onPress={() => seekToLyric(line.time)}
             style={[s.lyricPress, index === activeIndex && s.lyricActivePress]}
           >
-            <Text
-              style={[
-                s.lyric,
-                index === activeIndex && s.lyricActive,
-                {
-                  color:
-                    index === activeIndex
-                      ? foreground.primary
-                      : foreground.secondary,
-                },
-              ]}
-            >
-              {line.translation
-                ? `${line.text}\n${line.translation}`
-                : line.text}
-            </Text>
+            <StyledLyricLine styleId={lyricStyle} active={index === activeIndex}
+              playing={motionEnabled} distance={index - activeIndex}
+              text={line.text} translation={line.translation}
+              cueDuration={Math.max(.1, (lines[index + 1]?.time ?? duration) - line.time)}
+              color={index === activeIndex ? foreground.primary : foreground.secondary} />
           </Pressable>
         ))}
-      </ScrollView>
-      <PlayerDock track={track} />
+      </ScrollView>}
+      <PlayerDock track={track} stylePickerOpen={stylePickerOpen} onStyleToggle={() => setStylePickerOpen(open => !open)} />
       <ProgressScrubber
         id="lyrics-progress-touch"
         duration={duration}
         position={app.player.position}
+        trackKey={track ? trackQueueKey(track) : ''}
         horizontalPadding={layout.playerHeaderHorizontalPadding}
         bottom={layout.playerProgressBottom}
         smoothDrag
+        wave
+        wavePlaying={motionEnabled}
         foreground={foreground}
         onSeek={value => app.seek(value).catch(() => undefined)}
       />
@@ -2122,7 +2224,7 @@ function Lyrics() {
           s.lyricFadeTop,
           {
             top: layout.playerHeaderHeight + layout.trackRowHeight + 16,
-            height: layout.playerLyricLineHeight * 3,
+            height: topFadeHeight,
           },
         ]}
       >
@@ -2135,12 +2237,16 @@ function Lyrics() {
           s.lyricFadeBottom,
           {
             bottom: layout.playerProgressBottom + 22,
-            height: layout.playerLyricLineHeight * 4,
+            height: bottomFadeHeight,
           },
         ]}
       >
         <LyricEdgeFade tone={backdropTone} bottom />
       </View>
+      {stylePickerOpen ? <LyricStylePicker value={lyricStyle}
+        onChange={value => { onStyleChange(value); setLineLayouts({}); setStylePickerOpen(false); }}
+        tone={backdropTone} foreground={foreground}
+        top={layout.playerHeaderHeight + layout.trackRowHeight + 24} /> : null}
     </View>
   );
 }
@@ -2160,15 +2266,7 @@ function Queue() {
     layout.trackRowHeight,
   );
   const queueScrollRef = useRef<ScrollView | null>(null);
-  const queueRows = useRef(
-    new Map<
-      number,
-      {
-        key: string;
-        y: number;
-      }
-    >(),
-  );
+  const queueRows = useRef(new Map<number, { key: string; y: number }>());
   const queueItems = useRef(app.queue);
   queueItems.current = app.queue;
   const locateCurrent = useCallback((index: number) => {
@@ -2286,8 +2384,12 @@ function Queue() {
 }
 function PlayerDock({
   track,
+  stylePickerOpen,
+  onStyleToggle,
 }: {
   track: ReturnType<typeof useApp>['current'];
+  stylePickerOpen: boolean;
+  onStyleToggle: () => void;
 }) {
   const app = useApp();
   const layout = useLayout();
@@ -2324,6 +2426,7 @@ function PlayerDock({
           {presentation.artist}
         </Text>
       </View>
+      <LyricStyleButton open={stylePickerOpen} onPress={onStyleToggle} foreground={foreground} />
       <Pressable
         testID="lyrics-dock-toggle"
         accessibilityRole="button"
@@ -2340,9 +2443,12 @@ function PlayerDock({
     </View>
   );
 }
+
 const s = createThemedStyles(
   StyleSheet.create({
     root: { flex: 1, backgroundColor: 'transparent' },
+    retainedPage: { ...StyleSheet.absoluteFill, opacity: 1 },
+    retainedHidden: { opacity: 0 },
     qualitySwitching: {
       position: 'absolute',
       top: 70,
@@ -2800,22 +2906,6 @@ const s = createThemedStyles(
     },
     lyricPress: { width: '100%' },
     lyricActivePress: { opacity: 1 },
-    lyric: {
-      color: '#7E898C',
-      fontFamily: serif,
-      fontSize: 20,
-      lineHeight: 38,
-      textAlign: 'left',
-    },
-    lyricActive: {
-      color: '#fff',
-      fontSize: 24,
-      fontWeight: '700',
-      textShadowColor: 'rgba(255,255,255,.34)',
-      textShadowRadius: 2,
-    },
-    lyricRead: { color: '#fff' },
-    lyricUnread: { color: '#9BA4A8' },
     lyricFadeTop: {
       position: 'absolute',
       right: 0,

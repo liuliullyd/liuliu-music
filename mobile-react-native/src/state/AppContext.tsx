@@ -1,4 +1,5 @@
 import { requirePlaybackPrewarmRevalidation } from '../services/sourceRuntime';
+import { SourceRateLimitedError, isSourceRateLimited } from '../services/playbackSourceAvailability';
 import React, {
   createContext,
   useCallback,
@@ -145,6 +146,7 @@ import {
   memoryStatisticsFor,
 } from '../services/musicPreferenceStatistics';
 import { nativePlayer } from '../services/nativePlayer';
+import { MusicMemoryPlaybackRecorder } from '../services/musicMemoryPlayback';
 import {
   downloadNetworkQuality,
   isWifiNetwork,
@@ -266,7 +268,7 @@ export interface PlayTrackOptions {
   /** Internal bounded fallback depth used by the player after a failed start. */
   fallbackDepth?: number;
   /** Process-only visited entries for a single menu-scene failure chain. */
-  sceneFailedKeys?: string[];
+  menuFailedKeys?: string[];
   /** Startup/manual navigation may advance after a failed target; cold taps may not. */
   allowFailureFallback?: boolean;
   /** Explicit loaded-list bulk action; ordinary song taps never set this. */
@@ -318,6 +320,7 @@ export type AppPage =
   | 'experiments'
   | 'about';
 function sanitizeStartupError(error: unknown) {
+  if (isSourceRateLimited(error)) return new SourceRateLimitedError().message;
   const message = error instanceof Error ? error.message : String(error);
   if (/音源|后端|脚本|无数据|播放链路|HTTP|所有后端均失败/i.test(message))
     return '启动推荐暂时不可用：当前歌曲没有可播放的在线音源';
@@ -433,7 +436,7 @@ export interface Controller {
       snapshot: unknown,
       owner?: object,
     ) => void;
-    read: <T>(
+    read: <T,>(
       key: string,
       owner?: object,
       returnOriginKey?: number,
@@ -492,7 +495,7 @@ export interface Controller {
   current: Track | null;
   player: NativePlayerState;
   playerOverlayOpen: boolean;
-  setPlayerOverlayOpen: (open: boolean) => void;
+  setPlayerOverlayOpen: (open: boolean, onClose?: () => void) => void;
   setQueueListOpen: (open: boolean) => void;
   queueListOpen: boolean;
   queueReversed: boolean;
@@ -683,8 +686,6 @@ const PLAYER_FAILURE_FALLBACK_LIMIT = 6;
 const URL_PREWARM_CONCURRENCY = 2;
 const STARTUP_READY_HOLD_MS = 350;
 const STARTUP_CROSSFADE_SETTLE_MS = 440;
-const STARTUP_FIRST_RESOLVE_BUDGET_MS = 30000;
-const STARTUP_FIRST_RESOLVE_ATTEMPT_MS = 5000;
 const initialPlayer: NativePlayerState = {
   playing: false,
   index: 0,
@@ -703,7 +704,7 @@ const platformSourceKeys: Record<PlatformSetting['id'], string> = {
 };
 const rememberTrack = (tracks: Track[], track: Track) => [
   track,
-  ...tracks.filter(item => trackQueueKey(item) !== trackQueueKey(track)),
+  ...tracks.filter((item) => trackQueueKey(item) !== trackQueueKey(track)),
 ];
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const catalogViewState = useRef(new Map<string, unknown>()).current;
@@ -796,7 +797,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             retained.metadata = copyOriginCatalogMetadata(snapshot);
         }
       },
-      finishReturn: originKey => {
+      finishReturn: (originKey) => {
         if (
           originCatalogState.current.returning?.origin.catalogKey === originKey
         )
@@ -851,7 +852,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [homeRefreshToken, setHomeRefreshToken] = useState(0),
     [homeRefreshing, setHomeRefreshing] = useState(false),
     [pageRefreshToken, setPageRefreshToken] = useState(0),
-    [page, setPage] = useState<AppPage>('root'),
+    [page, setPage] = useState<AppPage>('player'),
     [homeMenuOrigin, setHomeMenuOrigin] = useState<'home' | 'player' | null>(
       null,
     ),
@@ -864,6 +865,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       null,
     ),
     [sourceHealthRevision, setSourceHealthRevision] = useState(0),
+    [startupRetryVersion, setStartupRetryVersion] = useState(0),
     [category, setCategory] = useState<DiscoveryCategory>('综合'),
     [feedPage, setFeedPage] = useState(1),
     [feed, setFeed] = useState<Track[]>([]),
@@ -876,7 +878,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [player, setPlayer] = useState<NativePlayerState>(initialPlayer),
     [playerPreparationReadyKey, setPlayerPreparationReadyKey] = useState(''),
     [interruptionRefreshVersion, setInterruptionRefreshVersion] = useState(0),
-    [playerOverlayOpen, setPlayerOverlayOpen] = useState(false),
+    [playerOverlayOpen, setPlayerOverlayOpenState] = useState(false),
     [queueListOpen, setQueueListOpenState] = useState(false),
     [queueReversed, setQueueReversed] = useState(false),
     [queueOrderVersion, setQueueOrderVersion] = useState(0),
@@ -901,6 +903,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       playlists: [],
     });
   const queueReversedRef = useRef(false);
+  const startupRetryAvailable = useRef(false);
+  const playerOverlayCloseRef = useRef<(() => void) | null>(null);
+  const setPlayerOverlayOpen = useCallback(
+    (open: boolean, onClose?: () => void) => {
+      playerOverlayCloseRef.current = open ? onClose ?? null : null;
+      setPlayerOverlayOpenState(open);
+    },
+    [],
+  );
   const clearSystemPlaylistClipboard = useCallback(async () => {
     const bridge = NativeModules.LiuliuMediaLibrary;
     if (!bridge?.clearPlaylistClipboard)
@@ -964,11 +975,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     pendingTrackPreparations = useRef(
       new Map<
         string,
-        Promise<
-          Track & {
-            playUrl: string;
-          }
-        >
+        { request: Promise<Track & { playUrl: string }>; signal?: AbortSignal }
       >(),
     ),
     queueGeneration = useRef(0),
@@ -1046,7 +1053,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const downloadNavigationVersion = useRef(0);
   const consumeDownloadDestination = useCallback(
     (version: number) =>
-      setDownloadDestination(value =>
+      setDownloadDestination((value) =>
         value?.version === version ? null : value,
       ),
     [],
@@ -1058,9 +1065,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const subscription = DeviceEventEmitter.addListener(
       'downloadProgress',
-      event => {
+      (event) => {
         const task = [...downloadActivityRef.current.values()].find(
-          item => item.id === event.requestId,
+          (item) => item.id === event.requestId,
         );
         if (!task || task.phase === 'failed' || task.phase === 'downloaded')
           return;
@@ -1090,7 +1097,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const signalQueueProgress = useCallback(() => {
     const waiters = [...queueProgressWaiters.current];
     queueProgressWaiters.current.clear();
-    waiters.forEach(resolve => resolve());
+    waiters.forEach((resolve) => resolve());
   }, []);
   useEffect(
     () => () => {
@@ -1102,7 +1109,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const waitForQueueProgress = useCallback(
     () =>
-      new Promise<void>(resolve => {
+      new Promise<void>((resolve) => {
         queueProgressWaiters.current.add(resolve);
       }),
     [],
@@ -1116,7 +1123,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const recommendationPlatforms = useMemo(
     () =>
       state?.platforms.filter(
-        platform =>
+        (platform) =>
           platform.enabled && healthyProviderIds?.includes(platform.id),
       ) ?? [],
     [healthyProviderIds, state?.platforms],
@@ -1126,7 +1133,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const catalogConfigurationKey = `${
     sourceSelectionGeneration.current
   }:${pageRefreshToken}:${recommendationPlatforms
-    .map(platform => platform.id)
+    .map((platform) => platform.id)
     .join('|')}`;
   const dislikedTrackIds = state?.disliked;
   const feedConfigurationKey = `${catalogConfigurationKey}:${
@@ -1163,7 +1170,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     stateStorageStatus.writeError?.rawLength,
   ]);
   useEffect(() => {
-    loadState().then(async persisted => {
+    loadState().then(async (persisted) => {
       const settings = restoreLaunchEffects(persisted.settings);
       const value = { ...persisted, settings };
       const gains =
@@ -1232,7 +1239,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     detailNavigationLog.current = page;
     if (
       previous !== page &&
-      [previous, page].some(value =>
+      [previous, page].some((value) =>
         (
           [
             'playlist-detail',
@@ -1261,7 +1268,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       message,
     );
     messageTimerRef.current = setTimeout(
-      () => setMessage(current => (current === message ? '' : current)),
+      () => setMessage((current) => (current === message ? '' : current)),
       isFailure ? 2500 : 1000,
     );
     return () => {
@@ -1277,25 +1284,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const patchState = useCallback(
     (update: (value: PersistedState) => PersistedState) =>
-      setState(value =>
+      setState((value) =>
         value ? retainRecentMusicState(update(value)) : value,
       ),
     [],
   );
   const rememberTrackPlayback = useCallback(
     (track: Track) =>
-      patchState(value => {
+      patchState((value) => {
         const kind = trackMediaKind(track);
         return {
           ...value,
           history: rememberMusicHistory(value.history, track),
-          profile: {
-            ...value.profile,
-            memoryStatistics: accumulateMusicStatistics(
-              memoryStatisticsFor(value.profile, value.history),
-              track,
-            ),
-          },
           savedTracks: rememberTrack(value.savedTracks, track),
         };
       }),
@@ -1303,7 +1303,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const rememberHomeMenuBatch = useCallback(
     (cursor: HomeMenuCursor, tracks: Track[]) => {
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
         menuRecommendationProgress: mergeMenuProgress(
           value.menuRecommendationProgress,
@@ -1315,6 +1315,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [patchState],
   );
   const lastHistoryPlayback = useRef('');
+  const musicMemoryRecorder = useRef(new MusicMemoryPlaybackRecorder());
   useEffect(() => {
     const publishNativeState = (
       value: NativePlayerState,
@@ -1325,7 +1326,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         value.mediaId ?? (nativeTrack ? trackQueueKey(nativeTrack) : '');
       const logicalIndex = nativeKey
         ? logicalQueueRef.current.findIndex(
-            track => trackQueueKey(track) === nativeKey,
+            (track) => trackQueueKey(track) === nativeKey,
           )
         : -1;
       // A bridge event for the outgoing item may arrive after playIndex has
@@ -1397,9 +1398,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         pendingDisplay.current = null;
       if (value.playing && !recovering && !navigationPending.current) {
         const playedTrack = queueRef.current.find(
-          track => trackQueueKey(track) === nativeKey,
+          (track) => trackQueueKey(track) === nativeKey,
         );
         if (playedTrack && logicalIndex >= 0) {
+          musicMemoryRecorder.current.confirm(playedTrack);
           const historyToken = `${queueGeneration.current}:${trackMediaKind(
             playedTrack,
           )}:${nativeKey}`;
@@ -1414,7 +1416,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             musicEntityPlaylists.current,
           );
           if (entries.length)
-            patchState(current => ({
+            patchState((current) => ({
               ...current,
               musicEntityHistory: mergeMusicEntityHistory(
                 current.musicEntityHistory ?? [],
@@ -1423,6 +1425,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             }));
         }
       }
+      const qualified = musicMemoryRecorder.current.observe(value.listening);
+      if (qualified.length)
+        patchState((current) => {
+          let statistics = memoryStatisticsFor(
+            current.profile,
+            current.history,
+          );
+          for (const track of qualified)
+            statistics = accumulateMusicStatistics(statistics, track);
+          console.info(
+            `[MusicMemoryProfile] qualified=${qualified.length} samples=${statistics.samples}`,
+          );
+          return {
+            ...current,
+            profile: { ...current.profile, memoryStatistics: statistics },
+          };
+        });
       if (recovering) {
         if (recovery.status === 'pending' && recovery.resume)
           recoverExpiredUrl.current(value);
@@ -1478,7 +1497,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const navigation = navigationVersion.current;
       const generation = queueGeneration.current;
       const sequence = ++readSequence;
-      return nativePlayer.getState().then(value => {
+      return nativePlayer.getState().then((value) => {
         // A slow poll belongs to the state at its invocation. A newer native
         // event or selection must not be replaced by that outgoing snapshot.
         if (
@@ -1494,7 +1513,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return value;
       });
     };
-    const unsubscribe = nativePlayer.subscribe(value => {
+    const unsubscribe = nativePlayer.subscribe((value) => {
       if (taskRemoved) return;
       nativeEventRevision += 1;
       publishNativeState(value);
@@ -1524,10 +1543,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         urlPrewarmScheduler.current!.reset();
         if (scenePlayback.current) scenePlayback.current.paused = true;
         setBusy(false);
-        setPlayer(value => ({ ...value, playing: false }));
+        setPlayer((value) => ({ ...value, playing: false }));
       },
     );
-    const appStateSubscription = AppState.addEventListener('change', next => {
+    const appStateSubscription = AppState.addEventListener('change', (next) => {
       foreground = next === 'active';
       if (next === 'active') {
         taskRemoved = false;
@@ -1544,11 +1563,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           source === sourceSelectionGeneration.current &&
           quality === qualityPreferenceRef.current;
         readNativeState()
-          .then(async value => {
+          .then(async (value) => {
             if (!value?.mediaId || !currentRequest()) return;
             const key = value.mediaId;
             const admitted = queueRef.current.find(
-              track => trackQueueKey(track) === key,
+              (track) => trackQueueKey(track) === key,
             );
             if (
               !admitted ||
@@ -1562,11 +1581,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             if (!resumed || !currentRequest()) return;
             const logical = logicalQueueRef.current;
             const index = logical.findIndex(
-              track => trackQueueKey(track) === key,
+              (track) => trackQueueKey(track) === key,
             );
             if (index < 0) return;
             const tracks = logical.filter(
-              track =>
+              (track) =>
                 trackQueueKey(track) !== key &&
                 track.provider !== 'custom' &&
                 !localPlaybackReference(track),
@@ -1587,7 +1606,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 startupRuntime.current.playbackSourcesFor(track),
                 quality,
               );
-            setInterruptionRefreshVersion(version => version + 1);
+            setInterruptionRefreshVersion((version) => version + 1);
           })
           .catch(() => undefined);
         return;
@@ -1627,10 +1646,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const request = loadCategoryFeed(category, feedPage, enabledPlatforms);
     feedLoadRef.current = request;
     request
-      .then(tracks => {
+      .then((tracks) => {
         if (revision === feedRequest.current) {
           const visible = tracks.filter(
-            track => !dislikedTrackIds.includes(track.id),
+            (track) => !dislikedTrackIds.includes(track.id),
           );
           feedCatalogOwner.current = requestOwner;
           setFeed(visible);
@@ -1646,7 +1665,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           );
         }
       })
-      .catch(error => {
+      .catch((error) => {
         if (revision === feedRequest.current) {
           setFeed([]);
           setMessage(
@@ -1665,9 +1684,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     queueOriginCatalog,
   ]);
   const currentByMediaId = player.mediaId
-    ? queue.find(track => trackQueueKey(track) === player.mediaId) ??
+    ? queue.find((track) => trackQueueKey(track) === player.mediaId) ??
       logicalQueueRef.current.find(
-        track => trackQueueKey(track) === player.mediaId,
+        (track) => trackQueueKey(track) === player.mediaId,
       )
     : null;
   const current =
@@ -1678,7 +1697,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     logicalQueueRef.current[0] ??
     null;
   useEffect(() => {
-    if (!state || !allDownloads(state).some(item => item.status === 'queued'))
+    if (!state || !allDownloads(state).some((item) => item.status === 'queued'))
       return;
     let polling = false;
     let cancelled = false;
@@ -1687,10 +1706,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       polling = true;
       try {
         const queued = allDownloads(state).filter(
-          item => item.status === 'queued',
+          (item) => item.status === 'queued',
         );
         const results = await Promise.all(
-          queued.map(async entry => {
+          queued.map(async (entry) => {
             try {
               return [entry.id, await queryDownloadStatus(entry.id)] as const;
             } catch {
@@ -1707,7 +1726,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (
             !latest ||
             !mediaDownloads(latest, trackMediaKind(entry.track)).some(
-              item =>
+              (item) =>
                 item.id === entry.id &&
                 downloadTrackKey(item.track) === downloadTrackKey(entry.track),
             )
@@ -1737,10 +1756,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             quality: existing?.quality ?? entry.quality,
           });
         }
-        if ([...updates.values()].some(value => value?.status !== 'queued'))
-          patchState(value => {
+        if ([...updates.values()].some((value) => value?.status !== 'queued'))
+          patchState((value) => {
             const updateEntries = (entries: typeof value.downloads) =>
-              entries.map(entry => {
+              entries.map((entry) => {
                 const update = updates.get(entry.id);
                 if (!update || update.status === 'queued') return entry;
                 return {
@@ -1775,12 +1794,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     exitArmedUntilRef.current = 0;
     if (exitHintTimerRef.current) clearTimeout(exitHintTimerRef.current);
     exitHintTimerRef.current = null;
-    setMessage(current => (current === EXIT_HINT_MESSAGE ? '' : current));
+    setMessage((current) => (current === EXIT_HINT_MESSAGE ? '' : current));
   }, []);
   const invalidateOriginReturn = useCallback(() => {
     originCatalogState.current.returning = null;
     pendingFeedRestore.current = null;
-    setCatalogRestore(value =>
+    setCatalogRestore((value) =>
       value.originKey === undefined
         ? value
         : { version: value.version, keys: [], originKey: undefined },
@@ -1814,6 +1833,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [disarmExitHint, invalidateOriginReturn],
   );
   const back = useCallback(() => {
+    const closePlayerOverlay = playerOverlayCloseRef.current;
+    if (pageRef.current === 'player' && closePlayerOverlay) {
+      setPlayerOverlayOpen(false);
+      closePlayerOverlay();
+      return;
+    }
     invalidateOriginReturn();
     const now = Date.now();
     if (
@@ -1843,7 +1868,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       exitHintTimerRef.current = setTimeout(() => {
         exitArmedUntilRef.current = 0;
         exitHintTimerRef.current = null;
-        setMessage(current => (current === EXIT_HINT_MESSAGE ? '' : current));
+        setMessage((current) => (current === EXIT_HINT_MESSAGE ? '' : current));
       }, EXIT_CONFIRM_WINDOW_MS);
       return;
     }
@@ -1856,7 +1881,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setStack(next);
     pageRef.current = previous;
     setPage(previous);
-  }, [disarmExitHint, invalidateOriginReturn]);
+  }, [disarmExitHint, invalidateOriginReturn, setPlayerOverlayOpen]);
   const setTab = useCallback(
     (next: AppTab) => {
       invalidateOriginReturn();
@@ -1905,6 +1930,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setQueueOrigin(origin);
     },
     [],
+  );
+  const publishPendingSelection = useCallback(
+    (
+      tracks: Track[],
+      index: number,
+      origin: QueueOrigin | null,
+      position = 0,
+      error: string | null = null,
+    ) => {
+      const track = tracks[index]!;
+      pendingDisplay.current = { key: trackQueueKey(track), index };
+      const sameLogicalQueue =
+        logicalQueueRef.current.length === tracks.length &&
+        logicalQueueRef.current.every(
+          (item, itemIndex) =>
+            trackQueueKey(item) === trackQueueKey(tracks[itemIndex]!),
+        );
+      if (!sameLogicalQueue) {
+        logicalQueueRef.current = tracks;
+        queuePublishedRef.current = tracks;
+        setQueue(tracks);
+        publishQueueOrigin(origin, false);
+      }
+      setPlayer((value) => ({
+        ...value,
+        index,
+        mediaId: trackQueueKey(track),
+        playing: false,
+        position,
+        duration: track.duration,
+        error,
+      }));
+    },
+    [publishQueueOrigin],
   );
   const captureQueueOrigin = useCallback(
     (label?: string, target?: QueueOriginTarget): QueueOrigin => {
@@ -1959,7 +2018,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         sourceLabel = item?.title;
       if (!sourceLabel && personalPlaylistId)
         sourceLabel = state?.playlists.find(
-          value => value.id === personalPlaylistId,
+          (value) => value.id === personalPlaylistId,
         )?.title;
       if (!sourceLabel && originTab === 'search') {
         const type = {
@@ -2096,7 +2155,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       provider &&
       provider !== 'all' &&
       provider !== 'custom' &&
-      !recommendationPlatforms.some(item => item.id === provider);
+      !recommendationPlatforms.some((item) => item.id === provider);
     const savedFeed =
       origin?.category && origin.feedPage !== undefined
         ? queueOriginCatalog.read<{
@@ -2115,7 +2174,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       missingProvider ||
       missingFeed ||
       (origin.personalPlaylistId &&
-        !state?.playlists.some(item => item.id === origin.personalPlaylistId))
+        !state?.playlists.some((item) => item.id === origin.personalPlaylistId))
     ) {
       setMessage('播放列表来源已不可用');
       return;
@@ -2136,7 +2195,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     disarmExitHint();
     for (const [key, value] of origin.navigation)
       catalogViewState.set(key, value);
-    setCatalogRestore(value => ({
+    setCatalogRestore((value) => ({
       version: value.version + 1,
       keys: origin.navigation.map(([key]) => key),
       originKey: origin.catalogKey,
@@ -2177,11 +2236,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     feedPage,
     queueOriginCatalog,
     recommendationPlatforms,
+    setPlayerOverlayOpen,
     setQueueListOpen,
     state?.playlists,
   ]);
   const refreshPage = useCallback(
-    () => setPageRefreshToken(value => value + 1),
+    () => setPageRefreshToken((value) => value + 1),
     [],
   );
   const playbackSourcesFor = useCallback(
@@ -2192,14 +2252,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ? null
           : verifiedSourceIdsByProvider.current?.[track.provider];
       return verifiedSourceIdsByProvider.current
-        ? state.sources.map(source => ({
-            ...source,
-            healthy: Boolean(verifiedIds?.includes(source.id)),
-            pinnedBackend:
-              verifiedBackendByProvider.current?.[
-                track.provider as Exclude<Track['provider'], 'custom'>
-              ],
-          }))
+        ? state.sources
+            .map((source) => ({
+              ...source,
+              healthy: Boolean(verifiedIds?.includes(source.id)),
+              pinnedBackend:
+                verifiedIds?.[0] === source.id
+                  ? verifiedBackendByProvider.current?.[
+                      track.provider as Exclude<Track['provider'], 'custom'>
+                    ]
+                  : undefined,
+            }))
+            .sort(
+              (left, right) =>
+                (verifiedIds?.indexOf(left.id) ?? -1) -
+                (verifiedIds?.indexOf(right.id) ?? -1),
+            )
         : state.sources;
     },
     [state],
@@ -2214,7 +2282,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return;
       if (
         !playbackSourcesFor(track).some(
-          source => source.healthy === true && isSourceEnabled(source),
+          (source) => source.healthy === true && isSourceEnabled(source),
         )
       )
         throw new SourceBindingUnavailableError(
@@ -2239,7 +2307,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const native = await nativePlayer.getState();
           const key = native.mediaId ?? actualPlayingKey.current;
           const currentIndex = queueRef.current.findIndex(
-            item => trackQueueKey(item) === key,
+            (item) => trackQueueKey(item) === key,
           );
           if (currentIndex < 0) return;
           if (
@@ -2290,7 +2358,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       timing?: PlaybackTimingObserver,
       recoverMissingDownload = false,
       cachedUrlOnly = false,
+      parallelInterfaces = false,
+      signal?: AbortSignal,
     ) => {
+      if (signal?.aborted) throw new PlayerRequestCancelled();
       if (!state) throw new Error('应用状态尚未就绪');
       const sourceGeneration = sourceSelectionGeneration.current;
       const localReference = localPlaybackReference(track);
@@ -2314,7 +2385,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             recovery = recoverMissingMusicDownload(track, state, error, {
               query: queryDownloadStatus,
               probe: probeLocalAudio,
-              download: async input => {
+              download: async (input) => {
                 if (sourceGeneration !== sourceSelectionGeneration.current)
                   throw new Error('音源设置已变更，请重新点击播放');
                 setMessage('正在恢复本地下载…');
@@ -2324,7 +2395,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   !verifiedSourceIdsByProvider.current?.[input.provider]
                     ?.length ||
                   !sources.some(
-                    source =>
+                    (source) =>
                       source.enabled &&
                       source.healthy === true &&
                       Boolean(source.script),
@@ -2341,7 +2412,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 return downloadAudio(url, input.title, input.artist);
               },
               update: (previous, replacement) =>
-                patchState(value =>
+                patchState((value) =>
                   replaceRecoveredMusicDownload(value, previous, replacement),
                 ),
             }).finally(() => pendingLocalMusicRepairs.current.delete(key));
@@ -2390,9 +2461,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           : track;
       const requestKey = `${sourceGeneration}:${preferredQuality}:${trackQueueKey(
         input,
-      )}:${input.playUrl ?? ''}:${refreshExpiredUrl}:${cachedUrlOnly}`;
+      )}:${
+        input.playUrl ?? ''
+      }:${refreshExpiredUrl}:${cachedUrlOnly}:${parallelInterfaces}`;
       const pending = pendingTrackPreparations.current.get(requestKey);
-      if (pending) return pending;
+      if (pending && pending.signal === signal) return pending.request;
       const request = (async () => {
         if (pageRef.current === 'player')
           console.info(
@@ -2410,7 +2483,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           refreshExpiredUrl,
           timing,
           cachedUrlOnly,
+          parallelInterfaces,
+          signal,
         );
+        if (signal?.aborted) throw new PlayerRequestCancelled();
         return {
           ...input,
           metadata: {
@@ -2428,17 +2504,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           playUrl: resolved.url,
         };
       })();
-      pendingTrackPreparations.current.set(requestKey, request);
+      pendingTrackPreparations.current.set(requestKey, { request, signal });
       try {
         return await request;
       } finally {
-        if (pendingTrackPreparations.current.get(requestKey) === request)
+        if (
+          pendingTrackPreparations.current.get(requestKey)?.request === request
+        )
           pendingTrackPreparations.current.delete(requestKey);
       }
     },
     [assertPlaybackSourceBinding, playbackSourcesFor, state, patchState],
   );
-  recoverExpiredUrl.current = value => {
+  recoverExpiredUrl.current = (value) => {
     const recovery = value.urlRecovery;
     if (
       !recovery ||
@@ -2448,7 +2526,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     )
       return;
     const active = queueRef.current.find(
-      item => trackQueueKey(item) === recovery.mediaId,
+      (item) => trackQueueKey(item) === recovery.mediaId,
     );
     if (!active) return;
     expiredUrlRequest.current?.abort.abort();
@@ -2505,7 +2583,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         logicalQueueRef.current = logicalQueueRef.current.map(replace);
         if (queuePublishedRef.current)
           queuePublishedRef.current = queuePublishedRef.current.map(replace);
-        setQueue(items => items.map(replace));
+        setQueue((items) => items.map(replace));
         await nativePlayer.waitForPlaybackStart(
           15000,
           recovery.mediaId,
@@ -2531,7 +2609,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       preferredQuality: PersistedState['settings']['quality'] = qualityPreferenceRef.current,
     ) => {
       if (!state) throw new Error('应用状态尚未就绪');
-      const playable = await prepareValidatedTracks(tracks, track =>
+      const playable = await prepareValidatedTracks(tracks, (track) =>
         prepareTrack(track, preferredQuality),
       );
       if (!playable.length) throw new Error('当前列表没有可播放的在线音源');
@@ -2542,9 +2620,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(
     () =>
       subscribeRuntimeTrackBlacklist(() => {
-        setTrackBlacklistVersion(value => value + 1);
-        setFeed(value => filterPlayableCandidates(value));
-        setSearch(value => ({
+        setTrackBlacklistVersion((value) => value + 1);
+        setFeed((value) => filterPlayableCandidates(value));
+        setSearch((value) => ({
           ...value,
           tracks: filterPlayableCandidates(value.tracks),
         }));
@@ -2593,7 +2671,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       };
       const bindTracks = (items: Track[]) => {
         let changed = false;
-        const next = items.map(item => {
+        const next = items.map((item) => {
           const value = bind(item);
           if (value !== item) changed = true;
           return value;
@@ -2606,7 +2684,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         queuePublishedRef.current = bindTracks(queuePublishedRef.current);
       setQueue(bindTracks);
       setFeed(bindTracks);
-      setSearch(value => {
+      setSearch((value) => {
         const tracks = bindTracks(value.tracks);
         return tracks === value.tracks ? value : { ...value, tracks };
       });
@@ -2622,31 +2700,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       )
         return;
       const logical = logicalQueueRef.current;
-      if (!logical.some(track => trackQueueKey(track) === key)) return;
+      if (!logical.some((track) => trackQueueKey(track) === key)) return;
       const cursorTrack = logical[navigationCursor.current];
       interruptionQueue.current?.pending.delete(key);
       interruptionQueue.current?.ready.delete(key);
-      const remaining = logical.filter(track => trackQueueKey(track) !== key);
+      const remaining = logical.filter((track) => trackQueueKey(track) !== key);
       logicalQueueRef.current = remaining;
       queuePublishedRef.current = remaining;
       queuePreparationVersion.current += 1;
       const cursorIndex = cursorTrack
         ? remaining.findIndex(
-            track => trackQueueKey(track) === trackQueueKey(cursorTrack),
+            (track) => trackQueueKey(track) === trackQueueKey(cursorTrack),
           )
         : -1;
       if (cursorIndex >= 0) navigationCursor.current = cursorIndex;
       const pending = pendingDisplay.current;
       if (pending) {
         const index = remaining.findIndex(
-          track => trackQueueKey(track) === pending.key,
+          (track) => trackQueueKey(track) === pending.key,
         );
         if (index >= 0) pendingDisplay.current = { ...pending, index };
       }
       setQueue(remaining);
-      setPlayer(value => {
+      setPlayer((value) => {
         const index = remaining.findIndex(
-          track =>
+          (track) =>
             trackQueueKey(track) ===
             (value.mediaId ?? actualPlayingKey.current),
         );
@@ -2662,7 +2740,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         };
       });
       const generation = queueGeneration.current;
-      if (queueRef.current.some(track => trackQueueKey(track) === key)) {
+      if (queueRef.current.some((track) => trackQueueKey(track) === key)) {
         const cleanup = playerPreparationCommit.current
           .catch(() => undefined)
           .then(async () => {
@@ -2674,13 +2752,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             )
               return;
             const index = queueRef.current.findIndex(
-              track => trackQueueKey(track) === key,
+              (track) => trackQueueKey(track) === key,
             );
             if (index < 0) return;
             await nativePlayer.removeQueueItem(index);
             if (queueGeneration.current === generation)
               queueRef.current = queueRef.current.filter(
-                track => trackQueueKey(track) !== key,
+                (track) => trackQueueKey(track) !== key,
               );
           });
         playerPreparationCommit.current = cleanup.catch(() => undefined);
@@ -2696,7 +2774,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       onResult?: (result: { key: string; outcome: UrlPrewarmOutcome }) => void,
     ) => {
       if (!state) return;
-      const healthy = new Set(recommendationPlatforms.map(item => item.id));
+      const healthy = new Set(recommendationPlatforms.map((item) => item.id));
       if (lane === 'queue')
         urlPrewarmScheduler.current!.setQueueOrder(
           logicalQueueRef.current.map(prewarmIdentity),
@@ -2726,7 +2804,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 )
                   return;
                 const failedTrack = logicalQueueRef.current.find(
-                  item => prewarmIdentity(item) === key,
+                  (item) => prewarmIdentity(item) === key,
                 );
                 if (!failedTrack) return;
                 const failedKey = trackQueueKey(failedTrack);
@@ -2741,7 +2819,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const outcome = urlPrewarmScheduler.current!.enqueue(
           lane,
           key,
-          async signal => {
+          async (signal) => {
             const startedAt = Date.now();
             const preferred = qualityPreferenceRef.current;
             const cacheToken = sourceResolutionCacheToken();
@@ -2803,7 +2881,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               refresh &&
               interruptionQueue.current === refresh &&
               logicalQueueRef.current.some(
-                item => trackQueueKey(item) === targetKey,
+                (item) => trackQueueKey(item) === targetKey,
               )
             ) {
               const prepared = await prepareTrack(
@@ -2817,7 +2895,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               if (signal.aborted || interruptionQueue.current !== refresh)
                 return;
               refresh.ready.set(targetKey, prepared);
-              setInterruptionRefreshVersion(version => version + 1);
+              setInterruptionRefreshVersion((version) => version + 1);
             }
             console.info(
               '[url-prewarm]',
@@ -2838,7 +2916,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         );
         outcomes.push(outcome);
         if (onResult)
-          void outcome.then(value =>
+          void outcome.then((value) =>
             onResult({ key: trackQueueKey(track), outcome: value }),
           );
       }
@@ -2881,7 +2959,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         detailVisible ? tracks.map(prewarmIdentity) : [],
       );
       if (!detailVisible || startup.visible) return;
-      await enqueueUrlPrewarm('home-visible', tracks, owner, result => {
+      await enqueueUrlPrewarm('home-visible', tracks, owner, (result) => {
         onResult?.(result);
         console.info(
           '[detail-url-prewarm-outcome]',
@@ -2950,10 +3028,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const startupRuntime = useRef({
     state,
     playbackSourcesFor,
+    captureQueueOrigin,
   });
   startupRuntime.current = {
     state,
     playbackSourcesFor,
+    captureQueueOrigin,
   };
   const reverseQueue = useCallback(() => {
     if (queueReverseRequest.current) return queueReverseRequest.current;
@@ -2993,8 +3073,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setQueue(logical);
         const index = queueIndexForKey(logical, key, 0);
         navigationCursor.current = index;
-        setPlayer(value => ({ ...value, index }));
-        setQueueOrderVersion(value => value + 1);
+        setPlayer((value) => ({ ...value, index }));
+        setQueueOrderVersion((value) => value + 1);
       } catch (error) {
         if (queueGeneration.current === generation)
           setMessage(
@@ -3026,7 +3106,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (context)
       context.publishedCount = (context.publishedCount ?? 0) + additions.length;
     if (queueReversedRef.current)
-      setPlayer(value => ({
+      setPlayer((value) => ({
         ...value,
         index: queueIndexForKey(
           next,
@@ -3055,7 +3135,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     queuePageAbort.current = controller;
     let resolvePageReady!: () => void;
     let pageReadySettled = false;
-    const pageReady = new Promise<void>(resolve => {
+    const pageReady = new Promise<void>((resolve) => {
       resolvePageReady = resolve;
     });
     queuePageReadyRequest.current = pageReady;
@@ -3069,7 +3149,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
     let resolveReady!: () => void;
     let readySettled = false;
-    const ready = new Promise<void>(resolve => {
+    const ready = new Promise<void>((resolve) => {
       resolveReady = resolve;
     });
     queueReadyRequest.current = ready;
@@ -3201,7 +3281,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           enqueueUrlPrewarm(
             'queue',
             additions.filter(
-              track => trackQueueKey(track) !== actualPlayingKey.current,
+              (track) => trackQueueKey(track) !== actualPlayingKey.current,
             ),
           );
         releaseDataPriorityOnce();
@@ -3216,7 +3296,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             ...logicalQueueRef.current.map(trackQueueKey),
             ...queueRef.current.map(trackQueueKey),
           ]);
-          const partial = additions.filter(track => {
+          const partial = additions.filter((track) => {
             const key = trackQueueKey(track);
             if (seen.has(key)) return false;
             seen.add(key);
@@ -3228,7 +3308,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               enqueueUrlPrewarm(
                 'queue',
                 partial.filter(
-                  track => trackQueueKey(track) !== actualPlayingKey.current,
+                  (track) => trackQueueKey(track) !== actualPlayingKey.current,
                 ),
               );
           }
@@ -3308,7 +3388,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (context.error) {
         context.error = '';
         context.prefetchErrorKey = actualPlayingKey.current;
-        setQueuePage(value => ({ ...value, error: '' }));
+        setQueuePage((value) => ({ ...value, error: '' }));
       }
       const request = Promise.resolve().then(async () => {
         // Count supplied directory entries independently of later audio failures.
@@ -3409,7 +3489,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         logicalQueueRef.current.length > queueRef.current.length
       ) {
         const logical = logicalQueueRef.current;
-        const logicalIndex = logical.findIndex(track =>
+        const logicalIndex = logical.findIndex((track) =>
           keyHint !== undefined
             ? trackQueueKey(track) === keyHint
             : track.id === trackId,
@@ -3420,11 +3500,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           player.mediaId ??
           (logical[player.index] ? trackQueueKey(logical[player.index]!) : '');
         const remaining = logical.filter(
-          track => trackQueueKey(track) !== removeKey,
+          (track) => trackQueueKey(track) !== removeKey,
         );
         queuePreparationVersion.current += 1;
         const nativeIndex = queueRef.current.findIndex(
-          track => trackQueueKey(track) === removeKey,
+          (track) => trackQueueKey(track) === removeKey,
         );
         if (removeKey === activeKey) {
           const target = Math.min(logicalIndex, remaining.length - 1);
@@ -3433,7 +3513,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             if (nativeIndex >= 0)
               await nativePlayer.removeQueueItem(nativeIndex);
             queueRef.current = queueRef.current.filter(
-              track => trackQueueKey(track) !== removeKey,
+              (track) => trackQueueKey(track) !== removeKey,
             );
             logicalQueueRef.current = remaining;
             queuePublishedRef.current = null;
@@ -3450,17 +3530,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         if (nativeIndex >= 0) await nativePlayer.removeQueueItem(nativeIndex);
         queueRef.current = queueRef.current.filter(
-          track => trackQueueKey(track) !== removeKey,
+          (track) => trackQueueKey(track) !== removeKey,
         );
         logicalQueueRef.current = remaining;
         queuePublishedRef.current = null;
         setQueue(remaining);
         if (!remaining.length) publishQueueOrigin(null);
-        setPlayer(value => ({
+        setPlayer((value) => ({
           ...value,
           index: Math.max(
             0,
-            remaining.findIndex(track => trackQueueKey(track) === activeKey),
+            remaining.findIndex((track) => trackQueueKey(track) === activeKey),
           ),
           mediaId: remaining.length ? value.mediaId : null,
           playing: remaining.length ? value.playing : false,
@@ -3472,9 +3552,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
       if (pending.length)
         await Promise.all(
-          pending.map(request => request.catch(() => undefined)),
+          pending.map((request) => request.catch(() => undefined)),
         );
-      const index = queueRef.current.findIndex(track =>
+      const index = queueRef.current.findIndex((track) =>
         keyHint !== undefined
           ? trackQueueKey(track) === keyHint
           : track.id === trackId,
@@ -3485,13 +3565,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         : queueRef.current[player.index]
         ? trackQueueKey(queueRef.current[player.index]!)
         : '';
-      const removeKey = queueRef.current.find(track =>
+      const removeKey = queueRef.current.find((track) =>
         keyHint !== undefined
           ? trackQueueKey(track) === keyHint
           : track.id === trackId,
       )
         ? trackQueueKey(
-            queueRef.current.find(track =>
+            queueRef.current.find((track) =>
               keyHint !== undefined
                 ? trackQueueKey(track) === keyHint
                 : track.id === trackId,
@@ -3500,7 +3580,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         : trackId;
       const wasCurrent = currentKey === removeKey;
       const nextQueue = queueRef.current.filter(
-        track => trackQueueKey(track) !== removeKey,
+        (track) => trackQueueKey(track) !== removeKey,
       );
       if (wasCurrent) await nativePlayer.stop();
       await nativePlayer.removeQueueItem(index);
@@ -3508,7 +3588,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setQueue(nextQueue);
       if (!nextQueue.length) publishQueueOrigin(null);
       if (!nextQueue.length) {
-        setPlayer(value => ({
+        setPlayer((value) => ({
           ...value,
           index: 0,
           playing: false,
@@ -3521,7 +3601,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const target = Math.min(index, nextQueue.length - 1);
         try {
           await nativePlayer.playIndex(target);
-          setPlayer(value => ({
+          setPlayer((value) => ({
             ...value,
             index: target,
             playing: true,
@@ -3535,7 +3615,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         return;
       }
-      setPlayer(value => ({
+      setPlayer((value) => ({
         ...value,
         index: index < value.index ? value.index - 1 : value.index,
       }));
@@ -3594,8 +3674,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     (platformHealth: PlatformHealthResult) => {
       setHealthyProviderIds(platformHealth.healthy);
       setStartupHealth(platformHealth);
-      verifiedSourceIdsByProvider.current = platformHealth.sourceIdsByProvider;
-      verifiedBackendByProvider.current = platformHealth.backendByProvider;
+      verifiedSourceIdsByProvider.current = {
+        ...platformHealth.sourceIdsByProvider,
+        ...platformHealth.passedSourceIdsByProvider,
+      };
+      verifiedBackendByProvider.current = Object.fromEntries(
+        Object.entries(platformHealth.backendByProvider).filter(
+          ([provider]) =>
+            !platformHealth.passedSourceIdsByProvider?.[
+              provider as PlatformSetting['id']
+            ]?.length ||
+            platformHealth.byProvider[provider as PlatformSetting['id']]
+              ?.selectedSourceId ===
+              platformHealth.passedSourceIdsByProvider[
+                provider as PlatformSetting['id']
+              ]?.[0],
+        ),
+      );
     },
     [],
   );
@@ -3656,6 +3751,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!ready || !runtime.state || startupHandled.current) return;
     let launchState = runtime.state;
     startupHandled.current = true;
+    startupRetryAvailable.current = false;
     const sourceGeneration = sourceSelectionGeneration.current;
     let cancelled = false;
     const catalogAbort = new AbortController();
@@ -3689,7 +3785,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const startupGeneration = queueGeneration.current;
     const keepStageVisible = (milliseconds: number) => {
       if (cancelled) return Promise.resolve();
-      return new Promise<void>(resolve => {
+      return new Promise<void>((resolve) => {
         const finish = () => {
           pendingWaits.delete(finish);
           resolve();
@@ -3702,11 +3798,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const reveal = async (forPlayback = false) => {
       if (homeRevealed) return;
       if (!sourceGenerationIsCurrent()) return;
-      setStartup(value => ({ ...value, progress: 1, label: '准备完成' }));
+      setStartup((value) => ({ ...value, progress: 1, label: '准备完成' }));
       await keepStageVisible(STARTUP_READY_HOLD_MS);
       if (!sourceGenerationIsCurrent()) return;
       const committed = forPlayback
-        ? new Promise<void>(resolve => {
+        ? new Promise<void>((resolve) => {
             const finish = () => {
               pendingWaits.delete(finish);
               if (startupHomeCommit.current === finish)
@@ -3717,7 +3813,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             startupHomeCommit.current = finish;
           })
         : null;
-      setStartup(value => ({ ...value, visible: false }));
+      setStartup((value) => ({ ...value, visible: false }));
       homeRevealed = true;
       console.info(
         '[startup-sequence]',
@@ -3760,13 +3856,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         resetLaunchBackendPools();
         if (homeRevealed)
           releaseStartupPrewarm = urlPrewarmScheduler.current!.hold();
+        let latestHealth: PlatformHealthResult | null = null;
+        let releaseHealth = () => {};
+        let healthChanged = Promise.resolve();
+        const publishHealth = (health: PlatformHealthResult) => {
+          latestHealth = health;
+          pendingWaits.delete(releaseHealth);
+          releaseHealth();
+          healthChanged = new Promise<void>((resolve) => {
+            releaseHealth = resolve;
+          });
+          pendingWaits.add(releaseHealth);
+        };
         const healthSession = startPlatformHealthDetection(
           launchState.platforms,
           launchState.sources,
           '128k',
           launchState.settings.multiSourceDetection,
-          health => {
+          (health) => {
             if (!sourceGenerationIsCurrent()) return;
+            publishHealth(health);
             applyPlatformHealth(health);
             console.info(
               '[startup-health-progress]',
@@ -3780,7 +3889,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           },
         );
         // The same probes publish bindings after reveal without replaying startup.
-        healthSession.completed.catch(() => undefined);
+        healthSession.completed.then(publishHealth).catch(() => undefined);
         const [platformHealth] = await Promise.all([
           healthSession.firstPassed,
           keepStageVisible(420),
@@ -3800,6 +3909,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         );
         const provider = startupProviders[0] ?? null;
         if (!provider) {
+          startupRetryAvailable.current =
+            launchState.settings.startupAutoplay &&
+            !startupAutoplayCancelled.current;
           setMessage('没有通过播放链路检测的平台，已跳过启动推荐');
           await reveal();
           return;
@@ -3829,43 +3941,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             providers: startupProviders.length,
           }),
         );
-        const [mix] = await Promise.all([
-          loadHomeMenuFirstBatch(
-            'mode-default',
-            launchState.platforms
-              .filter(platform => platform.id === provider)
-              .map(platform => ({ ...platform, enabled: true })),
-            {
-              ...launchState.profile,
-              favoriteStatistics: favoriteStatisticsFor(launchState),
-            },
-            launchState.history,
-            {
-              signal: catalogAbort.signal,
-              progress: advanceExhaustedMenuRound(
-                menuProgressEntry(
-                  launchState.menuRecommendationProgress,
-                  'mode-default',
-                  provider,
-                ),
+        const mix = await loadHomeMenuFirstBatch(
+          'mode-default',
+          launchState.platforms
+            .filter((platform) => platform.id === provider)
+            .map((platform) => ({ ...platform, enabled: true })),
+          {
+            ...launchState.profile,
+            favoriteStatistics: favoriteStatisticsFor(launchState),
+          },
+          launchState.history,
+          {
+            signal: catalogAbort.signal,
+            progress: advanceExhaustedMenuRound(
+              menuProgressEntry(
+                launchState.menuRecommendationProgress,
+                'mode-default',
+                provider,
               ),
-            },
-          ),
-          keepStageVisible(520),
-        ]);
-        if (!sourceGenerationIsCurrent()) return;
-        console.info(
-          '[startup-sequence]',
-          JSON.stringify({ stage: 'mix-ready', tracks: mix.tracks.length }),
+            ),
+          },
         );
+        if (!sourceGenerationIsCurrent()) return;
         if (startupAutoplayCancelled.current) {
           await reveal();
           return;
         }
         if (!mix.tracks[0]) throw new Error('默认模式没有可用歌曲');
         rememberHomeMenuBatch(mix.cursor, mix.tracks);
-        // Preserve the original URL-only choice before shared selected-song
-        // preparation. The splash never creates a native queue or starts audio.
         releaseStartupPrewarm ??= urlPrewarmScheduler.current!.hold();
         if (!homeRevealed)
           setStartup({
@@ -3873,59 +3976,109 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             label: '正在为您准备歌曲',
             progress: 0.82,
           });
-        const resolvedFirst = await selectFirstResolvableTrack(
-          mix.tracks.slice(0, QUEUE_BATCH_SIZE),
-          async track => {
-            const playUrl = await resolvePlaybackAddress(
-              track,
-              startupRuntime.current.playbackSourcesFor(track),
-              playbackNetworkQuality(launchState.settings),
-            );
-            // Keep this URL-only result in the shared process cache. The
-            // selected-song path validates it before revealing Home and
-            // admitting the one-song native queue.
-            return { ...track, playUrl };
-          },
-          {
-            budgetMs: STARTUP_FIRST_RESOLVE_BUDGET_MS,
-            attemptTimeoutMs: STARTUP_FIRST_RESOLVE_ATTEMPT_MS,
-          },
-        );
-        if (!sourceGenerationIsCurrent()) return;
-        if (startupAutoplayCancelled.current) {
-          await reveal();
-          return;
-        }
-        let startupSource: QueueSource = {
+        const startupCandidates = mix.tracks.slice(0, QUEUE_BATCH_SIZE);
+        const startupSourceFor = (tracks: Track[]): QueueSource => ({
           kind: 'home-menu',
           startup: true,
           cursor: mix.cursor,
           hasMore: mix.hasMore,
+          seenKeys: tracks.map(trackQueueKey),
           ...(mix.hasMore
             ? {
                 initialMenuBatch: {
-                  remaining: QUEUE_BATCH_SIZE - resolvedFirst.tracks.length,
+                  remaining: QUEUE_BATCH_SIZE - tracks.length,
                   artists: [
                     ...new Set(
-                      resolvedFirst.tracks.flatMap(item =>
-                        constituentArtists(item.artist),
-                      ),
+                      tracks.flatMap((item) => constituentArtists(item.artist)),
                     ),
                   ],
                 },
               }
             : {}),
-        };
+        });
+        let attemptedIndex = 0;
+        let resolvedFirst: Awaited<
+          ReturnType<typeof selectFirstResolvableTrack>
+        >;
+        try {
+          resolvedFirst = await selectFirstResolvableTrack(
+            startupCandidates,
+            async (track, signal) => {
+              attemptedIndex = startupCandidates.indexOf(track);
+              const triedSources = new Set<string>();
+              let lastError: unknown = new Error('本平台没有可用音源');
+              while (sourceGenerationIsCurrent()) {
+                const currentHealth = latestHealth ?? platformHealth;
+                const sources = startupRuntime.current
+                  .playbackSourcesFor(track)
+                  .filter(
+                    (source) =>
+                      source.healthy !== false && !triedSources.has(source.id),
+                  );
+                if (sources.length) {
+                  sources.forEach((source) => triedSources.add(source.id));
+                  try {
+                    const playUrl = await resolvePlaybackAddress(
+                      track,
+                      sources,
+                      playbackNetworkQuality(launchState.settings),
+                      signal,
+                      true,
+                    );
+                    return { ...track, playUrl };
+                  } catch (error) {
+                    if (signal.aborted) throw error;
+                    lastError = error;
+                    continue;
+                  }
+                }
+                if (
+                  currentHealth.completed !== false ||
+                  currentHealth.completedProviders?.includes(provider)
+                )
+                  throw lastError;
+                await healthChanged;
+              }
+              throw lastError;
+            },
+            { signal: catalogAbort.signal },
+          );
+        } catch (error) {
+          if (
+            isSourceRateLimited(error) &&
+            sourceGenerationIsCurrent() &&
+            !startupAutoplayCancelled.current &&
+            AppState.currentState === 'active' &&
+            queueGeneration.current === startupGeneration
+          ) {
+            // Keep this catalog selection available for an explicit retry.
+            // Publishing metadata admits no audio and starts no fallback loop.
+            const retryTracks = startupCandidates.slice(attemptedIndex);
+            setQueueSource(startupSourceFor(retryTracks));
+            publishPendingSelection(
+              retryTracks,
+              0,
+              startupRuntime.current.captureQueueOrigin('默认模式', {
+                tab: 'discovery',
+                page: 'root',
+                menuChoiceId: 'mode-default',
+              }),
+              0,
+              sanitizeStartupError(error),
+            );
+          }
+          throw error;
+        }
+        if (!sourceGenerationIsCurrent()) return;
+        if (startupAutoplayCancelled.current) {
+          await reveal();
+          return;
+        }
         const startupTracks: Track[] = resolvedFirst.tracks.slice(
           0,
           QUEUE_BATCH_SIZE,
         );
-        if (startupSource.kind === 'home-menu') {
-          startupSource = {
-            ...startupSource,
-            seenKeys: startupTracks.map(trackQueueKey),
-          };
-        }
+        const startupSource = startupSourceFor(startupTracks);
         // A short catalog page still has a playable selected song. The shared
         // post-PLAYING pagination path fills it without blocking startup or
         // discarding this page when a later directory request fails.
@@ -3950,6 +4103,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (!homeRevealed && sourceGenerationIsCurrent()) await reveal();
       } catch (error) {
         if (!sourceGenerationIsCurrent()) return;
+        startupRetryAvailable.current =
+          launchState.settings.startupAutoplay &&
+          !startupAutoplayCancelled.current;
         console.info(
           '[startup-sequence]',
           JSON.stringify({
@@ -3966,10 +4122,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
       catalogAbort.abort();
-      timers.forEach(timer => clearTimeout(timer));
-      pendingWaits.forEach(finish => finish());
+      timers.forEach((timer) => clearTimeout(timer));
+      pendingWaits.forEach((finish) => finish());
     };
-  }, [applyPlatformHealth, patchState, ready, rememberHomeMenuBatch]);
+  }, [
+    applyPlatformHealth,
+    patchState,
+    publishPendingSelection,
+    ready,
+    rememberHomeMenuBatch,
+    setQueueSource,
+    startupRetryVersion,
+  ]);
   const playTrack = useCallback(
     async (
       track: Track,
@@ -4021,7 +4185,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         onDemand || startupPlayback ? new AbortController() : null;
       playerRequestAbort.current = requestAbort;
       let startupPreparationSubscription = startupPlayback
-        ? AppState.addEventListener('change', nextState => {
+        ? AppState.addEventListener('change', (nextState) => {
             if (nextState !== 'active') requestAbort?.abort();
           })
         : undefined;
@@ -4058,10 +4222,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         selectedOrigin,
       );
       const sceneQueue = isMenuSceneQueue(source);
+      const menuFallback =
+        source?.kind === 'home-menu' &&
+        !isStartupQueueSource(source) &&
+        (sceneQueue || options?.allowFailureFallback === true);
       const observeSceneAttempt = sceneQueue && !preserveQueueOrder;
-      const priorSceneFailures = new Set(
-        sceneQueue
-          ? options?.sceneFailedKeys ?? []
+      const priorMenuFailures = new Set(
+        menuFallback
+          ? options?.menuFailedKeys ?? []
           : startupPlayback?.failedKeys ?? [],
       );
       if (scenePlayback.current)
@@ -4076,7 +4244,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         : null;
       const requestedIndex =
-        index ?? tracks.findIndex(item => trackQueueKey(item) === selectedKey);
+        index ??
+        tracks.findIndex((item) => trackQueueKey(item) === selectedKey);
       const sourceIndex = requestedIndex >= 0 ? requestedIndex : 0;
       // A navigation within this logical queue owns the same directory
       // continuation, even if its selected-song native queue is replaced.
@@ -4098,7 +4267,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             nextSource !== source
           ) {
             continuationContext.source = nextSource;
-            setQueuePage(value => ({
+            setQueuePage((value) => ({
               ...value,
               hasMore: nextSource.hasMore,
             }));
@@ -4113,7 +4282,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const keys = new Set(items.map(trackQueueKey));
         const published = queuePublishedRef.current ?? logicalQueueRef.current;
         const additional = published.filter(
-          item => !keys.has(trackQueueKey(item)),
+          (item) => !keys.has(trackQueueKey(item)),
         );
         return queueReversedRef.current
           ? [...additional, ...items]
@@ -4198,7 +4367,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       };
       const rememberPlayback = () => {
         if (startupPlayback) return;
-        patchState(value => ({
+        patchState((value) => ({
           ...value,
           profile: learn(value.profile, track, 0, false, false),
         }));
@@ -4209,19 +4378,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       selectedPreparationGeneration.current = generation;
       if (!startupPlayback) setMessage('正在解析可播放音源…');
       try {
-        await playerPreparationCommit.current.catch(() => undefined);
-        if (!requestIsCurrent()) return;
-        if (!options?.providerAlreadyStopped) await nativePlayer.stop();
-        if (!requestIsCurrent()) return;
-        await backgroundReleased;
-        if (!requestIsCurrent()) return;
-        playbackStage = 'resolve';
-        assertPlaybackSourceBinding(track);
+        // Selection owns display identity immediately. Stopping the outgoing
+        // player and cancelling background work cannot hold old metadata on screen.
         const remainingTracks = tracks.filter(
           (item, itemIndex) =>
             itemIndex !== sourceIndex &&
             trackQueueKey(item) !== selectedKey &&
-            !priorSceneFailures.has(trackQueueKey(item)),
+            !priorMenuFailures.has(trackQueueKey(item)),
         );
         const pendingQueue = preserveQueueOrder
           ? retainPublishedTail(
@@ -4233,40 +4396,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const pendingIndex = preserveQueueOrder
           ? queueIndexForKey(pendingQueue, selectedKey, sourceIndex)
           : 0;
-        if (pageRef.current === 'player') {
-          pendingDisplay.current = { key: selectedKey, index: pendingIndex };
-          const sameLogicalQueue =
-            logicalQueueRef.current.length === pendingQueue.length &&
-            logicalQueueRef.current.every(
-              (item, itemIndex) =>
-                trackQueueKey(item) === trackQueueKey(pendingQueue[itemIndex]!),
-            );
-          if (!sameLogicalQueue) {
-            logicalQueueRef.current = pendingQueue;
-            queuePublishedRef.current = pendingQueue;
-            setQueue(pendingQueue);
-            publishQueueOrigin(
-              options?.queueOrigin ?? queueOriginRef.current,
-              false,
-            );
-          }
-          setPlayer(value => ({
-            ...value,
-            index: pendingIndex,
-            mediaId: selectedKey,
-            playing: false,
-            position: resumePosition ?? 0,
-            duration: track.duration,
-            error: null,
-          }));
-        }
+        publishPendingSelection(
+          pendingQueue,
+          pendingIndex,
+          options?.queueOrigin ?? queueOriginRef.current,
+          resumePosition ?? 0,
+        );
+        await playerPreparationCommit.current.catch(() => undefined);
+        if (!requestIsCurrent()) return;
+        if (!options?.providerAlreadyStopped) await nativePlayer.stop();
+        if (!requestIsCurrent()) return;
+        await backgroundReleased;
+        if (!requestIsCurrent()) return;
         playbackStage = 'resolve';
+        assertPlaybackSourceBinding(track);
         logSceneStage('stop');
         sceneStageStartedAt = Date.now();
         const requestedQuality =
           options?.quality ?? qualityPreferenceRef.current;
         const preparedIndex = queueRef.current.findIndex(
-          item =>
+          (item) =>
             trackQueueKey(item) === selectedKey &&
             Boolean(item.playUrl) &&
             (!localPlaybackReference(track) ||
@@ -4283,9 +4432,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           else await nativePlayer.playIndex(preparedIndex, resumePosition);
           if (!requestIsCurrent()) return;
           musicEntityRecorder.current.accept(generation, selectedKey);
-          pendingDisplay.current = null;
           publishPlaybackSource(source);
-          setPlayer(value => ({
+          setPlayer((value) => ({
             ...value,
             index: queueIndexForKey(
               logicalQueueRef.current,
@@ -4312,6 +4460,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             await waitForPlayerRequest(playing, requestAbort.signal);
           else await playing;
           if (!requestIsCurrent()) return;
+          if (pendingDisplay.current?.key === selectedKey)
+            pendingDisplay.current = null;
           playbackStarted = true;
           markSceneStarted();
           actualPlayingKey.current = selectedKey;
@@ -4331,13 +4481,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const target = Math.max(
               0,
               index ??
-                tracks.findIndex(item => trackQueueKey(item) === selectedKey),
+                tracks.findIndex((item) => trackQueueKey(item) === selectedKey),
             ),
             playable = await prepare(tracks, requestedQuality);
           if (queueGeneration.current !== generation) return;
           const playableIndex = Math.max(
             0,
-            playable.findIndex(item => trackQueueKey(item) === selectedKey),
+            playable.findIndex((item) => trackQueueKey(item) === selectedKey),
           );
           playbackStage = 'load';
           if (resumePosition === undefined)
@@ -4352,15 +4502,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           musicEntityRecorder.current.accept(generation, selectedKey);
           playbackStage = 'start';
           await nativePlayer.waitForPlaybackStart();
+          if (!requestIsCurrent()) return;
+          if (pendingDisplay.current?.key === selectedKey)
+            pendingDisplay.current = null;
           playbackStarted = true;
           markSceneStarted();
-          if (queueGeneration.current !== generation) return;
           publishPlaybackSource(source);
           queueRef.current = playable;
           setQueue(playable);
-          setPlayer(value => ({
+          setPlayer((value) => ({
             ...value,
             index: playableIndex,
+            mediaId: selectedKey,
             playing: true,
             position: resumePosition ?? 0,
             duration: playable[playableIndex]?.duration ?? 0,
@@ -4393,6 +4546,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             sceneTiming,
             options?.navigationToken === undefined,
             reusePlaylistCache,
+            true,
+            requestAbort?.signal,
           );
         const selectedRequest = mainPlayerSelection
           ? playerQueuePreparation.current.select(
@@ -4401,6 +4556,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 sourceSelectionGeneration.current
               }:${sourceResolutionCacheToken()}`,
               prepareSelected,
+              requestAbort?.signal,
             )
           : prepareSelected();
         const selected = requestAbort
@@ -4476,7 +4632,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 },
               }
             : queueSourceWithRemainder;
-        pendingDisplay.current = null;
         // The bottom player is a logical catalog queue as well as a native
         // Media3 queue. Publish its metadata immediately after the selected
         // one-song queue accepts play, while keeping unresolved neighbours out
@@ -4489,7 +4644,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         // tap during native hydration must still be recognized as belonging
         // to this queue instead of losing its paging source.
         publishPlaybackSource(acceptedQueueSource);
-        setPlayer(value => ({
+        setPlayer((value) => ({
           ...value,
           index: logicalSelectedIndex,
           mediaId: trackQueueKey(selected),
@@ -4516,6 +4671,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             requestAbort.signal,
           );
           if (!requestIsCurrent()) return;
+          if (pendingDisplay.current?.key === selectedKey)
+            pendingDisplay.current = null;
           playbackStarted = true;
           logSceneStage('actual-playing');
           markSceneStarted();
@@ -4525,7 +4682,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           enqueueUrlPrewarm(
             'queue',
             logicalQueueRef.current.filter(
-              item => trackQueueKey(item) !== selectedKey,
+              (item) => trackQueueKey(item) !== selectedKey,
             ),
           );
           releasePrewarmOnce();
@@ -4546,6 +4703,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           );
         else await nativePlayer.waitForPlaybackStart();
         if (!requestIsCurrent()) return;
+        if (pendingDisplay.current?.key === selectedKey)
+          pendingDisplay.current = null;
         playbackStarted = true;
         if (startupPlayback) logSceneStage('actual-playing');
         markSceneStarted();
@@ -4556,7 +4715,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         enqueueUrlPrewarm(
           'queue',
           logicalQueueRef.current.filter(
-            item => trackQueueKey(item) !== selectedKey,
+            (item) => trackQueueKey(item) !== selectedKey,
           ),
         );
         releasePrewarmOnce();
@@ -4565,6 +4724,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (error instanceof PlayerRequestCancelled || !requestIsCurrent())
           return;
         logSceneStage('failed', { failedStage: playbackStage });
+        if (!playbackStarted && isSourceRateLimited(error)) {
+          const rateLimitMessage = new SourceRateLimitedError().message;
+          if (catalogPlaybackGate.current === catalogGate)
+            catalogPlaybackGate.current = null;
+          if (scenePlayback.current?.generation === generation)
+            scenePlayback.current.handled = true;
+          setMessage(rateLimitMessage);
+          setPlayer((value) => ({
+            ...value,
+            playing: false,
+            error: rateLimitMessage,
+          }));
+          // Rate limiting describes the service, not any song in this queue.
+          // Retain the selected identity for an explicit later retry.
+          if (options?.navigationToken !== undefined || startupPlayback)
+            throw error;
+          return;
+        }
         if (
           !startupPlayback &&
           !playbackStarted &&
@@ -4576,7 +4753,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (scenePlayback.current?.generation === generation)
             scenePlayback.current.handled = true;
           setMessage(PLATFORM_UNBOUND_MESSAGE);
-          setPlayer(value => ({
+          setPlayer((value) => ({
             ...value,
             playing: false,
             error: PLATFORM_UNBOUND_MESSAGE,
@@ -4587,13 +4764,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         const failedKeys = new Set(
-          sceneQueue
-            ? options?.sceneFailedKeys ?? []
+          menuFallback
+            ? options?.menuFailedKeys ?? []
             : startupPlayback?.failedKeys ?? [],
         );
-        if (startupPlayback) failedKeys.add(selectedKey);
+        if (startupPlayback || menuFallback) failedKeys.add(selectedKey);
         if (sceneQueue) {
-          failedKeys.add(selectedKey);
           console.warn(
             '[scene-playback-error]',
             JSON.stringify({
@@ -4625,7 +4801,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             nextIndex >= 0 &&
             nextIndex < tracks.length &&
             (trackQueueKey(tracks[nextIndex]!) === selectedKey ||
-              (sceneQueue &&
+              (menuFallback &&
                 failedKeys.has(trackQueueKey(tracks[nextIndex]!))) ||
               (startupPlayback &&
                 failedKeys.has(trackQueueKey(tracks[nextIndex]!))) ||
@@ -4636,7 +4812,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (nextIndex >= 0) {
             const nextTrack = tracks[nextIndex]!;
             const nextTracks = options?.bulkPlay
-              ? tracks.filter(item => trackQueueKey(item) !== selectedKey)
+              ? tracks.filter((item) => trackQueueKey(item) !== selectedKey)
               : tracks;
             const nextSource = options?.queueSource ?? source ?? undefined;
             await startFeedRef.current(
@@ -4644,14 +4820,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               nextTracks,
               options?.bulkPlay
                 ? nextTracks.findIndex(
-                    item => trackQueueKey(item) === trackQueueKey(nextTrack),
+                    (item) => trackQueueKey(item) === trackQueueKey(nextTrack),
                   )
                 : nextIndex,
               {
                 ...options,
                 providerAlreadyStopped: false,
                 fallbackDepth: fallbackDepth + 1,
-                ...(sceneQueue ? { sceneFailedKeys: [...failedKeys] } : {}),
+                ...(menuFallback ? { menuFailedKeys: [...failedKeys] } : {}),
                 ...(startupPlayback
                   ? {
                       startupPlayback: {
@@ -4688,7 +4864,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             // Startup has no selected queue left. Home-visible audio validation
             // retains its existing independent entry behaviour after reveal.
             urlPrewarmScheduler.current!.setPlaybackReady(true);
-            setPlayer(value => ({
+            setPlayer((value) => ({
               ...value,
               index: 0,
               mediaId: '',
@@ -4710,8 +4886,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setMessage(
             options?.bulkPlay
               ? '当前已加载歌曲均无法播放，请稍后重试'
-              : sceneQueue
-              ? `场景歌曲连续播放失败，已停止自动尝试（${scenePlaybackFailure(
+              : menuFallback
+              ? `${
+                  sceneQueue ? '场景' : '模式'
+                }歌曲连续播放失败，已停止自动尝试（${scenePlaybackFailure(
                   playbackStage,
                   error,
                 )}）`
@@ -4722,11 +4900,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               : libraryLocalPlaybackFailure(track, error) ??
                 '当前歌曲没有可播放的在线音源',
           );
-          if (sceneQueue) {
+          if (menuFallback) {
+            if (catalogPlaybackGate.current === catalogGate)
+              catalogPlaybackGate.current = null;
             const failedScene = scenePlayback.current;
             if (failedScene?.generation === generation)
               failedScene.handled = true;
-            setPlayer(value => ({
+            setPlayer((value) => ({
               ...value,
               playing: false,
               error: scenePlaybackFailure(playbackStage, error),
@@ -4738,7 +4918,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             setQueue([]);
             setQueueSource(null);
             publishQueueOrigin(null);
-            setPlayer(value => ({
+            setPlayer((value) => ({
               ...value,
               playing: false,
               index: 0,
@@ -4747,15 +4927,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               error: '当前已加载歌曲均无法播放，请稍后重试',
             }));
           } else if (localPlaybackReference(track)) {
-            setPlayer(value => ({
+            setPlayer((value) => ({
               ...value,
               playing: false,
               error: libraryLocalPlaybackFailure(track, error),
             }));
           }
-          if (sceneQueue)
+          if (menuFallback)
             throw new Error(
-              `场景歌曲连续播放失败，已停止自动尝试（${scenePlaybackFailure(
+              `${
+                sceneQueue ? '场景' : '模式'
+              }歌曲连续播放失败，已停止自动尝试（${scenePlaybackFailure(
                 playbackStage,
                 error,
               )}）`,
@@ -4793,6 +4975,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       prefetchQueueAt,
       setQueueSource,
       publishQueueOrigin,
+      publishPendingSelection,
       state?.settings.repeat,
     ],
   );
@@ -4823,8 +5006,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       }
       if (shouldPlay) {
-        if (!current) return;
-        if (!queueRef.current.length) {
+        if (!current) {
+          if (startupRetryAvailable.current && !startup.visible) {
+            startupRetryAvailable.current = false;
+            startupHandled.current = false;
+            setStartupRetryVersion((version) => version + 1);
+          }
+          return;
+        }
+        if (
+          !queueRef.current.some(
+            (item) =>
+              trackQueueKey(item) === trackQueueKey(current) && item.playUrl,
+          )
+        ) {
           await playTrack(
             current,
             logicalQueueRef.current,
@@ -4839,9 +5034,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } else await nativePlayer.pause();
       // Do not invert a possibly newer polling/event value. The native action
       // above has one explicit target state, so commit that same target.
-      setPlayer(value => ({ ...value, playing: shouldPlay }));
+      setPlayer((value) => ({ ...value, playing: shouldPlay }));
     },
-    [current, playTrack, player.index],
+    [current, playTrack, player.index, startup.visible],
   );
   const togglePlay = useCallback(
     () => setPlaybackPlaying(!player.playing),
@@ -4857,7 +5052,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ...current,
           settings: update(current.settings),
         };
-      patchState(value => ({ ...value, settings: update(value.settings) }));
+      patchState((value) => ({ ...value, settings: update(value.settings) }));
     },
     [patchState],
   );
@@ -4891,7 +5086,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             gains,
             configuration,
           ]);
-          patchEqualizerSettings(settings =>
+          patchEqualizerSettings((settings) =>
             commitEffects(
               settings,
               {
@@ -4938,7 +5133,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const retained = readEffects(currentSettings, scope);
           const savedPreset = savedId
             ? currentSettings.customEqualizerPresets?.find(
-                preset =>
+                (preset) =>
                   preset.id === savedId && savedEffectHasScope(preset, scope),
               )
             : undefined;
@@ -4976,7 +5171,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             effectiveGains,
             configuration,
           ]);
-          patchEqualizerSettings(settings =>
+          patchEqualizerSettings((settings) =>
             commitEffects(
               settings,
               {
@@ -5143,7 +5338,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             next = {
               ...next,
               customEqualizerPresets: settings.customEqualizerPresets?.map(
-                preset =>
+                (preset) =>
                   preset.id === capturedTarget.id
                     ? part === 'advanced'
                       ? { ...preset, advanced: configuration.advanced }
@@ -5159,7 +5354,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const original =
               settings.effectUserOverrides?.[id] ??
               (capturedTarget.kind === 'scene'
-                ? [...zeusScenes, ...gtoScenes].find(scene => scene.id === id)!
+                ? [...zeusScenes, ...gtoScenes].find(
+                    (scene) => scene.id === id,
+                  )!
                 : presetTuning(id.slice(7)));
             const override =
               part === 'advanced'
@@ -5216,7 +5413,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const existing = current.customEqualizerPresets ?? [];
           if (
             existing.some(
-              preset =>
+              (preset) =>
                 preset.name === title &&
                 savedEffectHasScope(preset, capturedScope),
             )
@@ -5242,7 +5439,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               : {}),
           };
           return persistEqualizerEdit(
-            settings => ({
+            (settings) => ({
               ...commitEffects(
                 settings,
                 {
@@ -5301,7 +5498,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         };
         await saveState(nextState);
         // Publish only after the existing storage service confirms persistence.
-        patchState(value => ({
+        patchState((value) => ({
           ...value,
           settings: { ...value.settings, customEqualizerPresets: presets },
         }));
@@ -5340,7 +5537,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           },
         };
         await saveState(nextState);
-        patchState(value => ({
+        patchState((value) => ({
           ...value,
           settings: {
             ...forgetSavedEffect(value.settings, id),
@@ -5374,7 +5571,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ]);
       if (playbackSettings.current)
         playbackSettings.current = { ...playbackSettings.current, ...next };
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
         settings: { ...value.settings, ...next },
       }));
@@ -5389,7 +5586,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const selectedLogicalIndex =
         onDemandPlayerQueue.current && queueRef.current.length === 1
           ? logicalQueueRef.current.findIndex(
-              track =>
+              (track) =>
                 trackQueueKey(track) === trackQueueKey(queueRef.current[0]!),
             )
           : -1;
@@ -5449,7 +5646,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const preparedNative =
           preparedTarget &&
           queueRef.current.find(
-            item =>
+            (item) =>
               trackQueueKey(item) === trackQueueKey(preparedTarget) &&
               item.playUrl &&
               !interruptionQueue.current?.pending.has(trackQueueKey(item)) &&
@@ -5478,7 +5675,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (navigationVersion.current !== requestVersion) return false;
           providerStopped = true;
           const failedIndex = logicalQueueRef.current.findIndex(
-            item => trackQueueKey(item) === key,
+            (item) => trackQueueKey(item) === key,
           );
           if (catalogPlaybackGate.current?.key === key)
             catalogPlaybackGate.current = null;
@@ -5510,7 +5707,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             await queuePageReadyRequest.current?.catch(() => undefined);
             if (navigationVersion.current !== requestVersion) return;
             const shifted = logicalQueueRef.current.findIndex(
-              item => trackQueueKey(item) === anchorKey,
+              (item) => trackQueueKey(item) === anchorKey,
             );
             if (shifted <= 0) break;
             target = shifted - 1;
@@ -5521,10 +5718,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             queueGeneration.current,
             displayTarget ? trackQueueKey(displayTarget) : '',
           );
-          if (pageRef.current === 'player' && displayTarget) {
+          if (displayTarget) {
             const displayKey = trackQueueKey(displayTarget);
             pendingDisplay.current = { key: displayKey, index: target };
-            setPlayer(value => ({
+            setPlayer((value) => ({
               ...value,
               index: target,
               mediaId: displayKey,
@@ -5610,12 +5807,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 }
                 if (navigationVersion.current !== requestVersion) return;
                 navigationCursor.current = target;
-                setPlayer(value => ({
+                setPlayer((value) => ({
                   ...value,
                   index: target,
-                  mediaId: playerNavigation
-                    ? trackQueueKey(targetNativeTrack!)
-                    : value.mediaId,
+                  mediaId: trackQueueKey(targetNativeTrack!),
                   playing: true,
                   position: 0,
                   error: null,
@@ -5660,7 +5855,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
           const targetKey = trackQueueKey(logical[target]!);
           const nativeIndex = queueRef.current.findIndex(
-            track => trackQueueKey(track) === targetKey,
+            (track) => trackQueueKey(track) === targetKey,
           );
           const nativeTrack =
             nativeIndex >= 0 ? queueRef.current[nativeIndex] : null;
@@ -5702,13 +5897,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 error instanceof PlayerRequestCancelled
               )
                 return;
-              if (isSourceBindingUnavailable(error)) throw error;
+              if (
+                isSourceBindingUnavailable(error) ||
+                isSourceRateLimited(error)
+              )
+                throw error;
               if (!(await advanceUnavailableTarget(targetKey))) return;
               continue;
             }
             if (navigationVersion.current !== requestVersion) return;
             navigationCursor.current = logicalQueueRef.current.findIndex(
-              item => trackQueueKey(item) === targetKey,
+              (item) => trackQueueKey(item) === targetKey,
             );
             return;
           }
@@ -5774,15 +5973,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 playerRequestAbort.current = null;
             }
             if (navigationVersion.current !== requestVersion) return;
-            pendingDisplay.current = null;
+            // Outside the player page, playIndex acknowledges before the
+            // native playing event. Retain the selected identity through that
+            // gap; the matching playing event releases it for natural next.
+            if (actualPlayingKey.current === targetKey)
+              pendingDisplay.current = null;
             const acceptedIndex = logicalQueueRef.current.findIndex(
-              item => trackQueueKey(item) === targetKey,
+              (item) => trackQueueKey(item) === targetKey,
             );
             navigationCursor.current = acceptedIndex;
-            setPlayer(value => ({
+            setPlayer((value) => ({
               ...value,
               index: acceptedIndex,
-              mediaId: playerNavigation ? targetKey : value.mediaId,
+              mediaId: targetKey,
               playing: true,
               position: 0,
               error: null,
@@ -5823,14 +6026,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             pendingDisplay.current = null;
             const remaining = logicalQueueRef.current;
             const retainedIndex = remaining.findIndex(
-              item => trackQueueKey(item) === actualPlayingKey.current,
+              (item) => trackQueueKey(item) === actualPlayingKey.current,
             );
             const index =
               retainedIndex >= 0
                 ? retainedIndex
                 : Math.max(0, Math.min(target, remaining.length - 1));
             navigationCursor.current = index;
-            setPlayer(value => ({
+            setPlayer((value) => ({
               ...value,
               index,
               mediaId: remaining[index]
@@ -5921,7 +6124,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // the failed song or fetching additional pages merely to evade the limit.
     jump(1, index + 1).catch(() => undefined);
   };
-  advanceEndedPlayer.current = index => {
+  advanceEndedPlayer.current = (index) => {
     if (!state) return;
     const target = automaticPlayerTarget(
       index,
@@ -5960,9 +6163,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       logicalQueueRef.current.length >= 2 &&
       !shuffle &&
       autoNext !== false &&
-      logicalQueueRef.current.every(track =>
+      logicalQueueRef.current.every((track) =>
         queueRef.current.some(
-          item => trackQueueKey(item) === trackQueueKey(track),
+          (item) => trackQueueKey(item) === trackQueueKey(track),
         ),
       )
     ) {
@@ -5993,7 +6196,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const key = currentPreparationKey;
     const preparationOwner = playerQueuePreparation.current;
-    if (!key || !queueRef.current.some(item => trackQueueKey(item) === key))
+    if (!key || !queueRef.current.some((item) => trackQueueKey(item) === key))
       return;
     const generation = queueGeneration.current;
     const navigation = navigationVersion.current;
@@ -6037,7 +6240,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       logicalQueueRef.current = logicalQueueRef.current.map(replace);
       if (queuePublishedRef.current)
         queuePublishedRef.current = queuePublishedRef.current.map(replace);
-      setQueue(items => items.map(replace));
+      setQueue((items) => items.map(replace));
     };
     const run = async () => {
       // Remove stale or noncontiguous future items before Media3 can auto-next.
@@ -6048,10 +6251,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (!isCurrent() || (native.mediaId && native.mediaId !== key))
           return false;
         const nativeIndex = queueRef.current.findIndex(
-          item => trackQueueKey(item) === key,
+          (item) => trackQueueKey(item) === key,
         );
         const logicalIndex = logicalQueueRef.current.findIndex(
-          item => trackQueueKey(item) === key,
+          (item) => trackQueueKey(item) === key,
         );
         if (nativeIndex < 0 || logicalIndex < 0) return false;
         if (!nativeForwardEnabled) {
@@ -6143,7 +6346,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           // validation, cache updates, cancellation and failed-song removal.
           enqueueUrlPrewarm(
             'queue',
-            logicalQueueRef.current.filter(track =>
+            logicalQueueRef.current.filter((track) =>
               refresh.pending.has(trackQueueKey(track)),
             ),
           );
@@ -6159,7 +6362,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             if (
               targetKey === key ||
               !logicalQueueRef.current.some(
-                item => trackQueueKey(item) === targetKey,
+                (item) => trackQueueKey(item) === targetKey,
               )
             ) {
               refresh.pending.delete(targetKey);
@@ -6167,7 +6370,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               return true;
             }
             const index = queueRef.current.findIndex(
-              item => trackQueueKey(item) === targetKey,
+              (item) => trackQueueKey(item) === targetKey,
             );
             const changed =
               index >= 0 &&
@@ -6181,7 +6384,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               ))
             )
               return false;
-            queueRef.current = queueRef.current.map(item =>
+            queueRef.current = queueRef.current.map((item) =>
               trackQueueKey(item) === targetKey ? prepared : item,
             );
             if (index >= 0)
@@ -6207,7 +6410,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       if (!nativeForwardEnabled || !isCurrent()) return;
       const logicalIndex = logicalQueueRef.current.findIndex(
-        item => trackQueueKey(item) === key,
+        (item) => trackQueueKey(item) === key,
       );
       const neighbours = logicalQueueRef.current.slice(
         logicalIndex + 1,
@@ -6216,9 +6419,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await preparationOwner.prepareNext(
         neighbours,
         context,
-        track =>
+        (track) =>
           queueRef.current.some(
-            item =>
+            (item) =>
               trackQueueKey(item) === trackQueueKey(track) && matches(item),
           ) ||
           (typeof hasValidatedPlaybackPrewarm === 'function' &&
@@ -6227,9 +6430,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               playbackSourcesFor(track),
               preferred,
             )),
-        track => {
+        (track) => {
           const existing = queueRef.current.find(
-            item =>
+            (item) =>
               trackQueueKey(item) === trackQueueKey(track) && matches(item),
           );
           if (existing)
@@ -6269,13 +6472,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               return false;
             const logical = logicalQueueRef.current;
             const currentIndex = logical.findIndex(
-              item => trackQueueKey(item) === key,
+              (item) => trackQueueKey(item) === key,
             );
             const targetIndex = logical.findIndex(
-              item => trackQueueKey(item) === trackQueueKey(prepared),
+              (item) => trackQueueKey(item) === trackQueueKey(prepared),
             );
             const nativeCurrentIndex = queueRef.current.findIndex(
-              item => trackQueueKey(item) === key,
+              (item) => trackQueueKey(item) === key,
             );
             const offset = targetIndex - currentIndex;
             if (
@@ -6296,7 +6499,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 return false;
             }
             const nativeIndex = queueRef.current.findIndex(
-              item => trackQueueKey(item) === trackQueueKey(prepared),
+              (item) => trackQueueKey(item) === trackQueueKey(prepared),
             );
             if (nativeIndex >= 0 && matches(queueRef.current[nativeIndex]!))
               return true;
@@ -6313,7 +6516,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             if (nativeIndex >= 0) {
               if (nativeIndex !== insertionIndex) return false;
               await nativePlayer.replaceQueueItem(nativeIndex, accepted);
-              queueRef.current = queueRef.current.map(item =>
+              queueRef.current = queueRef.current.map((item) =>
                 trackQueueKey(item) === trackQueueKey(accepted)
                   ? accepted
                   : item,
@@ -6373,7 +6576,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   ]);
   const dislikeTrack = useCallback(
     async (track: Track) => {
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
         disliked: value.disliked.includes(track.id)
           ? value.disliked
@@ -6385,7 +6588,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const seek = useCallback(async (value: number) => {
     await nativePlayer.seek(value);
-    setPlayer(currentState => ({ ...currentState, position: value }));
+    setPlayer((currentState) => ({ ...currentState, position: value }));
   }, []);
   const changeQuality = useCallback(
     (quality: PersistedState['settings']['quality']) => {
@@ -6459,12 +6662,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (queuePublishedRef.current)
             queuePublishedRef.current =
               queuePublishedRef.current.map(replaceActive);
-          setQueue(value => value.map(replaceActive));
-          patchState(value => ({
+          setQueue((value) => value.map(replaceActive));
+          patchState((value) => ({
             ...value,
             settings: { ...value.settings, [qualitySettingKey]: quality },
           }));
-          setPlayer(value => ({
+          setPlayer((value) => ({
             ...value,
             playing: wasPlaying,
             volume,
@@ -6492,7 +6695,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               .catch(() => undefined);
             await nativePlayer.setVolume(volume).catch(() => undefined);
           }
-          setPlayer(value => ({ ...value, playing: wasPlaying, volume }));
+          setPlayer((value) => ({ ...value, playing: wasPlaying, volume }));
           setMessage(error instanceof Error ? error.message : '当前音质不可用');
         } finally {
           if (
@@ -6550,7 +6753,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Full native validation is owned exclusively by playTrack for the target.
   const toggleFavorite = useCallback(
     (track: Track, favorite?: boolean) =>
-      patchState(value => {
+      patchState((value) => {
         const kind = trackMediaKind(track);
         const chooseFavorites = (favorites: string[]) => {
           const wasFavorite = favorites.includes(track.id);
@@ -6560,7 +6763,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             ? favorites
             : targetFavorite
             ? [...favorites, track.id]
-            : favorites.filter(id => id !== track.id);
+            : favorites.filter((id) => id !== track.id);
         };
         return {
           ...value,
@@ -6580,7 +6783,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const toggleCollectionFavorite = useCallback(
     (item: CatalogItem) =>
-      patchState(value => {
+      patchState((value) => {
         const key = collectionFavoriteKey(item);
         const kind = collectionMediaKind(item);
         {
@@ -6589,16 +6792,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             ...value,
             savedCollections: removing
               ? value.savedCollections.filter(
-                  entry => collectionFavoriteKey(entry) !== key,
+                  (entry) => collectionFavoriteKey(entry) !== key,
                 )
               : [
                   item,
                   ...value.savedCollections.filter(
-                    entry => collectionFavoriteKey(entry) !== key,
+                    (entry) => collectionFavoriteKey(entry) !== key,
                   ),
                 ],
             favoriteCollections: removing
-              ? value.favoriteCollections.filter(entry => entry !== key)
+              ? value.favoriteCollections.filter((entry) => entry !== key)
               : [...value.favoriteCollections, key],
           };
         }
@@ -6640,7 +6843,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!term) return;
       const generation = ++searchGeneration.current;
       const requestedPage = Math.max(1, Math.floor(searchPage));
-      setSearch(previous => ({
+      setSearch((previous) => ({
         query: term,
         category: searchCategory,
         provider,
@@ -6669,17 +6872,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             ? previous.playlists
             : [],
       }));
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
         searchHistory: [
           term,
-          ...value.searchHistory.filter(item => item !== term),
+          ...value.searchHistory.filter((item) => item !== term),
         ].slice(0, 12),
       }));
       try {
         if (
           provider !== 'all' &&
-          !recommendationPlatforms.some(item => item.id === provider)
+          !recommendationPlatforms.some((item) => item.id === provider)
         )
           throw new Error('该平台本次启动播放检测未通过');
         const searchesTracks = ['song', 'artist', 'album'].includes(
@@ -6722,10 +6925,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           mediaType === 'music'
             ? playlistResult.items
             : playlistResult.items.filter(
-                item => !hasExternalMediaOrigin(item),
+                (item) => !hasExternalMediaOrigin(item),
               );
         const nextErrors = [...result.errors, ...playlistResult.errors];
-        setSearch(previous => ({
+        setSearch((previous) => ({
           query: term,
           category: searchCategory,
           provider,
@@ -6753,7 +6956,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }));
       } catch (error) {
         if (generation !== searchGeneration.current) return;
-        setSearch(previous => ({
+        setSearch((previous) => ({
           query: term,
           category: searchCategory,
           provider,
@@ -6774,20 +6977,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [patchState, recommendationPlatforms],
   );
   const clearSearchHistory = useCallback(
-    () => patchState(value => ({ ...value, searchHistory: [] })),
+    () => patchState((value) => ({ ...value, searchHistory: [] })),
     [patchState],
   );
   const removeSearchHistory = useCallback(
     (query: string) =>
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
-        searchHistory: value.searchHistory.filter(item => item !== query),
+        searchHistory: value.searchHistory.filter((item) => item !== query),
       })),
     [patchState],
   );
   const clearHistory = useCallback(
     (kind?: LibraryMediaKind) => {
-      patchState(value => {
+      patchState((value) => {
         if (!kind)
           return {
             ...value,
@@ -6810,7 +7013,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
       const result = await clearNativeCache(nativeParts);
       if (parts.includes('local-artwork')) {
-        patchState(value =>
+        patchState((value) =>
           forgetClearedLocalArtwork(value, result.deletedArtworkUris),
         );
       }
@@ -6862,14 +7065,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setMessage('未选择本地音乐');
       return;
     }
-    patchState(value => ({
+    patchState((value) => ({
       ...value,
       localTracks: [
         ...new Map(
           [
             ...value.localTracks,
-            ...tracks.filter(track => track.duration >= 60),
-          ].map(track => [track.id, track]),
+            ...tracks.filter((track) => track.duration >= 60),
+          ].map((track) => [track.id, track]),
         ).values(),
       ],
     }));
@@ -6881,27 +7084,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const refreshLocalMusicArtwork = useCallback(
     async (incoming?: Track[]) => {
       const candidates = (incoming ?? state?.localTracks ?? []).filter(
-        track => !track.cover && localPlaybackReference(track),
+        (track) => !track.cover && localPlaybackReference(track),
       );
       if (!candidates.length) return;
       const downloads = state?.downloads ?? [];
       const identities = await queryLocalFileIdentities([
         ...candidates.flatMap(localMusicFileReferences),
-        ...downloads.flatMap(entry => [
+        ...downloads.flatMap((entry) => [
           entry.id,
           ...localMusicFileReferences(entry.track),
         ]),
       ]).catch(() => ({}));
       for (let offset = 0; offset < candidates.length; offset += 2) {
         const results = await Promise.all(
-          candidates.slice(offset, offset + 2).map(async track => {
+          candidates.slice(offset, offset + 2).map(async (track) => {
             const reference = localPlaybackReference(track)!;
             const cover = await resolveLocalMusicArtwork(
               track,
               downloads,
               identities,
               {
-                read: selected => {
+                read: (selected) => {
                   let request = localArtworkRequests.current.get(selected);
                   if (!request) {
                     request = resolveLocalPlaybackReference(
@@ -6917,7 +7120,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   }
                   return request;
                 },
-                supplement: selected =>
+                supplement: (selected) =>
                   recommendationPlatforms.length
                     ? getLibraryTrackArtwork(selected, recommendationPlatforms)
                     : Promise.resolve([]),
@@ -6926,12 +7129,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             return { key: trackQueueKey(track), reference, cover };
           }),
         );
-        if (!results.some(result => result.cover)) continue;
-        patchState(value => {
+        if (!results.some((result) => result.cover)) continue;
+        patchState((value) => {
           let changed = false;
-          const localTracks = value.localTracks.map(track => {
+          const localTracks = value.localTracks.map((track) => {
             const result = results.find(
-              item =>
+              (item) =>
                 item.key === trackQueueKey(track) &&
                 item.reference === localPlaybackReference(track),
             );
@@ -6963,12 +7166,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     }
     const tracks = await scanAllLocalMusic();
-    const eligible = tracks.filter(track => track.duration >= 60);
-    patchState(value => ({
+    const eligible = tracks.filter((track) => track.duration >= 60);
+    patchState((value) => ({
       ...value,
       localTracks: [
         ...new Map(
-          [...value.localTracks, ...eligible].map(track => [track.id, track]),
+          [...value.localTracks, ...eligible].map((track) => [track.id, track]),
         ).values(),
       ],
     }));
@@ -6982,12 +7185,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const addLocalMusicDirectory = useCallback(async () => {
     const tracks = await scanLocalMusicDirectory();
     if (!tracks.length) return;
-    const eligible = tracks.filter(track => track.duration >= 60);
-    patchState(value => ({
+    const eligible = tracks.filter((track) => track.duration >= 60);
+    patchState((value) => ({
       ...value,
       localTracks: [
         ...new Map(
-          [...value.localTracks, ...eligible].map(track => [track.id, track]),
+          [...value.localTracks, ...eligible].map((track) => [track.id, track]),
         ).values(),
       ],
     }));
@@ -7006,21 +7209,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       kind: LibraryMediaKind = 'music',
     ) => {
       const localTracks = state?.localTracks ?? [];
-      const track = localTracks.find(item => item.id === trackId);
+      const track = localTracks.find((item) => item.id === trackId);
       if (deleteFile) {
         const reference = track?.playUrl;
         if (!reference) throw new Error('未找到设备文件，记录仍保留');
         const deleted = await deleteLocalFile(reference);
         if (!deleted) throw new Error('未能删除设备文件，记录仍保留');
       }
-      patchState(value => {
+      patchState((value) => {
         return {
           ...value,
-          localTracks: value.localTracks.filter(track => track.id !== trackId),
+          localTracks: value.localTracks.filter(
+            (track) => track.id !== trackId,
+          ),
           playlists: removeFromPlaylists
-            ? value.playlists.map(playlist => ({
+            ? value.playlists.map((playlist) => ({
                 ...playlist,
-                trackIds: playlist.trackIds.filter(id => id !== trackId),
+                trackIds: playlist.trackIds.filter((id) => id !== trackId),
               }))
             : value.playlists,
         };
@@ -7036,7 +7241,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     ) => {
       const entry =
         state &&
-        mediaDownloads(state, kind).find(item => item.track.id === trackId);
+        mediaDownloads(state, kind).find((item) => item.track.id === trackId);
       if (!entry) {
         for (const [key, task] of downloadActivityRef.current) {
           if (
@@ -7063,7 +7268,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const deleted = await deleteLocalFile(target);
         if (!deleted) throw new Error('未能删除设备文件，记录仍保留');
       }
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
         ...removeDownloadedMusic(
           value.localTracks,
@@ -7098,7 +7303,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           (track.provider === 'custom' ||
             !verifiedSourceIdsByProvider.current?.[track.provider]?.length ||
             !sources.some(
-              source =>
+              (source) =>
                 source.enabled &&
                 source.healthy === true &&
                 Boolean(source.script),
@@ -7163,7 +7368,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 ?.fileSize,
             )
           : undefined;
-        patchState(value => {
+        patchState((value) => {
           const kind = trackMediaKind(track);
           const entry = {
             id,
@@ -7180,7 +7385,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             savedTracks: rememberTrack(value.savedTracks, track),
             ...syncDownloadedMusic(value.localTracks, [
               entry,
-              ...value.downloads.filter(item => item.track.id !== track.id),
+              ...value.downloads.filter((item) => item.track.id !== track.id),
             ]),
           };
         });
@@ -7222,7 +7427,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (options?.usePlaybackUrl) {
         const resolved = playbackDownloadSource(track);
         const header = await queryDownloadHeaders(resolved.url, signal).catch(
-          error => {
+          (error) => {
             if (signal.aborted) throw error;
             return {} as {
               sizeBytes?: number;
@@ -7244,7 +7449,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (
         track.provider === 'custom' ||
         !sources.some(
-          source => source.enabled && source.healthy !== false && source.script,
+          (source) =>
+            source.enabled && source.healthy !== false && source.script,
         )
       )
         throw new Error('该平台本次检测没有可用的绑定音源，无法读取下载信息');
@@ -7256,7 +7462,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
       const header: {
         sizeBytes?: number;
-      } = await queryDownloadHeaders(resolved.url, signal).catch(error => {
+      } = await queryDownloadHeaders(resolved.url, signal).catch((error) => {
         if (signal.aborted) throw error;
         return {};
       });
@@ -7292,15 +7498,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     ) => {
       const unique = [
         ...new Map(
-          tracks.map(track => [downloadTrackKey(track), track]),
+          tracks.map((track) => [downloadTrackKey(track), track]),
         ).values(),
       ];
-      const pending = unique.filter(track => {
+      const pending = unique.filter((track) => {
         const task = downloadActivityRef.current.get(downloadTrackKey(track));
         const queued =
           state &&
           mediaDownloads(state, trackMediaKind(track)).some(
-            entry =>
+            (entry) =>
               entry.status === 'queued' &&
               downloadTrackKey(entry.track) === downloadTrackKey(track),
           );
@@ -7320,13 +7526,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }),
       );
       unique
-        .filter(track => !pending.includes(track))
-        .forEach(track => {
+        .filter((track) => !pending.includes(track))
+        .forEach((track) => {
           const task = downloadActivityRef.current.get(downloadTrackKey(track));
           const queued =
             state &&
             mediaDownloads(state, trackMediaKind(track)).find(
-              entry =>
+              (entry) =>
                 entry.status === 'queued' &&
                 downloadTrackKey(entry.track) === downloadTrackKey(track),
             );
@@ -7419,10 +7625,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             await queryLocalFileSize(reference).catch(() => null),
           );
           if (!fileSize) continue;
-          patchState(value => {
+          patchState((value) => {
             const kind = trackMediaKind(entry.track);
             const update = (items: typeof entries) =>
-              items.map(item =>
+              items.map((item) =>
                 item.id === entry.id &&
                 downloadTrackKey(item.track) === downloadTrackKey(entry.track)
                   ? { ...item, fileSize }
@@ -7445,13 +7651,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const addTrackToPlaylist = useCallback(
     (track: Track, playlistId?: string) =>
-      patchState(value => {
+      patchState((value) => {
         const target = playlistId ?? value.playlists[0]?.id;
         if (!target) return value;
         return {
           ...value,
           savedTracks: rememberTrack(value.savedTracks, track),
-          playlists: value.playlists.map(playlist =>
+          playlists: value.playlists.map((playlist) =>
             playlist.id === target
               ? {
                   ...playlist,
@@ -7468,14 +7674,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const removeTrackFromPlaylist = useCallback(
     (track: Track, playlistId: string) =>
-      patchState(value =>
+      patchState((value) =>
         removeTrackPlaylistMembership(value, track, playlistId),
       ),
     [patchState],
   );
   const openPersonalPlaylist = useCallback(
     (id: string) => {
-      if (!state?.playlists.some(item => item.id === id)) {
+      if (!state?.playlists.some((item) => item.id === id)) {
         setMessage('该歌单已不存在');
         return;
       }
@@ -7489,12 +7695,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setTab('library');
       for (const [key, value] of navigation) catalogViewState.set(key, value);
       open('personal-playlist');
-      setCatalogRestore(value => ({
+      setCatalogRestore((value) => ({
         version: value.version + 1,
         keys: navigation.map(([key]) => key),
       }));
     },
-    [state?.playlists, catalogViewState, open, setTab, setQueueListOpen],
+    [
+      state?.playlists,
+      catalogViewState,
+      open,
+      setTab,
+      setPlayerOverlayOpen,
+      setQueueListOpen,
+    ],
   );
   const openLinkedPlaylist = useCallback(
     (item: CatalogItem) => {
@@ -7509,12 +7722,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setTab('library');
       for (const [key, value] of navigation) catalogViewState.set(key, value);
       open('search-playlist');
-      setCatalogRestore(value => ({
+      setCatalogRestore((value) => ({
         version: value.version + 1,
         keys: navigation.map(([key]) => key),
       }));
     },
-    [catalogViewState, open, setTab, setQueueListOpen],
+    [catalogViewState, open, setTab, setPlayerOverlayOpen, setQueueListOpen],
   );
   useEffect(() => {
     const destination = importedPlaylistDestination.current;
@@ -7522,7 +7735,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if ('personalPlaylistId' in destination) {
       if (
         !state.playlists.some(
-          value => value.id === destination.personalPlaylistId,
+          (value) => value.id === destination.personalPlaylistId,
         )
       )
         return;
@@ -7541,7 +7754,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         state &&
           (preview.kind === 'personal'
             ? state.playlists.some(
-                value =>
+                (value) =>
                   value.id === preview.id ||
                   Boolean(
                     preview.shareOrigin &&
@@ -7580,7 +7793,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           preview.kind === 'personal'
             ? {
                 personalPlaylistId: committed.playlists.find(
-                  value =>
+                  (value) =>
                     value.id === preview.id ||
                     Boolean(
                       preview.shareOrigin &&
@@ -7589,7 +7802,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 )!.id,
               }
             : { provider: preview.provider, id: preview.id };
-        setState(latestState =>
+        setState((latestState) =>
           latestState ? commit(latestState) : latestState,
         );
       } finally {
@@ -7600,7 +7813,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const createPlaylist = useCallback(
     (title?: string) =>
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
         playlists: [
           ...value.playlists,
@@ -7620,9 +7833,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     (id: string, title: string) => {
       const normalized = title.trim();
       if (!normalized) return;
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
-        playlists: value.playlists.map(playlist =>
+        playlists: value.playlists.map((playlist) =>
           playlist.id === id
             ? { ...playlist, title: normalized, updatedAt: Date.now() }
             : playlist,
@@ -7633,21 +7846,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const renameImportedPlaylist = useCallback(
     (item: CatalogItem, title: string) =>
-      patchState(value => renameLinkedPlaylist(value, item, title)),
+      patchState((value) => renameLinkedPlaylist(value, item, title)),
     [patchState],
   );
   const deleteImportedPlaylist = useCallback(
     (item: CatalogItem) =>
-      patchState(value => deleteLinkedPlaylist(value, item)),
+      patchState((value) => deleteLinkedPlaylist(value, item)),
     [patchState],
   );
   const deletePlaylist = useCallback(
     (id: string) =>
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
-        playlists: value.playlists.filter(playlist => playlist.id !== id),
+        playlists: value.playlists.filter((playlist) => playlist.id !== id),
         musicEntityHistory: (value.musicEntityHistory ?? []).filter(
-          entry => !('playlistId' in entry) || entry.playlistId !== id,
+          (entry) => !('playlistId' in entry) || entry.playlistId !== id,
         ),
       })),
     [patchState],
@@ -7657,7 +7870,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       key: K,
       value: PersistedState['settings'][K],
     ) => {
-      patchState(currentState => ({
+      patchState((currentState) => ({
         ...currentState,
         settings: { ...currentState.settings, [key]: value },
       }));
@@ -7676,7 +7889,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       verifiedBackendByProvider.current = {};
       setHealthyProviderIds([]);
       setStartupHealth(null);
-      setSourceHealthRevision(value => value + 1);
+      setSourceHealthRevision((value) => value + 1);
       setMessage(message);
     },
     [discardFuturePreparation],
@@ -7688,7 +7901,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     ) => {
       const checks: NonNullable<SourceSetting['manualPlatformHealth']> = {};
       const enabledPlatforms = (state?.platforms ?? []).filter(
-        platform => platform.enabled,
+        (platform) => platform.enabled,
       );
       for (const platform of enabledPlatforms) {
         const key = platformSourceKeys[platform.id];
@@ -7720,14 +7933,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const toggleSource = useCallback(
     (id: string) => {
-      const selected = state?.sources.find(source => source.id === id);
+      const selected = state?.sources.find((source) => source.id === id);
       if (!selected || !isSourceAuthorized(selected)) {
         setMessage('请先导入有效的音源脚本');
         return;
       }
-      patchState(value => ({
+      patchState((value) => ({
         ...value,
-        sources: value.sources.map(source =>
+        sources: value.sources.map((source) =>
           source.id === id ? { ...source, enabled: !source.enabled } : source,
         ),
       }));
@@ -7741,15 +7954,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (
         ids.length !== current.length ||
         new Set(ids).size !== ids.length ||
-        ids.some(id => !current.some(source => source.id === id)) ||
+        ids.some((id) => !current.some((source) => source.id === id)) ||
         ids.every((id, index) => current[index]?.id === id)
       )
         return;
-      patchState(value => {
-        const byId = new Map(value.sources.map(source => [source.id, source]));
-        if (ids.length !== byId.size || ids.some(id => !byId.has(id)))
+      patchState((value) => {
+        const byId = new Map(
+          value.sources.map((source) => [source.id, source]),
+        );
+        if (ids.length !== byId.size || ids.some((id) => !byId.has(id)))
           return value;
-        const sources = ids.map(id => byId.get(id)!);
+        const sources = ids.map((id) => byId.get(id)!);
         return { ...value, sources };
       });
       invalidateSourceSelection('音源顺序已更新，正在重新检测播放链路');
@@ -7759,10 +7974,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const removeSources = useCallback(
     async (ids: string[]) => {
       const selected = new Set(ids);
-      if (!state?.sources.some(source => selected.has(source.id))) return;
-      patchState(value => ({
+      if (!state?.sources.some((source) => selected.has(source.id))) return;
+      patchState((value) => ({
         ...value,
-        sources: value.sources.filter(source => !selected.has(source.id)),
+        sources: value.sources.filter((source) => !selected.has(source.id)),
       }));
       invalidateSourceSelection('音源已删除，正在重新检测播放链路');
     },
@@ -7770,10 +7985,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const togglePlatform = useCallback(
     (id: PlatformSetting['id']) => {
-      if (!state?.platforms.some(platform => platform.id === id)) return;
-      patchState(value => ({
+      if (!state?.platforms.some((platform) => platform.id === id)) return;
+      patchState((value) => ({
         ...value,
-        platforms: value.platforms.map(platform =>
+        platforms: value.platforms.map((platform) =>
           platform.id === id
             ? { ...platform, enabled: !platform.enabled }
             : platform,
@@ -7798,7 +8013,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const version = metadata('version', 64);
     if (
       state?.sources.some(
-        source =>
+        (source) =>
           source.script && source.name === name && source.version === version,
       )
     )
@@ -7829,7 +8044,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       sourceCapabilities,
       statusMessage: '脚本格式通过，正在检测播放链路',
     };
-    patchState(value => ({
+    patchState((value) => ({
       ...value,
       sources: [importedSource, ...value.sources],
     }));
@@ -7841,11 +8056,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       sourceCapabilities,
     );
     const passed = Object.values(manualPlatformHealth).some(
-      check => check.passed,
+      (check) => check.passed,
     );
-    patchState(value => ({
+    patchState((value) => ({
       ...value,
-      sources: value.sources.map(source =>
+      sources: value.sources.map((source) =>
         source.id === importedSource.id
           ? {
               ...source,
@@ -7865,7 +8080,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   ]);
   const testSource = useCallback(
     async (id: string) => {
-      const source = state?.sources.find(item => item.id === id);
+      const source = state?.sources.find((item) => item.id === id);
       if (!source) throw new Error('音源不存在');
       if (!isSourceAuthorized(source))
         throw new Error('请先导入有效的音源脚本');
@@ -7881,13 +8096,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           sourceCapabilities,
         );
         const passed = Object.values(manualPlatformHealth).some(
-          check => check.passed,
+          (check) => check.passed,
         );
         if (!passed) throw new Error('检测未通过');
         const sourceStatus = '播放链路检测通过';
-        patchState(value => ({
+        patchState((value) => ({
           ...value,
-          sources: value.sources.map(item =>
+          sources: value.sources.map((item) =>
             item.id === id
               ? {
                   ...item,
@@ -7903,9 +8118,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return '检测通过';
       } catch (error) {
         const sourceError = '检测未通过';
-        patchState(value => ({
+        patchState((value) => ({
           ...value,
-          sources: value.sources.map(item =>
+          sources: value.sources.map((item) =>
             item.id === id
               ? {
                   ...item,
@@ -7924,7 +8139,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const setSleepTimer = useCallback(
     async (mode: 'minutes' | 'track', minutes = 0) => {
       await nativePlayer.setSleepTimer(mode, minutes);
-      setPlayer(value => ({
+      setPlayer((value) => ({
         ...value,
         sleepMode: mode,
         sleepDeadline: mode === 'minutes' ? Date.now() + minutes * 60000 : 0,
@@ -7937,7 +8152,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
   const cancelSleepTimer = useCallback(async () => {
     await nativePlayer.cancelSleepTimer();
-    setPlayer(value => ({ ...value, sleepMode: 'off', sleepDeadline: 0 }));
+    setPlayer((value) => ({ ...value, sleepMode: 'off', sleepDeadline: 0 }));
     setMessage('播放定时已取消');
   }, []);
   const startFeed = useCallback(
@@ -7990,7 +8205,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         },
         source,
         isCurrentQueue &&
-          !(isStartupQueueSource(source) && options?.startupPlayback),
+          !(isStartupQueueSource(source) && options?.startupPlayback) &&
+          // A failed initial menu selection publishes metadata before it can
+          // play. Its fallback must rebuild that queue without failed songs.
+          !(
+            source?.kind === 'home-menu' && (options?.fallbackDepth ?? 0) > 0
+          ),
       );
     },
     [captureQueueOrigin, category, feed, feedPage, playTrack],
@@ -8009,7 +8229,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       feedLoadRef.current = request;
       try {
         const tracks = await request;
-        available = tracks.filter(track => !isRuntimeTrackBlocked(track));
+        available = tracks.filter((track) => !isRuntimeTrackBlocked(track));
         if (available.length) setFeed(available);
       } catch {
         available = [];
@@ -8070,7 +8290,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     state,
     recommendationPlatforms,
     category,
-    setCategory: nextCategory => {
+    setCategory: (nextCategory) => {
       setCategory(nextCategory);
       setFeedPage(1);
     },
@@ -8226,8 +8446,7 @@ function InitialStartupSplash({
       style={[
         initialStartupContainer,
         { backgroundColor: STARTUP_PALETTES[appearance.theme].background },
-      ]}
-    >
+      ]}>
       <StatusBar
         translucent
         backgroundColor="transparent"
@@ -8258,7 +8477,7 @@ export function useCatalogViewState<T>(key: string, initial: T) {
   }
   const update = useCallback(
     (next: React.SetStateAction<T>) => {
-      setValue(previous => {
+      setValue((previous) => {
         const resolved =
           typeof next === 'function'
             ? (next as (previous: T) => T)(previous)

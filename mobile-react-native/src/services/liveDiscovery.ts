@@ -115,6 +115,8 @@ export interface PlatformHealthResult {
   first: OnlineProvider | null;
   /** First successful fixed binding per platform, in observed launch order. */
   passedOrder?: OnlineProvider[];
+  /** Actual completion order of passing imported sources, used for failover. */
+  passedSourceIdsByProvider?: Partial<Record<OnlineProvider, string[]>>;
   sourceIds: string[];
   sourceIdsByProvider: Partial<Record<OnlineProvider, string[]>>;
   backendByProvider: Partial<Record<OnlineProvider, string>>;
@@ -122,6 +124,7 @@ export interface PlatformHealthResult {
   /** Unfinished platforms are neither failed nor eligible for catalog/playback. */
   pending?: OnlineProvider[];
   completed?: boolean;
+  completedProviders?: OnlineProvider[];
 }
 
 export type PlatformHealthCheck = {
@@ -240,6 +243,7 @@ export function startPlatformHealthDetection(
       };
   let first: OnlineProvider | null = null;
   const passedOrder: OnlineProvider[] = [];
+  const passedSourceIdsByProvider: Partial<Record<OnlineProvider, string[]>> = {};
   const backendByProvider: Partial<Record<OnlineProvider, string>> = {};
   const byProvider: Partial<Record<OnlineProvider, PlatformHealthStatus>> = {};
   const pending = new Set(enabled.map(platform => platform.id));
@@ -258,6 +262,8 @@ export function startPlatformHealthDetection(
       healthy: passing.map(platform => platform.id),
       first,
       passedOrder: [...passedOrder],
+      passedSourceIdsByProvider: Object.fromEntries(Object.entries(passedSourceIdsByProvider)
+        .map(([provider, ids]) => [provider, [...ids!]])),
       sourceIds: [
         ...new Set(
           passing.map(platform => byProvider[platform.id]!.selectedSourceId!),
@@ -278,6 +284,7 @@ export function startPlatformHealthDetection(
       ),
       pending: [...pending],
       completed: unfinished.size === 0,
+      completedProviders: enabled.filter(platform => !unfinished.has(platform.id)).map(platform => platform.id),
     };
   };
   const publish = () => {
@@ -430,7 +437,15 @@ export function startPlatformHealthDetection(
               };
             }
             checks[sourceIndex]!.result = result;
+            if (result.passed) {
+              const ids = passedSourceIdsByProvider[platform.id] ??= [];
+              if (!ids.includes(source.id)) ids.push(source.id);
+            }
             bindIfProven();
+            if (bound) {
+              byProvider[platform.id] = { ...byProvider[platform.id]!, checks: settledProbes().map(healthCheck) };
+              publish();
+            }
             return result;
           }),
         );

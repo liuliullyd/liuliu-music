@@ -101,7 +101,7 @@ export function PlaybackModePicker({
   style?: StyleProp<ViewStyle>;
   scale?: number;
   playerColor?: string;
-  /** Use the sticky-header responder geometry when rendered in a native sticky bar. */
+  /** Match touch coordinates to a native-translated header or page. */
   sticky?: boolean;
   testID?: string;
 }) {

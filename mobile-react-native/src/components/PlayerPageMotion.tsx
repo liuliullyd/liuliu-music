@@ -32,11 +32,13 @@ export type PageMotionHandle = {
 };
 type Props = ViewProps & {
   pageExtent: number;
+  releaseTargets?: { center: number; pages: number[] } | null;
   onGesture: (gesture: PageGesture) => void;
 };
 const NativeMotion = requireNativeComponent<
   ViewProps & {
     pageExtent: number;
+    releasePlan: Array<number | null> | null;
     onPageGesture: (event: NativeSyntheticEvent<PageGesture>) => void;
     onMotionComplete: (event: NativeSyntheticEvent<Completion>) => void;
   }
@@ -44,9 +46,10 @@ const NativeMotion = requireNativeComponent<
 
 /** The native view owns pixels. React owns mounted pages and accepted playback. */
 export const PlayerPageMotion = forwardRef<PageMotionHandle, Props>(
-  function NativePageMotion({ onGesture, ...props }, forwardedRef) {
+  function NativePageMotion({ onGesture, releaseTargets, ...props }, forwardedRef) {
     const nativeRef = useRef<React.ComponentRef<typeof NativeMotion>>(null);
     const gestureId = useRef(0);
+    const prepared = useRef({ revision: 0, coordinates: [] as number[] });
     const commandId = useRef(0);
     const callbacks = useRef(new Map<number, (result: Completion) => void>());
     const dispatch = useCallback(
@@ -85,9 +88,17 @@ export const PlayerPageMotion = forwardRef<PageMotionHandle, Props>(
       const pending = callbacks.current;
       return () => pending.clear();
     }, []);
+    const coordinates = releaseTargets
+      ? [releaseTargets.center, ...releaseTargets.pages]
+      : [];
+    if (coordinates.length !== prepared.current.coordinates.length ||
+      coordinates.some((value, index) => value !== prepared.current.coordinates[index])) {
+      prepared.current = { revision: prepared.current.revision + 1, coordinates };
+    }
     return (
       <NativeMotion
         {...props}
+        releasePlan={[prepared.current.revision, ...prepared.current.coordinates]}
         ref={nativeRef}
         onPageGesture={event => {
           if (event.nativeEvent.gestureId < gestureId.current) return;

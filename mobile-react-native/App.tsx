@@ -16,32 +16,42 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
-import { EffectsChromeContext } from './src/components/EffectsChromeContext';
+import { BottomNav, Toast } from './src/components/UI';
+import {
+  ThemeBackground,
+  themeBackgroundAllowed,
+} from './src/components/ThemeBackground';
 import {
   HomeMenuDrawer,
   requestHomeMenuClose,
 } from './src/components/HomeMenuDrawer';
 import { HomePlayerBar } from './src/components/HomePlayerBar';
-import { LibraryDetailAppearanceContext } from './src/components/LibraryDetailAppearance';
-import { OrderedCoverScope } from './src/components/OrderedRemoteCover';
+import { EffectsChromeContext } from './src/components/EffectsChromeContext';
 import { PlaybackQueueSheet } from './src/components/PlaybackQueueSheet';
-import { PlaylistImportDialog } from './src/components/PlaylistImportDialog';
-import { PlaylistMembershipProvider } from './src/components/PlaylistMembershipPicker';
+import { useBottomPlayerHints } from './src/components/useBottomPlayerHints';
+import { OrderedCoverScope } from './src/components/OrderedRemoteCover';
 import {
   STARTUP_PALETTES,
   STARTUP_TRANSITION_MS,
   StartupSplash,
 } from './src/components/StartupSplash';
+import { HomeScreen } from './src/screens/HomeScreen';
+import { LibraryScreen } from './src/screens/LibraryScreen';
+import { PlayerBackdrop, PlayerScreen } from './src/screens/PlayerScreen';
+import { SearchScreen } from './src/screens/SearchScreen';
+import { SettingsScreen } from './src/screens/SettingsScreen';
+import { AppProvider, useApp } from './src/state/AppContext';
+import { PlaylistMembershipProvider } from './src/components/PlaylistMembershipPicker';
+import { usePlayerBackdropSurfaceTone } from './src/services/playerAppearance';
+import { LayoutProvider } from './src/state/LayoutContext';
+import { useMediaNotificationControls, useMediaNotificationLyrics } from './src/state/useMediaNotification';
+import { useCarLibrary } from './src/state/useCarLibrary';
+import { usePlaylistClipboard } from './src/state/usePlaylistClipboard';
+import { PlaylistImportDialog } from './src/components/PlaylistImportDialog';
 import {
-  StickyBackgroundProvider,
-  StickyBackgroundViewport,
-} from './src/components/StickyBackgroundExtension';
-import {
-  ThemeBackground,
-  themeBackgroundAllowed,
-} from './src/components/ThemeBackground';
-import { BottomNav, Toast } from './src/components/UI';
-import { useBottomPlayerHints } from './src/components/useBottomPlayerHints';
+  LibraryDetailAppearanceContext,
+} from './src/components/LibraryDetailAppearance';
+import { StickyBackgroundProvider, StickyBackgroundViewport } from './src/components/StickyBackgroundExtension';
 import {
   completedEdgeBackFrom,
   EDGE_BACK_ZONE,
@@ -49,32 +59,19 @@ import {
   shouldStartEdgeBackFrom,
 } from './src/edgeBackGesture';
 import {
-  adaptivePageMetrics,
-  BOTTOM_NAV_LIFT,
-  BOTTOM_NAV_SEAM_OVERLAP,
-  DESIGN_WIDTH,
-  fluidCanvasMetrics,
-} from './src/layout';
-import { HomeScreen } from './src/screens/HomeScreen';
-import { LibraryScreen } from './src/screens/LibraryScreen';
-import { PlayerBackdrop, PlayerScreen } from './src/screens/PlayerScreen';
-import { SearchScreen } from './src/screens/SearchScreen';
-import { SettingsScreen } from './src/screens/SettingsScreen';
-import { usePlayerBackdropSurfaceTone } from './src/services/playerAppearance';
-import { AppProvider, useApp } from './src/state/AppContext';
-import { LayoutProvider } from './src/state/LayoutContext';
-import { useCarLibrary } from './src/state/useCarLibrary';
-import {
-  useMediaNotificationControls,
-  useMediaNotificationLyrics,
-} from './src/state/useMediaNotification';
-import { usePlaylistClipboard } from './src/state/usePlaylistClipboard';
-import {
   createThemedStyles,
   light,
   paletteForTheme,
   ThemeProvider,
 } from './src/theme';
+import {
+  BOTTOM_NAV_LIFT,
+  BOTTOM_NAV_SEAM_OVERLAP,
+  DESIGN_WIDTH,
+  adaptivePageMetrics,
+  fluidCanvasMetrics,
+} from './src/layout';
+
 function Shell() {
   const window = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -122,7 +119,7 @@ function Shell() {
       playerPage ||
       (app.page === 'home-menu' && app.homeMenuOrigin === 'player'),
     playerAppearance = playerSurface && app.page !== 'effects',
-    movingPlayerPage = app.page === 'player' && Boolean(app.current),
+    movingPlayerPage = playerSurface && Boolean(app.current),
     playerTone = usePlayerBackdropSurfaceTone(
       movingPlayerPage ? null : app.current,
     ),
@@ -145,16 +142,10 @@ function Shell() {
     reveal = useRef(new Animated.Value(app.startup.visible ? 0 : 1)).current;
   const hasBottomPlayer = Boolean(app.current);
   const bottomPlayerSurface = !playerSurface || app.page === 'effects';
-  useMediaNotificationControls({
-    queue: app.queue,
-    player: app.player,
-    hasMore: app.queuePage.hasMore,
-    reversed: app.queueReversed,
-    ready: app.ready && !app.startup.visible,
-    previous: app.previous,
-    next: app.next,
-    cancelPreparation: () => app.setPlaybackPlaying(false),
-  });
+  useMediaNotificationControls({ queue: app.queue, player: app.player,
+    hasMore: app.queuePage.hasMore, reversed: app.queueReversed,
+    ready: app.ready && !app.startup.visible, previous: app.previous, next: app.next,
+    cancelPreparation: () => app.setPlaybackPlaying(false) });
   useMediaNotificationLyrics(app.current, app.player, app.startup.visible);
   useCarLibrary(app);
   usePlaylistClipboard(app);
@@ -193,13 +184,8 @@ function Shell() {
     layout.bottomNavLift +
     (bottomPlayerToggleAvailable && !bottomPlayerCollapsed
       ? layout.miniPlayerHeight +
-        Math.ceil(
-          Math.max(
-            0,
-            (layout.miniPlayerCoverSize - layout.miniPlayerHeight) / 2 +
-              Math.round(layout.miniPlayerCoverSize * 0.05),
-          ),
-        )
+        Math.ceil(Math.max(0, (layout.miniPlayerCoverSize - layout.miniPlayerHeight) / 2 +
+          Math.round(layout.miniPlayerCoverSize * 0.05)))
       : 0);
   useEffect(() => {
     if (hasBottomPlayer) return;
@@ -252,9 +238,7 @@ function Shell() {
     }).start();
   }, [app.startup.visible, reveal]);
   const screen =
-    app.tab === 'discovery' && !playerSurface ? null : playerSurface ? (
-      <PlayerScreen />
-    ) : app.tab === 'search' ? (
+    playerSurface || app.tab === 'discovery' ? null : app.tab === 'search' ? (
       <SearchScreen backgroundScrollY={searchBackgroundScrollY} />
     ) : app.tab === 'library' ? (
       <LibraryScreen backgroundScrollY={libraryBackgroundScrollY} />
@@ -274,311 +258,282 @@ function Shell() {
       accent={app.state.settings.accent}
     >
       <PlaylistMembershipProvider>
-        <LibraryDetailAppearanceContext.Provider value={libraryDetailContext}>
-          <StickyBackgroundProvider
-            scope={`${app.tab}:${app.page}:${app.pageRefreshToken}`}
-            enabled={!app.startup.visible}
+      <LibraryDetailAppearanceContext.Provider value={libraryDetailContext}>
+        <StickyBackgroundProvider scope={`${app.tab}:${app.page}:${app.pageRefreshToken}`}
+          enabled={!app.startup.visible}>
+        <View
+          testID="app-edge-shell"
+          style={[
+            s.edgeShell,
+            {
+              backgroundColor: app.startup.visible
+                ? startupPalette.background
+                : movingPlayerPage && playerAppearance
+                ? 'transparent'
+                : playerAppearance
+                ? playerTone
+                : appPalette.bg,
+            },
+          ]}
+        >
+          <ThemeBackground
+            key={app.tab}
+            visible={themeBackgroundVisible}
+            diagnosticPage={
+              app.tab === 'library' &&
+              (app.page === 'root' || app.page === 'history')
+                ? app.page
+                : undefined
+            }
+            scrollY={
+              homeRoot
+                ? homeBackgroundScrollY
+                : searchRoot
+                ? searchBackgroundScrollY
+                : app.tab === 'library'
+                ? libraryBackgroundScrollY
+                : app.tab === 'settings' && themeBackgroundVisible
+                ? settingsBackgroundScrollY
+                : undefined
+            }
+            scrollScale={canvas.scale}
+          />
+          {playerAppearance && (!movingPlayerPage || app.page === 'lyrics') ? <PlayerBackdrop /> : null}
+          <StatusBar
+            barStyle={
+              app.startup.visible && startupPalette.dark
+                ? 'light-content'
+                : app.page === 'home-menu'
+                ? appPalette.dark ? 'light-content' : 'dark-content'
+                : playerAppearance
+                ? 'light-content'
+                : (themeBackgroundVisible || app.page === 'effects') && appPalette.dark
+                ? 'light-content'
+                : ((app.tab === 'library' && app.page !== 'root') ||
+                    (app.tab === 'search' && app.page === 'search-playlist')) &&
+                  appPalette.dark
+                ? 'light-content'
+                : 'dark-content'
+            }
+            backgroundColor="transparent"
+            translucent
+          />
+          <SafeAreaView
+            testID="app-shell"
+            edges={['top', 'left', 'right', 'bottom']}
+            style={s.safe}
           >
-            <View
-              testID="app-edge-shell"
-              style={[
-                s.edgeShell,
-                {
-                  backgroundColor: app.startup.visible
-                    ? startupPalette.background
-                    : movingPlayerPage
-                    ? 'transparent'
-                    : playerAppearance
-                    ? playerTone
-                    : appPalette.bg,
-                },
-              ]}
+            <LayoutProvider
+              designHeight={canvas.designHeight}
+              scale={canvas.scale}
             >
-              <ThemeBackground
-                key={app.tab}
-                visible={themeBackgroundVisible}
-                diagnosticPage={
-                  app.tab === 'library' &&
-                  (app.page === 'root' || app.page === 'history')
-                    ? app.page
-                    : undefined
-                }
-                scrollY={
-                  homeRoot
-                    ? homeBackgroundScrollY
-                    : searchRoot
-                    ? searchBackgroundScrollY
-                    : app.tab === 'library'
-                    ? libraryBackgroundScrollY
-                    : app.tab === 'settings' && themeBackgroundVisible
-                    ? settingsBackgroundScrollY
-                    : undefined
-                }
-                scrollScale={canvas.scale}
-              />
-              {playerAppearance && !movingPlayerPage ? (
-                <PlayerBackdrop />
-              ) : null}
-              <StatusBar
-                barStyle={
-                  app.startup.visible && startupPalette.dark
-                    ? 'light-content'
-                    : app.page === 'home-menu'
-                    ? appPalette.dark
-                      ? 'light-content'
-                      : 'dark-content'
-                    : playerAppearance
-                    ? 'light-content'
-                    : (themeBackgroundVisible || app.page === 'effects') &&
-                      appPalette.dark
-                    ? 'light-content'
-                    : ((app.tab === 'library' && app.page !== 'root') ||
-                        (app.tab === 'search' &&
-                          app.page === 'search-playlist')) &&
-                      appPalette.dark
-                    ? 'light-content'
-                    : 'dark-content'
-                }
-                backgroundColor="transparent"
-                translucent
-              />
-              <SafeAreaView
-                testID="app-shell"
-                edges={['top', 'left', 'right', 'bottom']}
-                style={s.safe}
+              <View
+                testID="scaled-viewport"
+                onLayout={measureViewport}
+                style={[s.viewport, movingPlayerPage && s.playerViewport]}
               >
-                <LayoutProvider
-                  designHeight={canvas.designHeight}
-                  scale={canvas.scale}
+                <View
+                  testID="fixed-design-canvas"
+                  style={[
+                    s.canvas,
+                    {
+                      height: canvas.designHeight,
+                      backgroundColor:
+                        playerSurface || themeBackgroundVisible
+                          ? 'transparent'
+                          : light.bg,
+                      transform: [{ scale: canvas.scale }],
+                    },
+                  ]}
                 >
-                  <View
-                    testID="scaled-viewport"
-                    onLayout={measureViewport}
-                    style={[s.viewport, movingPlayerPage && s.playerViewport]}
+                  <Animated.View
+                    style={[
+                      s.screen,
+                      { opacity: reveal },
+                      s.contentLayer,
+                      playerSurface &&
+                        app.playerOverlayOpen &&
+                        s.playerOverlayScreen,
+                    ]}
                   >
-                    <View
-                      testID="fixed-design-canvas"
+                    {/* The playback pages retain their own host across navigation.
+                      Other screens never replace its native pager or cover scope. */}
+                    <OrderedCoverScope
+                      active={playerSurface}
+                      generationKey="screen:player-session"
+                    >
+                      <EffectsChromeContext.Provider value={effectsBottomInset}>
+                        <PlayerScreen visible={playerSurface} />
+                      </EffectsChromeContext.Provider>
+                    </OrderedCoverScope>
+                    <React.Fragment
+                      key={`${app.tab}:${app.pageRefreshToken}`}
+                    >
+                      <OrderedCoverScope
+                        active={Boolean(screen)}
+                        generationKey={`screen:${app.tab}:${app.page}:${app.pageRefreshToken}`}
+                      >
+                        {screen}
+                      </OrderedCoverScope>
+                    </React.Fragment>
+                    <OrderedCoverScope
+                      active={
+                        !app.startup.visible &&
+                        !(app.tab !== 'discovery' || playerSurface)
+                      }
+                      generationKey={`home:${app.page}:${app.homeRefreshToken}`}
+                    >
+                      {homeScreen}
+                    </OrderedCoverScope>
+                  </Animated.View>
+                  {/* Android hit testing excludes children outside a parent's
+                    bounds. Give the drawer its own canvas region rather than
+                    placing it above the navigation frame's short bounds. */}
+                  {bottomPlayerSurface ? (
+                    <Animated.View
+                      testID="bottom-player-overlay"
+                      pointerEvents={bottomPlayerCollapsed ? 'none' : 'auto'}
+                      accessibilityElementsHidden={bottomPlayerCollapsed}
+                      importantForAccessibility={
+                        bottomPlayerCollapsed ? 'no-hide-descendants' : 'auto'
+                      }
                       style={[
-                        s.canvas,
+                        s.homeMiniOverlay,
                         {
-                          height: canvas.designHeight,
-                          backgroundColor:
-                            playerSurface || themeBackgroundVisible
-                              ? 'transparent'
-                              : light.bg,
-                          transform: [{ scale: canvas.scale }],
+                          bottom:
+                            layout.bottomNavHeight +
+                            layout.bottomNavLift -
+                            BOTTOM_NAV_SEAM_OVERLAP -
+                            Math.ceil(
+                              Math.max(
+                                0,
+                                (layout.miniPlayerCoverSize -
+                                  layout.miniPlayerHeight) /
+                                  2 -
+                                  Math.round(layout.miniPlayerCoverSize * 0.05),
+                              ),
+                            ),
+                          transform: [{ translateY: bottomPlayerTranslateY }],
                         },
                       ]}
                     >
-                      <Animated.View
-                        style={[
-                          s.screen,
-                          { opacity: reveal },
-                          s.contentLayer,
-                          playerSurface &&
-                            app.playerOverlayOpen &&
-                            s.playerOverlayScreen,
-                        ]}
+                      <OrderedCoverScope
+                        active={!app.startup.visible}
+                        generationKey={`mini-player:${
+                          app.current?.id ?? 'empty'
+                        }`}
                       >
-                        <React.Fragment
-                          key={`${
-                            playerSurface
-                              ? app.page === 'home-menu'
-                                ? 'player-menu'
-                                : app.page
-                              : app.tab
-                          }:${app.pageRefreshToken}`}
-                        >
-                          <OrderedCoverScope
-                            active={Boolean(screen)}
-                            generationKey={`screen:${app.tab}:${app.page}:${app.pageRefreshToken}`}
-                          >
-                            <EffectsChromeContext.Provider
-                              value={
-                                app.page === 'effects' ? effectsBottomInset : 0
-                              }
-                            >
-                              {screen}
-                            </EffectsChromeContext.Provider>
-                          </OrderedCoverScope>
-                        </React.Fragment>
-                        <OrderedCoverScope
-                          active={
-                            !app.startup.visible &&
-                            !(app.tab !== 'discovery' || playerSurface)
+                        <HomePlayerBar
+                          onHide={hideBottomPlayer}
+                          showHideHint={
+                            showBottomPlayerHideHint && !bottomPlayerCollapsed
                           }
-                          generationKey={`home:${app.page}:${app.homeRefreshToken}`}
-                        >
-                          {homeScreen}
-                        </OrderedCoverScope>
-                      </Animated.View>
-                      {/* Android hit testing excludes children outside a parent's
-bounds. Give the drawer its own canvas region rather than
-placing it above the navigation frame's short bounds. */}
-                      {bottomPlayerSurface ? (
-                        <Animated.View
-                          testID="bottom-player-overlay"
-                          pointerEvents={
-                            bottomPlayerCollapsed ? 'none' : 'auto'
-                          }
-                          accessibilityElementsHidden={bottomPlayerCollapsed}
-                          importantForAccessibility={
-                            bottomPlayerCollapsed
-                              ? 'no-hide-descendants'
-                              : 'auto'
-                          }
-                          style={[
-                            s.homeMiniOverlay,
-                            {
-                              bottom:
-                                layout.bottomNavHeight +
-                                layout.bottomNavLift -
-                                BOTTOM_NAV_SEAM_OVERLAP -
-                                Math.ceil(
-                                  Math.max(
-                                    0,
-                                    (layout.miniPlayerCoverSize -
-                                      layout.miniPlayerHeight) /
-                                      2 -
-                                      Math.round(
-                                        layout.miniPlayerCoverSize * 0.05,
-                                      ),
-                                  ),
-                                ),
-                              transform: [
-                                { translateY: bottomPlayerTranslateY },
-                              ],
-                            },
-                          ]}
-                        >
-                          <OrderedCoverScope
-                            active={!app.startup.visible}
-                            generationKey={`mini-player:${
-                              app.current?.id ?? 'empty'
-                            }`}
-                          >
-                            <HomePlayerBar
-                              onHide={hideBottomPlayer}
-                              showHideHint={
-                                showBottomPlayerHideHint &&
-                                !bottomPlayerCollapsed
-                              }
-                              showPreviousHint={
-                                bottomPlayerToggleAvailable &&
-                                !bottomPlayerCollapsed &&
-                                bottomPlayerHints.visible('previous')
-                              }
-                              showNextHint={
-                                bottomPlayerToggleAvailable &&
-                                !bottomPlayerCollapsed &&
-                                bottomPlayerHints.visible('next')
-                              }
-                              onNavigate={bottomPlayerHints.navigate}
-                            />
-                          </OrderedCoverScope>
-                        </Animated.View>
-                      ) : null}
-                      <View
-                        testID={homeRoot ? 'home-bottom-frame' : 'bottom-frame'}
-                        style={[
-                          s.bottomFrame,
-                          !playerAppearance && s.drawerBottomFrame,
-                          { height: layout.bottomNavHeight },
-                          (homeSurface || app.page === 'effects') &&
-                            s.homeBottomFrame,
-                          playerAppearance && s.playerBottomFrame,
-                        ]}
-                      >
-                        <BottomNav
-                          attached
-                          transparent={playerAppearance}
-                          playerCollapsed={bottomPlayerCollapsed}
-                          showPlayerHint={
+                          showPreviousHint={
                             bottomPlayerToggleAvailable &&
-                            bottomPlayerHints.visible('show')
+                            !bottomPlayerCollapsed &&
+                            bottomPlayerHints.visible('previous')
                           }
-                          onShowPlayer={
-                            bottomPlayerToggleAvailable
-                              ? showBottomPlayer
-                              : undefined
+                          showNextHint={
+                            bottomPlayerToggleAvailable &&
+                            !bottomPlayerCollapsed &&
+                            bottomPlayerHints.visible('next')
                           }
+                          onNavigate={bottomPlayerHints.navigate}
                         />
-                      </View>
-                      {app.page === 'home-menu' ? <HomeMenuDrawer /> : null}
-                      {homeRoot &&
-                      app.message === '正在解析可播放音源…' &&
-                      !app.stateStorageError ? null : (
-                        <Toast />
-                      )}
-                    </View>
-                    <View
-                      testID="edge-back-left"
-                      {...edgeBackResponders.left.panHandlers}
-                      style={[
-                        s.edgeBackRegion,
-                        s.edgeBackLeft,
-                        app.page === 'effects' && {
-                          top: Math.max(
-                            48,
-                            layout.playerHeaderHeight * canvas.scale,
-                          ),
-                        },
-                        bottomPlayerSurface && { bottom: bottomChromeHeight },
-                      ]}
-                    />
-                    <View
-                      testID="edge-back-right"
-                      {...edgeBackResponders.right.panHandlers}
-                      style={[
-                        s.edgeBackRegion,
-                        s.edgeBackRight,
-                        bottomPlayerSurface && { bottom: bottomChromeHeight },
-                      ]}
+                      </OrderedCoverScope>
+                    </Animated.View>
+                  ) : null}
+                  <View
+                    testID={homeRoot ? 'home-bottom-frame' : 'bottom-frame'}
+                    style={[
+                      s.bottomFrame,
+                      !playerAppearance && s.drawerBottomFrame,
+                      { height: layout.bottomNavHeight },
+                      (homeSurface || app.page === 'effects') && s.homeBottomFrame,
+                      playerAppearance && s.playerBottomFrame,
+                    ]}
+                  >
+                    <BottomNav
+                      attached
+                      transparent={playerAppearance}
+                      playerCollapsed={bottomPlayerCollapsed}
+                      showPlayerHint={
+                        bottomPlayerToggleAvailable &&
+                        bottomPlayerHints.visible('show')
+                      }
+                      onShowPlayer={
+                        bottomPlayerToggleAvailable
+                          ? showBottomPlayer
+                          : undefined
+                      }
                     />
                   </View>
-                  {!app.startup.visible ? <PlaybackQueueSheet /> : null}
-                </LayoutProvider>
-              </SafeAreaView>
-              {!playerAppearance && !app.startup.visible ? (
+                  {app.page === 'home-menu' ? <HomeMenuDrawer /> : null}
+                  {(homeRoot && app.message === '正在解析可播放音源…') &&
+                  !app.stateStorageError ? null : (
+                    <Toast />
+                  )}
+                </View>
                 <View
-                  testID="bottom-nav-edge-fill"
-                  pointerEvents="none"
+                  testID="edge-back-left"
+                  {...edgeBackResponders.left.panHandlers}
                   style={[
-                    s.bottomNavEdgeFill,
-                    {
-                      // Paint outside the scaled/safe-area viewport so the lifted
-                      // navigation surface still reaches the physical bottom edge.
-                      height:
-                        (layout.bottomNavLift + BOTTOM_NAV_SEAM_OVERLAP) *
-                          canvas.scale +
-                        insets.bottom,
-                      backgroundColor: appPalette.bg,
+                    s.edgeBackRegion,
+                    s.edgeBackLeft,
+                    app.page === 'effects' && {
+                      top: Math.max(48, layout.playerHeaderHeight * canvas.scale),
                     },
+                    bottomPlayerSurface && { bottom: bottomChromeHeight },
                   ]}
                 />
-              ) : null}
-              <StickyBackgroundViewport inset={insets.top} />
-              {/* Startup is deliberately outside SafeAreaView so its opaque surface
-      also covers the system status/navigation bars during launch. */}
-              <StartupSplash />
-              {!app.startup.visible && app.playlistImportRequest ? (
-                <PlaylistImportDialog
-                  key={app.playlistImportRequest.id}
-                  initialInput={app.playlistImportRequest.input}
-                  autoRead={app.playlistImportRequest.autoRead}
-                  onClose={app.closePlaylistImport}
-                  onCancel={app.cancelPlaylistImport}
-                  onSave={app.importPlaylist}
-                  isSaved={app.isPlaylistSaved}
+                <View
+                  testID="edge-back-right"
+                  {...edgeBackResponders.right.panHandlers}
+                  style={[
+                    s.edgeBackRegion,
+                    s.edgeBackRight,
+                    bottomPlayerSurface && { bottom: bottomChromeHeight },
+                  ]}
                 />
-              ) : null}
-            </View>
-          </StickyBackgroundProvider>
-        </LibraryDetailAppearanceContext.Provider>
+              </View>
+              {!app.startup.visible ? <PlaybackQueueSheet /> : null}
+            </LayoutProvider>
+          </SafeAreaView>
+          {!playerAppearance && !app.startup.visible ? (
+            <View
+              testID="bottom-nav-edge-fill"
+              pointerEvents="none"
+              style={[
+                s.bottomNavEdgeFill,
+                {
+                  // Paint outside the scaled/safe-area viewport so the lifted
+                  // navigation surface still reaches the physical bottom edge.
+                  height:
+                    (layout.bottomNavLift + BOTTOM_NAV_SEAM_OVERLAP) *
+                      canvas.scale +
+                    insets.bottom,
+                  backgroundColor: appPalette.bg,
+                },
+              ]}
+            />
+          ) : null}
+          <StickyBackgroundViewport inset={insets.top} />
+          {/* Startup is deliberately outside SafeAreaView so its opaque surface
+            also covers the system status/navigation bars during launch. */}
+          <StartupSplash />
+          {!app.startup.visible && app.playlistImportRequest ? <PlaylistImportDialog
+            key={app.playlistImportRequest.id} initialInput={app.playlistImportRequest.input}
+            autoRead={app.playlistImportRequest.autoRead} onClose={app.closePlaylistImport}
+            onCancel={app.cancelPlaylistImport} onSave={app.importPlaylist} isSaved={app.isPlaylistSaved}
+          /> : null}
+        </View>
+        </StickyBackgroundProvider>
+      </LibraryDetailAppearanceContext.Provider>
       </PlaylistMembershipProvider>
     </ThemeProvider>
   );
 }
+
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -588,6 +543,7 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
 const s = createThemedStyles(
   StyleSheet.create({
     edgeShell: { flex: 1 },

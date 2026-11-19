@@ -1,3 +1,5 @@
+import { isSourceRateLimited } from './playbackSourceAvailability';
+
 export type UrlPrewarmLane = 'home-visible' | 'queue';
 export type UrlPrewarmOutcome = 'success' | 'failed' | 'cancelled';
 
@@ -185,26 +187,18 @@ export class UrlPrewarmScheduler {
         })
         .then(
           () => this.finish(task, true),
-          () => this.finish(task, false),
+          error => this.finish(task, false, error),
         );
     }
   }
 
   private takeNext() {
-    const queueActive = [...this.activeTasks].some(
-      task => task.lane === 'queue',
-    );
+    const queueActive = [...this.activeTasks].some(task => task.lane === 'queue');
     for (const queue of [this.retryQueue, this.queueQueue, this.homeQueue]) {
-      for (let index = 0; index < queue.length; ) {
+      for (let index = 0; index < queue.length;) {
         const task = queue[index]!;
-        if (this.pending.get(task.key) !== task) {
-          queue.splice(index, 1);
-          continue;
-        }
-        if (queueActive && task.lane === 'queue') {
-          index += 1;
-          continue;
-        }
+        if (this.pending.get(task.key) !== task) { queue.splice(index, 1); continue; }
+        if (queueActive && task.lane === 'queue') { index += 1; continue; }
         queue.splice(index, 1);
         return task;
       }
@@ -240,12 +234,17 @@ export class UrlPrewarmScheduler {
       this.queueIdleWaiters.splice(0).forEach(resolve => resolve());
   }
 
-  private async finish(task: UrlPrewarmTask, succeeded: boolean) {
+  private async finish(task: UrlPrewarmTask, succeeded: boolean, failureReason?: unknown) {
     if (this.pending.get(task.key) !== task) {
       task.resolveOutcome('cancelled');
     } else if (task.controller?.signal.aborted) {
       (task.lane === 'queue' ? this.queueQueue : this.homeQueue).unshift(task);
       this.sortQueue();
+    } else if (isSourceRateLimited(failureReason)) {
+      // A later explicit enqueue may retry this song. A service throttle must
+      // not trigger retries, row removal, or failed-song queue cleanup.
+      this.pending.delete(task.key);
+      task.resolveOutcome('cancelled');
     } else if (task.validateAfterAddress) {
       task.validateAfterAddress = false;
       this.queueQueue.push(task);
@@ -253,10 +252,10 @@ export class UrlPrewarmScheduler {
     } else if (succeeded) {
       this.pending.delete(task.key);
       task.resolveOutcome('success');
-    } else {
+    }
+    else {
       task.attempts += 1;
-      if (task.attempts < (task.lane === 'queue' ? 1 : this.maxAttempts))
-        this.retryQueue.push(task);
+      if (task.attempts < (task.lane === 'queue' ? 1 : this.maxAttempts)) this.retryQueue.push(task);
       else {
         // A terminal outcome belongs to this song, independently of native
         // cleanup or the rest of the queue, including coalesced detail owners.
@@ -269,7 +268,8 @@ export class UrlPrewarmScheduler {
             console.error('[url-prewarm] queue failure removal failed', error);
           }
         }
-        if (this.pending.get(task.key) === task) this.pending.delete(task.key);
+        if (this.pending.get(task.key) === task)
+          this.pending.delete(task.key);
       }
     }
     task.active = false;

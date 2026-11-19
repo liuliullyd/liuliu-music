@@ -9,9 +9,9 @@ import {
 import { useLayout } from '../state/LayoutContext';
 
 // RN's internal hook has no published TypeScript declaration in this version.
-// Keeping the native Pressability state machine here is important: sticky
-// headers can be visually translated by the native scroll view while Fabric's
-// responder target still reports its pre-stick origin.
+// Keeping the native Pressability state machine here is important. Native
+// sticky headers and pagers can translate controls while Fabric's responder
+// target still reports the shadow layout origin.
 const usePressability =
   require('react-native/Libraries/Pressability/usePressability')
     .default as (config: {
@@ -60,12 +60,12 @@ export type StickyPressableProps = ViewProps & {
 };
 
 /**
- * Pressable-compatible control for native sticky headers.
+ * Pressable-compatible control for native-translated headers and pages.
  *
  * At responder grant, convert the touch's local coordinates into the visual
- * page origin produced by the sticky transform. Pressability then keeps that
+ * page origin produced by the native transform. Pressability then keeps that
  * frozen origin while handling MOVE/termination exactly as RN's Pressable
- * does, so a small native sticky translation cannot cancel a valid tap.
+ * does, so a small finger movement cannot cancel a valid translated tap.
  */
 export function StickyPressable({
   onPress,
@@ -134,7 +134,7 @@ export function StickyPressable({
         measuredX: number,
         measuredY: number,
       ) => {
-        // Native sticky transforms can leave Fabric's measured origin behind.
+        // Native transforms can leave Fabric's measured origin behind.
         // Freeze the touch's visual origin at grant; MOVE must never move it.
         callback(
           x,

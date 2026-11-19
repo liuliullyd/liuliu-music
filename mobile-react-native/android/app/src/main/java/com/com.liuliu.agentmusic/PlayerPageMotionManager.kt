@@ -1,9 +1,8 @@
 package com.liuliu.agentmusic
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
+import android.provider.Settings
 import android.util.Log
+import android.view.Choreographer
 import android.view.MotionEvent
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReadableArray
@@ -17,10 +16,6 @@ import com.facebook.react.uimanager.events.Event
 import com.facebook.react.uimanager.events.NativeGestureUtil
 import com.facebook.react.views.view.ReactViewGroup
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.exp
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 class PlayerPageMotionManager : ViewGroupManager<PlayerPageMotionView>() {
   override fun getName() = "LiuliuPlayerPageMotion"
@@ -29,6 +24,11 @@ class PlayerPageMotionManager : ViewGroupManager<PlayerPageMotionView>() {
   @ReactProp(name = "pageExtent")
   fun setPageExtent(view: PlayerPageMotionView, extent: Float) {
     view.pageExtent = PixelUtil.toPixelFromDIP(extent).coerceAtLeast(1f)
+  }
+
+  @ReactProp(name = "releasePlan")
+  fun setReleasePlan(view: PlayerPageMotionView, plan: ReadableArray?) {
+    view.configureRelease(plan)
   }
 
   override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> =
@@ -67,10 +67,20 @@ class PlayerPageMotionView(private val reactContext: ThemedReactContext) : React
   private var downX = 0f
   private var downY = 0f
   private var previewDirection = 0
-  private var animation: ValueAnimator? = null
+  private var animation: Choreographer.FrameCallback? = null
   private var animationCommand = 0
+  private var automaticTarget: Float? = null
+  private var automaticFinished = false
   private var disposed = false
   private val captureDistance = PixelUtil.toPixelFromDIP(12f)
+
+  fun configureRelease(plan: ReadableArray?) {
+    if (plan == null || plan.size() == 0) return
+    if (plan.size() < 3) { motion.clearReleasePlan(plan.getInt(0)); return }
+    val accepted = motion.configureRelease(plan.getInt(0), PixelUtil.toPixelFromDIP(plan.getDouble(1).toFloat()),
+      (2 until plan.size()).map { PixelUtil.toPixelFromDIP(plan.getDouble(it).toFloat()) })
+    Log.i("LiuliuPlayerDiagnostics", "page-motion mounted revision=${plan.getInt(0)} owner=${motion.gestureId} center=${plan.getDouble(1)} accepted=$accepted pages=${(2 until plan.size()).joinToString(",") { plan.getDouble(it).toString() }}")
+  }
 
   init {
     // Keep overflow pages drawable after the track translates outside its own
@@ -104,10 +114,12 @@ class PlayerPageMotionView(private val reactContext: ThemedReactContext) : React
   }
 
   private fun cancelAnimation() {
+    automaticTarget = null
+    automaticFinished = false
     motion.cancelAnimation()
     val old = animation ?: return
     animation = null
-    old.cancel()
+    Choreographer.getInstance().removeFrameCallback(old)
     complete(animationCommand, false)
   }
 
@@ -117,45 +129,48 @@ class PlayerPageMotionView(private val reactContext: ThemedReactContext) : React
       complete(command, false)
       return
     }
+    // UP already started this exact prepared-page animation on the UI thread.
+    // Attach React's completion without restarting its clock or pixel position.
+    if (action == "animate" && automaticTarget == target) {
+      automaticTarget = null
+      if (automaticFinished) complete(command, true)
+      else animationCommand = command
+      return
+    }
     cancelAnimation()
     if (action == "stop") {
       complete(command, true)
       return
     }
     if (action == "set") {
+      motion.rebaseRelease(target)
       applyPosition(target)
       return
     }
-    val start = position
-    val next = ValueAnimator.ofFloat(0f, 1f)
-    animation = next
+    motion.rebaseRelease(target)
+    val timeline = PlayerPageAnimation(position, target, System.nanoTime(), action == "spring",
+      Settings.Global.getFloat(reactContext.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f))
     animationCommand = command
     motion.beginAnimation(command)
-    next.duration = if (action == "spring") 800L else 240L
-    next.interpolator = android.animation.TimeInterpolator { fraction ->
-      if (action == "spring") {
-        // React Native converts Origami tension/friction before solving the spring.
-        val time = fraction * 0.8f
-        val stiffness = (80f - 30f) * 3.62f + 194f
-        val damping = ((9f - 8f) * 3f + 25f) / 2f
-        val frequency = sqrt(stiffness - damping * damping)
-        1f - exp(-damping * time) *
-          (cos(frequency * time) + damping / frequency * sin(frequency * time))
-      } else 1f - (1f - fraction) * (1f - fraction) * (1f - fraction)
-    }
-    next.addUpdateListener {
-      if (motion.animationPosition(command, start + (target - start) * (it.animatedValue as Float)))
-        applyPosition(motion.position)
-    }
-    next.addListener(object : AnimatorListenerAdapter() {
-      override fun onAnimationEnd(animator: Animator) {
-        if (animation !== next || !motion.finishAnimation(command, target)) return
-        animation = null
-        applyPosition(target)
-        complete(command, true)
+    // Anchor to UP/command receipt. A delayed first frame consumes elapsed time
+    // instead of becoming another zero-progress frame before the slide resumes.
+    val next = object : Choreographer.FrameCallback {
+      override fun doFrame(frameTimeNanos: Long) {
+        if (animation !== this || disposed) return
+        if (timeline.finishedAt(frameTimeNanos)) {
+          if (!motion.finishAnimation(command, target)) return
+          animation = null
+          applyPosition(target)
+          if (automaticTarget == target) automaticFinished = true
+          complete(animationCommand, true)
+        } else if (motion.animationPosition(command, timeline.positionAt(frameTimeNanos))) {
+          applyPosition(motion.position)
+          Choreographer.getInstance().postFrameCallback(this)
+        }
       }
-    })
-    next.start()
+    }
+    animation = next
+    Choreographer.getInstance().postFrameCallback(next)
   }
 
   private fun gesture(phase: String, event: MotionEvent) {
@@ -206,7 +221,10 @@ class PlayerPageMotionView(private val reactContext: ThemedReactContext) : React
     val dx = event.x - downX
     val dy = event.y - downY
     if (abs(dy) > abs(dx)) {
-      applyPosition(motion.moveDrag(dx, dy, pageExtent))
+      if (event.actionMasked == MotionEvent.ACTION_MOVE)
+        applyPosition(motion.moveDrag(dx, dy, pageExtent))
+      else if (event.actionMasked == MotionEvent.ACTION_UP)
+        applyPosition(motion.releasePosition(dx, dy, pageExtent))
       val direction = if (dy < 0) -1 else 1
       if (direction != previewDirection) {
         previewDirection = direction
@@ -214,7 +232,16 @@ class PlayerPageMotionView(private val reactContext: ThemedReactContext) : React
       }
     }
     if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+      val target = if (event.actionMasked == MotionEvent.ACTION_UP)
+        motion.releaseTarget(dx, dy, PixelUtil.toPixelFromDIP(64f)) else null
+      Log.i("LiuliuPlayerDiagnostics", "page-motion prepared owner=${motion.gestureId} target=${target?.let { PixelUtil.toDIPFromPixel(it) }}")
       motion.endDrag()
+      if (target != null) {
+        motion.acceptRelease(target)
+        command("animate", 0, motion.gestureId, target)
+        automaticTarget = target
+        automaticFinished = false
+      }
       gesture(if (event.actionMasked == MotionEvent.ACTION_UP) "release" else "terminate", event)
       NativeGestureUtil.notifyNativeGestureEnded(this, event)
       parent?.requestDisallowInterceptTouchEvent(false)
@@ -225,8 +252,7 @@ class PlayerPageMotionView(private val reactContext: ThemedReactContext) : React
   fun dispose() {
     disposed = true
     motion.cancelAnimation()
-    animation?.removeAllListeners()
-    animation?.cancel()
+    animation?.let { Choreographer.getInstance().removeFrameCallback(it) }
     animation = null
   }
 }

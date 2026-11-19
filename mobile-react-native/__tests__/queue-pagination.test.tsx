@@ -815,7 +815,7 @@ test('a failed cold start reports the selected entry without silently advancing'
   );
   expect(resolvePlayback).toHaveBeenCalledTimes(1);
   expect(nativePlayer.loadQueue).not.toHaveBeenCalled();
-  expect(app.current?.id).not.toBe('song-40');
+  expect(app.current?.id).toBe('song-40');
   expect(app.message).toBe('当前歌曲没有可播放的在线音源');
 });
 

@@ -125,6 +125,32 @@ test('React updates retain the same native motion view and emit no reset command
   expect(dispatch).not.toHaveBeenCalled();
 });
 
+test('mounted coordinates carry a commit revision independent of gesture ownership', async () => {
+  gesture('grant', 3);
+  await act(async () => renderer.update(
+    <PlayerPageMotion ref={handle} pageExtent={800} onGesture={onGesture}
+      releaseTargets={{ center: 0, pages: [0, -800, -1600] }} />,
+  ));
+  expect(native().props.releasePlan).toEqual([1, 0, 0, -800, -1600]);
+  gesture('grant', 4);
+  await act(async () => renderer.update(
+    <PlayerPageMotion ref={handle} pageExtent={800} onGesture={onGesture}
+      releaseTargets={{ center: 0, pages: [0, -800, -1600] }} />,
+  ));
+  expect(native().props.releasePlan).toEqual([1, 0, 0, -800, -1600]);
+  await act(async () => renderer.update(
+    <PlayerPageMotion ref={handle} pageExtent={800} onGesture={onGesture}
+      releaseTargets={{ center: -800, pages: [0, -800, -1600, -2400] }} />,
+  ));
+  expect(native().props.releasePlan).toEqual([2, -800, 0, -800, -1600, -2400]);
+  expect(dispatch).not.toHaveBeenCalled();
+  await act(async () => renderer.update(
+    <PlayerPageMotion ref={handle} pageExtent={800} onGesture={onGesture}
+      releaseTargets={null} />,
+  ));
+  expect(native().props.releasePlan).toEqual([3]);
+});
+
 test('unmount rejects pending callback delivery', async () => {
   const callback = jest.fn();
   handle.current!.animateTo(-800, false, callback);

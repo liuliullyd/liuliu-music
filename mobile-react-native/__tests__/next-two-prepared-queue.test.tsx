@@ -161,7 +161,14 @@ beforeEach(async () => {
     probeAudioPrefix: jest.fn(async () => ({ sampleBytes: 64 })),
     resolveSourceScriptAddress: jest.fn(async (_script, platform, json) => {
       const info = JSON.parse(json);
-      expect(info.__lxPinnedBackend).toBe(`${platform}-route`);
+      if (info.__lxDiscoverBackendRoutes) {
+        return { discoveredRoutes: [{ backend: `${platform}-route`, requestRoute: `GET:https://resolver.test/${platform}` }] };
+      }
+      // Foreground selection races the source's interfaces; background queue
+      // validation still pins and reuses the previous successful interface.
+      if (info.__lxPinnedBackend !== undefined) {
+        expect(info.__lxPinnedBackend).toBe(`${platform}-route`);
+      }
       return {
         url: `https://audio.test/${platform}/${info.songmid}`,
         backend: `${platform}-route`,
@@ -233,6 +240,8 @@ beforeEach(async () => {
   });
   await act(async () => {
     await jest.advanceTimersByTimeAsync(10);
+    // This suite starts queue actions from Home; startup now reveals player.
+    app.setTab('discovery');
   });
 }, 15_000);
 
@@ -242,7 +251,7 @@ test('validated queue processes every loaded song from top to bottom and next-tw
   let finish!: (value: any) => void;
   native.probeBackgroundAudioUrl.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   await act(async () => { await app.playTrack(tracks[0]!, tracks, 0, { queueSource: { kind: 'list', hasMore: false } }); await flush(); });
-  expect(native.resolveSourceScriptAddress.mock.calls.map((call: any[]) => JSON.parse(call[2]).songmid)).toEqual(['1']);
+  expect(native.resolveSourceScriptAddress.mock.calls.filter((call: any[]) => JSON.parse(call[2]).__lxPinnedBackend).map((call: any[]) => JSON.parse(call[2]).songmid)).toEqual(['1']);
   expect(nativePlayer.insertQueueItems).not.toHaveBeenCalled();
   expect(finish).toBeDefined();
   await act(async () => { finish({ durationSeconds: 240, mimeType: 'audio/mpeg', bitrate: 128000, sampleBytes: 4096 }); await flush(); });
@@ -524,7 +533,7 @@ test('validated queue still drops another failed row after prepared navigation c
   expect(nativePlayer.loadQueue).toHaveBeenCalledTimes(1);
 });
 
-test('memory statistics count confirmed playback once, ignore pause/resume/ticks, and include a natural transition and a new same-song playback', async () => {
+test('memory statistics wait for thirty actual seconds per play, ignore seek/pause/duplicate events, and qualify transitions and repeats independently', async () => {
   const tracks = [song('qq', 0), song('qq', 1)].map(track => ({ ...track, metadata: { genre: 'rock', language: 'English' } }));
   let start!: () => void;
   jest.mocked(nativePlayer.waitForPlaybackStart).mockImplementationOnce(() => new Promise(resolve => { start = resolve; }));
@@ -532,6 +541,19 @@ test('memory statistics count confirmed playback once, ignore pause/resume/ticks
   await act(async () => { selected = app.playTrack(tracks[0]!, tracks, 0, { queueSource: { kind: 'list', hasMore: false } }); await flush(); });
   expect(app.state!.profile.memoryStatistics?.samples ?? 0).toBe(0);
   await act(async () => { start(); await selected; emit(nativeState); await flush(); });
+  expect(app.state!.profile.memoryStatistics?.samples ?? 0).toBe(0);
+  expect(app.state!.history).toHaveLength(1);
+  const first = { sequence: 1, mediaId: 'qq:0', seconds: 30 };
+  await act(async () => {
+    emit({ ...nativeState, position: 90, listening: { ...first, seconds: 2, qualified: [] } });
+    emit({ ...nativeState, playing: false, listening: { ...first, seconds: 29.999, qualified: [] } });
+    await jest.advanceTimersByTimeAsync(40_000); await flush();
+  });
+  expect(app.state!.profile.memoryStatistics?.samples ?? 0).toBe(0);
+  await act(async () => {
+    nativeState = { ...nativeState, listening: { ...first, qualified: [first] } };
+    emit(nativeState); await flush();
+  });
   expect(app.state!.profile.memoryStatistics?.samples).toBe(1);
   await act(async () => {
     emit({ ...nativeState, playing: false }); emit({ ...nativeState, position: 12, playing: true });
@@ -539,9 +561,22 @@ test('memory statistics count confirmed playback once, ignore pause/resume/ticks
   });
   expect(app.state!.profile.memoryStatistics?.samples).toBe(1);
   await act(async () => { nativeState = { ...nativeState, index: 1, mediaId: 'qq:1', playing: true }; emit(nativeState); await flush(); });
+  expect(app.state!.profile.memoryStatistics?.samples).toBe(1);
+  const second = { sequence: 2, mediaId: 'qq:1', seconds: 30 };
+  await act(async () => {
+    nativeState = { ...nativeState, listening: { ...second, qualified: [first, second] } };
+    emit(nativeState); await flush();
+  });
   expect(app.state!.profile.memoryStatistics?.samples).toBe(2);
   await act(async () => { await app.playTrack(tracks[0]!, tracks, 0, { queueSource: { kind: 'list', hasMore: false } }); emit(nativeState); await flush(); });
+  expect(app.state!.profile.memoryStatistics?.samples).toBe(2);
+  const repeat = { sequence: 3, mediaId: 'qq:0', seconds: 30 };
+  await act(async () => {
+    nativeState = { ...nativeState, listening: { ...repeat, qualified: [first, second, repeat] } };
+    emit(nativeState); await flush();
+  });
   expect(app.state!.profile.memoryStatistics?.samples).toBe(3);
+  expect(app.state!.profile.memoryStatistics?.minimumListenedSeconds).toBe(30);
   expect(app.state!.history).toHaveLength(2);
 });
 
@@ -554,7 +589,7 @@ test('actual playback prepares exactly two warmed neighbours in order, retaining
   await act(async () => { selection = app.playTrack(tracks[0]!, tracks, 0, { queueSource: { kind: 'list', hasMore: false } }); await flush(); });
   expect(app.queue.map(track => track.id)).toEqual(tracks.map(track => track.id));
   expect(nativePlayer.insertQueueItems).not.toHaveBeenCalled();
-  expect(NativeModules.LiuliuStorage.resolveSourceScriptAddress).not.toHaveBeenCalled();
+  expect(NativeModules.LiuliuStorage.resolveSourceScriptAddress.mock.calls.every((call: any[]) => JSON.parse(call[2]).songmid === '0')).toBe(true);
   await act(async () => { started(); await selection; await flush(); });
   expect(jest.mocked(nativePlayer.insertQueueItems).mock.calls.map(call => [call[0], call[1], call[2].map(track => track.providerId)])).toEqual([
     ['qq:0', 1, ['1']], ['qq:0', 2, ['2']],
@@ -609,7 +644,7 @@ test('a cold or failed first neighbour never promotes the second across a logica
     : { durationSeconds: 240, mimeType: 'audio/mpeg', bitrate: 128000, sampleBytes: 4096 });
   await act(async () => { await app.playTrack(tracks[0]!, tracks, 0, { queueSource: { kind: 'list', hasMore: false } }); await flush(); });
   expect(nativePlayer.insertQueueItems).not.toHaveBeenCalled();
-  expect(NativeModules.LiuliuStorage.resolveSourceScript).toHaveBeenCalledTimes(1);
+  expect(NativeModules.LiuliuStorage.resolveSourceScriptAddress.mock.calls.filter((call: any[]) => !JSON.parse(call[2]).__lxDiscoverBackendRoutes && JSON.parse(call[2]).songmid === '0')).toHaveLength(1);
   await act(async () => { finishFirst({ durationSeconds: 240, mimeType: 'audio/mpeg', bitrate: 128000, sampleBytes: 4096 }); await flush(); });
   expect(jest.mocked(nativePlayer.insertQueueItems).mock.calls.flatMap(call => call[2].map(track => track.providerId))).toEqual(['1', '2']);
 });
@@ -738,9 +773,44 @@ test('manual prepared next outside the player page retains the fast native path'
   await act(async () => { await app.next(); await flush(); });
   expect(nativePlayer.playIndex).toHaveBeenCalledWith(1);
   expect(nativePlayer.loadQueue).toHaveBeenCalledTimes(1);
-  expect(app.current?.providerId).toBe('0');
-  await act(async () => { emit(nativeState); await flush(); });
   expect(app.current?.providerId).toBe('1');
+});
+
+test('prepared navigation outside player rejects the outgoing event while its command is pending', async () => {
+  const tracks = Array.from({ length: 4 }, (_, index) => song('qq', index));
+  await act(async () => { await app.playTrack(tracks[0]!, tracks, 0, { openPlayer: false }); await flush(); });
+  const outgoing = { ...nativeState };
+  let accept!: () => void;
+  jest.mocked(nativePlayer.playIndex).mockImplementationOnce(index => new Promise(resolve => {
+    accept = () => {
+      nativeState = { ...nativeState, index, mediaId: `qq:${index}`, playing: true };
+      resolve();
+    };
+  }));
+  let navigation!: Promise<void>;
+  await act(async () => { navigation = app.next(); await flush(); });
+  expect(app.current?.providerId).toBe('1');
+  await act(async () => { emit(outgoing); await flush(); });
+  expect(app.current?.providerId).toBe('1');
+  await act(async () => { accept(); await navigation; await flush(); });
+  expect(app.player.mediaId).toBe('qq:1');
+  expect(app.current?.providerId).toBe('1');
+});
+
+test('prepared navigation outside player retains its identity after command acknowledgement until actual playback', async () => {
+  const tracks = Array.from({ length: 4 }, (_, index) => song('qq', index));
+  await act(async () => { await app.playTrack(tracks[0]!, tracks, 0, { openPlayer: false }); await flush(); });
+  const outgoing = { ...nativeState };
+  jest.mocked(nativePlayer.playIndex).mockImplementationOnce(async () => undefined);
+  await act(async () => { await app.next(); await flush(); });
+  expect(app.current?.providerId).toBe('1');
+  await act(async () => { emit({ ...outgoing, playing: false }); await flush(); });
+  expect(app.player.mediaId).toBe('qq:1');
+  expect(app.current?.providerId).toBe('1');
+  await act(async () => { emit({ ...outgoing, mediaId: 'qq:1', index: 1, playing: true, position: 2 }); await flush(); });
+  expect(app.player.position).toBe(2);
+  await act(async () => { emit({ ...outgoing, mediaId: 'qq:2', index: 2, playing: true, position: 0 }); await flush(); });
+  expect(app.current?.providerId).toBe('2');
 });
 
 test('a partial native tail still advances into unresolved logical metadata after leaving player', async () => {
@@ -1208,10 +1278,14 @@ test.each([1, 2])('failed next removes %i unavailable songs and continues forwar
     await app.playTrack(tracks[0]!, tracks, 0, { queueSource: { kind: 'list', hasMore: false } });
     await flush();
   });
-  native.resolveSourceScript.mockImplementation(async (_script: string, platform: string, json: string) => {
-    const id = JSON.parse(json).songmid;
-    if (Number(id) > 0 && Number(id) <= failures) throw new Error('no available source');
-    return { url: `https://audio.test/${platform}/${id}`, backend: `${platform}-route` };
+  const resolveAddress = native.resolveSourceScriptAddress.getMockImplementation();
+  native.resolveSourceScriptAddress.mockImplementation(async (script: string, platform: string, json: string) => {
+    const info = JSON.parse(json);
+    const id = Number(info.songmid);
+    if (!info.__lxDiscoverBackendRoutes && id > 0 && id <= failures) {
+      throw new Error('no available source');
+    }
+    return resolveAddress(script, platform, json);
   });
   await act(async () => {
     const navigation = app.next();

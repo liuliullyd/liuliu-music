@@ -134,7 +134,7 @@ export function HomeMenuDrawer() {
   }, [closeDrawer]);
 
   const playChoice = async (choice: HomeMenuChoice) => {
-    if (loadingId) return;
+    if (loadingId || sceneRequestAbort.current || closing.current) return;
     const queueOrigin = app.captureQueueOrigin?.(choice.label, { menuChoiceId: choice.id });
     selectedChoiceId = choice.id;
     app.catalogViewState?.set('home-menu-choice', choice.id);
@@ -173,7 +173,7 @@ export function HomeMenuDrawer() {
         : result.tracks;
       await app.playTrack(playbackTracks[0]!, playbackTracks, 0, {
         queueOrigin,
-        ...(choice.kind === 'scene' ? { allowFailureFallback: true } : {}),
+        allowFailureFallback: true,
         queueSource: {
           kind: 'home-menu',
           cursor: result.cursor,

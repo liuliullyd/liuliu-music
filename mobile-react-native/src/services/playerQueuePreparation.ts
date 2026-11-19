@@ -6,6 +6,7 @@ type Entry = {
   status: 'running' | 'ready';
   result?: PreparedTrack;
   request?: Promise<PreparedTrack>;
+  signal?: AbortSignal;
 };
 
 /** Shares foreground validation with the cancellable, contiguous next-two plan. */
@@ -43,20 +44,21 @@ export class PlayerQueuePreparation {
     track: Track,
     preference: string,
     prepare: () => Promise<PreparedTrack>,
+    signal?: AbortSignal,
   ) {
     const key = trackQueueKey(track);
     const existing = this.entries.get(key);
     if (existing?.preference === preference) {
       if (existing.status === 'ready') return Promise.resolve(existing.result!);
-      if (existing.status === 'running') return existing.request!;
+      if (existing.status === 'running' && !existing.signal?.aborted && existing.signal === signal) return existing.request!;
     }
 
-    const entry: Entry = { preference, status: 'running' };
+    const entry: Entry = { preference, status: 'running', signal };
     this.entries.set(key, entry);
     const request = Promise.resolve()
       .then(prepare)
       .then(result => {
-        if (this.entries.get(key) === entry) {
+        if (this.entries.get(key) === entry && !signal?.aborted) {
           entry.status = 'ready';
           entry.result = result;
         }

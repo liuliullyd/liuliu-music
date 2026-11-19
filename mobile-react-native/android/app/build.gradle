@@ -26,8 +26,8 @@ android {
         applicationId 'com.liuliu.music.opensource'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 9
-        versionName '1.0.8'
+        versionCode 10
+        versionName '1.0.9'
         externalNativeBuild {
             cmake { arguments '-DCMAKE_OBJECT_PATH_MAX=240' }
         }

@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { PlaylistMembershipDialog, usePlaylistMembershipPicker } from './PlaylistMembershipPicker';
 import { TrackActionIcon } from './TrackActionIcon';
+import { StickyPressable } from './StickyPressable';
 import { DownloadConfirmationDialog } from './DownloadConfirmationDialog';
 import {
   isTrackDownloaded,
@@ -32,6 +33,7 @@ export function QueueTrackActions({
   onDownload,
   scale = 1,
   playerColor,
+  sticky = false,
 }: {
   track: Track | null;
   showRemove?: boolean;
@@ -45,6 +47,8 @@ export function QueueTrackActions({
   onDownload?: (track: Track, resolved?: DownloadPreview) => Promise<void>;
   scale?: number;
   playerColor?: string;
+  /** Match touch coordinates to the visible control under native translation. */
+  sticky?: boolean;
 }) {
   const app = useApp();
   const openPlaylistPicker = usePlaylistMembershipPicker();
@@ -67,8 +71,9 @@ export function QueueTrackActions({
       }
     : null;
   const closePlaylist = () => setPlaylistSelection(null);
+  const Button = sticky ? StickyPressable : Pressable;
   const downloadButton = (
-    <Pressable
+    <Button
       testID={`${scope}-download-${trackId}`}
       accessibilityRole="button"
       accessibilityLabel="下载"
@@ -95,13 +100,13 @@ export function QueueTrackActions({
         color={downloaded ? c.accent : inactiveColor}
         testID={`${player ? 'player' : scope}-download-icon`}
       />
-    </Pressable>
+    </Button>
   );
   return (
     <>
       <View style={s.actions}>
         {showFavorite ? (
-          <Pressable
+          <Button
             testID={`${scope}-favorite-${trackId}`}
             accessibilityRole="button"
             accessibilityLabel={favorite ? '取消收藏' : '收藏'}
@@ -125,11 +130,11 @@ export function QueueTrackActions({
               }
               testID={`${player ? 'player' : scope}-favorite-icon`}
             />
-          </Pressable>
+          </Button>
         ) : null}
         {showDownload && downloadFirst ? downloadButton : null}
         {showPlaylist ? (
-          <Pressable
+          <Button
             testID={`${scope}-playlist-${trackId}`}
             accessibilityRole="button"
             accessibilityLabel="添加至歌单"
@@ -151,11 +156,11 @@ export function QueueTrackActions({
               color={inPlaylist ? c.accent : inactiveColor}
               testID={`${player ? 'player' : scope}-playlist-icon`}
             />
-          </Pressable>
+          </Button>
         ) : null}
         {showDownload && !downloadFirst ? downloadButton : null}
         {showRemove ? (
-          <Pressable
+          <Button
             testID={`${scope}-remove-${trackId}`}
             accessibilityRole="button"
             accessibilityLabel="从播放列表删除"
@@ -177,7 +182,7 @@ export function QueueTrackActions({
             >
               ×
             </Glyph>
-          </Pressable>
+          </Button>
         ) : null}
       </View>
       {playlistSelection ? (

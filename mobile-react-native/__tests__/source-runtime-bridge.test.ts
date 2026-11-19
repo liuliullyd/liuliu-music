@@ -17,7 +17,7 @@ const runtime = readFileSync(
 
 type CapturedRequest = { id: string; url: string; optionsJson: string };
 
-export function createRuntime(debug = false) {
+export function createRuntime(debug = false, options: { script?: string; discovery?: boolean } = {}) {
   const marker = 'private fun bootstrap(): String = """';
   const start = runtime.indexOf(marker);
   const end = runtime.indexOf('  """.trimIndent()', start);
@@ -26,6 +26,7 @@ export function createRuntime(debug = false) {
   const bootstrap = runtime
     .slice(start + marker.length, end)
     .replaceAll('${BuildConfig.DEBUG}', String(debug))
+    .replaceAll('${JSONObject(musicInfoJson).optBoolean("__lxDiscoverBackendRoutes")}', String(options.discovery === true))
     .replaceAll('${TRANSPORT_TYPE_KEY}', '__liuliuTransportType')
     .replaceAll('${TRANSPORT_DATA_KEY}', 'data')
     .replaceAll('${TRANSPORT_BYTES}', 'bytes')
@@ -35,12 +36,14 @@ export function createRuntime(debug = false) {
       '${scriptInfo()}',
       JSON.stringify({ name: 'fixture', rawScript: '' }),
     )
-    .replace('${JSONObject.quote(script)}', JSON.stringify(''));
+    .replace('${JSONObject.quote(script)}', JSON.stringify(options.script || ''));
   const requests: CapturedRequest[] = [];
   const forwardedLog = jest.fn();
   const forwardedWarn = jest.fn();
   const cancelled: string[] = [];
   let context: Record<string, any>;
+  let complete: (value: { url: string; routes: any[] }) => void;
+  let reject: (error: Error) => void;
   const bridge = {
     base64Decode(value: string) {
       return JSON.stringify([...Buffer.from(value, 'base64')]);
@@ -55,6 +58,10 @@ export function createRuntime(debug = false) {
       cancelled.push(id);
     },
     initialized() {},
+    requestResolved(_token: string, url: string, _backend: string, routes: string) {
+      complete({ url, routes: JSON.parse(routes) });
+    },
+    requestRejected(_token: string, message: string) { reject(new Error(message)); },
     rejected(message: string) {
       throw new Error(message);
     },
@@ -78,8 +85,70 @@ export function createRuntime(debug = false) {
   context.window = context;
   context.globalThis = context;
   new vm.Script(bootstrap).runInContext(context);
-  return { context, requests, cancelled, forwardedLog, forwardedWarn };
+  const resolve = (info: Record<string, unknown> = {}, source = 'mg') => {
+    const begin = runtime.indexOf('val expression = """', runtime.indexOf('private fun issueRequest'));
+    const expression = runtime.slice(begin + 'val expression = """'.length, runtime.indexOf('""".trimIndent()', begin))
+      .replaceAll('${JSONObject.quote(request.musicInfoJson)}', JSON.stringify(JSON.stringify({ ...info, __lxDiscoverBackendRoutes: options.discovery === true })))
+      .replaceAll('${JSONObject.quote(request.source)}', JSON.stringify(source))
+      .replaceAll('${JSONObject.quote(request.quality)}', '"128k"')
+      .replaceAll('${JSONObject.quote(token)}', '"1"');
+    return new Promise<{ url: string; routes: any[] }>((done, fail) => {
+      complete = done; reject = fail;
+      vm.runInContext(expression, context);
+    });
+  };
+  return { context, requests, cancelled, forwardedLog, forwardedWarn, resolve };
 }
+
+const initializationDependentScript = `
+  const fetch = path => new Promise((resolve, reject) => lx.request('https://fixture.test/' + path, {},
+    (error, _response, body) => error ? reject(error) : resolve(body)));
+  const ready = fetch('token');
+  ready.then(() => fetch('ip')).catch(() => {});
+  ready.then(() => fetch('update')).catch(() => {});
+  lx.on('request', async () => { await ready; return (await fetch('song')).url; });
+  lx.send('inited', { sources: { mg: {} } });
+`;
+
+test('route discovery performs no initialization HTTP and keeps token-dependent parsing as one complete chain', async () => {
+  const host = createRuntime(false, { discovery: true, script: initializationDependentScript });
+  expect(host.requests).toHaveLength(0);
+  await expect(host.resolve()).resolves.toEqual({ url: '', routes: [] });
+  expect(host.requests).toHaveLength(0);
+});
+
+test('ordinary resolution retains initialization and background requests without constraining the song chain', async () => {
+  const host = createRuntime(false, { script: initializationDependentScript });
+  const pending = host.resolve();
+  expect(host.requests.map(item => item.url)).toEqual(['https://fixture.test/token']);
+  const deliver = (request: CapturedRequest, body: object) => {
+    const text = JSON.stringify(body);
+    host.context.__liuliuHttpStart(request.id, JSON.stringify({ statusCode: 200, headers: {}, request: { url: request.url } }));
+    host.context.__liuliuHttpData(request.id, Buffer.from(text).toString('base64'), text);
+    host.context.__liuliuHttpEnd(request.id, Buffer.byteLength(text));
+  };
+  deliver(host.requests[0], { token: 'fixture' });
+  await new Promise<void>(done => setTimeout(done, 0));
+  expect(host.requests.map(item => item.url)).toEqual(['https://fixture.test/token', 'https://fixture.test/ip', 'https://fixture.test/update', 'https://fixture.test/song']);
+  for (const request of host.requests.slice(1)) deliver(request, { url: 'https://audio.test/selected' });
+  await expect(pending).resolves.toMatchObject({ url: 'https://audio.test/selected' });
+});
+
+test('request-free initialization still enumerates independent song interfaces through the real native invocation', async () => {
+  const host = createRuntime(false, { discovery: true, script: `
+    lx.on('request', async () => {
+      for (const path of ['one', 'two']) {
+        try { return await new Promise((resolve, reject) => lx.request('https://fixture.test/' + path, {},
+          (error, _response, body) => error ? reject(error) : resolve(body.url))); } catch (_error) {}
+      }
+      throw new Error('all failed');
+    });
+    lx.send('inited', { sources: { mg: {} } });
+  ` });
+  const result = await host.resolve();
+  expect(result.routes.map(item => item.requestRoute)).toEqual(['one', 'two'].map(path => host.context.__liuliuRequestRoute('https://fixture.test/' + path)));
+  expect(host.requests).toHaveLength(0);
+});
 
 test('Release suppresses imported script logs while retaining backend protocol parsing', () => {
   const { context, forwardedLog, forwardedWarn } = createRuntime();
@@ -646,4 +715,40 @@ test('address cancellation removes only its queued request or active runtime and
   expect(module).toContain(
     'key.startsWith("source_backend_hint_") || key.startsWith("source_backend_pool_")',
   );
+});
+
+
+test('startup enumerates the script fallback routes without issuing HTTP and leaves ordinary requests untouched', async () => {
+  const host = createRuntime();
+  host.context.__liuliuActiveSource = 'tx';
+  host.context.__liuliuDiscoverBackendRoutes = true;
+  host.context.__liuliuDiscoveredBackendRoutes = [];
+  vm.runInContext(`
+    globalThis.walkBranches = async () => {
+      for (const backend of ['one', 'two', 'three']) {
+        console.log('[tx] 尝试后端: ' + backend);
+        try {
+          return await new Promise((resolve, reject) => lx.request(
+            'https://resolver.test/' + backend + '?id=target&quality=128k', {},
+            (error, _response, body) => error ? reject(error) : resolve(body.url)));
+        } catch (_error) {}
+      }
+      throw new Error('all interfaces failed');
+    };
+  `, host.context);
+  await expect(host.context.walkBranches()).rejects.toThrow('all interfaces failed');
+  expect(host.requests).toHaveLength(0);
+  expect(host.context.__liuliuDiscoveredBackendRoutes).toEqual(['one', 'two', 'three'].map(backend => ({
+    backend, requestRoute: host.context.__liuliuRequestRoute('https://resolver.test/' + backend + '?id=target&quality=128k'),
+  })));
+  host.context.__liuliuDiscoverBackendRoutes = false;
+  const ordinary = host.context.walkBranches();
+  expect(host.requests).toHaveLength(1);
+  const request = host.requests[0]!;
+  const text = JSON.stringify({ url: 'https://cdn.test/winner' });
+  host.context.__liuliuHttpStart(request.id, JSON.stringify({ statusCode: 200, headers: {}, request: { url: request.url } }));
+  host.context.__liuliuHttpData(request.id, Buffer.from(text).toString('base64'), text);
+  host.context.__liuliuHttpEnd(request.id, Buffer.byteLength(text));
+  await expect(ordinary).resolves.toBe('https://cdn.test/winner');
+  expect(host.requests).toHaveLength(1);
 });

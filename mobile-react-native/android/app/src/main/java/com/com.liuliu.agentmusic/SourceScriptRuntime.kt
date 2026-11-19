@@ -84,6 +84,7 @@ internal class SourceScriptRuntime(
     // across request tiers or backend bindings while looking for real audio.
     val contextKey: String = JSONObject(musicInfoJson).let { info ->
       JSONArray().put(source).put(quality)
+        .put(info.optBoolean("__lxDiscoverBackendRoutes"))
         .put(info.optString("__lxPinnedBackend"))
         .put(info.optString("__lxPreferredBackend"))
         .put(info.optJSONArray("__lxPinnedBackendRoutes") ?: JSONArray())
@@ -96,7 +97,11 @@ internal class SourceScriptRuntime(
   private var initialized = false
   @Volatile private var destroyed = false
   private var requestSequence = 0L
-  private var activeToken = ""
+  @Volatile private var activeToken = ""
+  private class RequestStatus {
+    @Volatile var rateLimited = false
+  }
+  @Volatile private var requestStatus = RequestStatus()
   private var declaredSources: JSONObject? = null
   private var active = resolveSource?.let {
     ResolveRequest(promise, it, musicInfoJson, quality, addressRequestId)
@@ -194,6 +199,8 @@ internal class SourceScriptRuntime(
             globalThis.__liuliuMusicInfo = musicInfo;
             globalThis.__liuliuActiveQuality = ${JSONObject.quote(request.quality)};
             globalThis.__liuliuBoundedRequests = musicInfo.__lxBoundedRequests === true;
+            globalThis.__liuliuDiscoverBackendRoutes = musicInfo.__lxDiscoverBackendRoutes === true;
+            globalThis.__liuliuDiscoveredBackendRoutes = [];
             globalThis.__liuliuPinnedBackendRoutes = musicInfo.__lxBackendPlatform === globalThis.__liuliuActiveSource &&
               Array.isArray(musicInfo.__lxPinnedBackendRoutes) ? musicInfo.__lxPinnedBackendRoutes : [];
             globalThis.__liuliuRejectedBackendRoutes = new Set(
@@ -217,6 +224,24 @@ internal class SourceScriptRuntime(
               action: 'musicUrl', source: ${JSONObject.quote(request.source)},
               info: { type: ${JSONObject.quote(request.quality)}, musicInfo }
             }));
+            const finish = (value, error) => {
+              if (globalThis.__liuliuDiscoverBackendRoutes) {
+                // Initialization-dependent scripts cannot expose independent song
+                // routes without their real prerequisite response. Keep that chain
+                // intact instead of racing token/IP/update requests as audio APIs.
+                const routes = globalThis.__liuliuDiscoveryNeedsInitialization
+                  ? [] : globalThis.__liuliuDiscoveredBackendRoutes;
+                LiuliuSource.requestResolved(${JSONObject.quote(token)}, '', '', JSON.stringify(routes));
+                return;
+              }
+              if (error) {
+                LiuliuSource.requestRejected(${JSONObject.quote(token)}, String(error && (error.stack || error.message) || error));
+                return;
+              }
+              const backend = globalThis.__liuliuLastBackend || '';
+              const endpoints = globalThis.__liuliuResolvedEndpoints(String(value || ''), backend);
+              LiuliuSource.requestResolved(${JSONObject.quote(token)}, String(value || ''), backend, JSON.stringify(endpoints));
+            };
             invoke().catch(error => {
               if (!globalThis.__liuliuPinnedBackend && globalThis.__liuliuPreferredBackend &&
                   globalThis.__liuliuBackendProtocolSeen && !globalThis.__liuliuBackendHintAttempted) {
@@ -226,12 +251,7 @@ internal class SourceScriptRuntime(
                 return invoke();
               }
               throw error;
-            }).then(value => {
-              const backend = globalThis.__liuliuLastBackend || '';
-              const endpoints = globalThis.__liuliuResolvedEndpoints(String(value || ''), backend);
-              LiuliuSource.requestResolved(${JSONObject.quote(token)}, String(value || ''), backend, JSON.stringify(endpoints));
-            })
-              .catch(error => LiuliuSource.requestRejected(${JSONObject.quote(token)}, String(error && (error.stack || error.message) || error)));
+            }).then(value => finish(value, null), error => finish(null, error));
           })();
         """.trimIndent()
     webView.evaluateJavascript(expression, null)
@@ -239,6 +259,27 @@ internal class SourceScriptRuntime(
 
   private fun resolved(token: String, value: String, backend: String?, backendUrlsJson: String) = webView.post {
     if (settled || token != activeToken) return@post
+    val discovery = active?.let { JSONObject(it.musicInfoJson).optBoolean("__lxDiscoverBackendRoutes") } == true
+    if (discovery) {
+      settled = true
+      cancelTimeout()
+      val routes = Arguments.createArray()
+      val captured = runCatching { JSONArray(backendUrlsJson) }.getOrNull() ?: JSONArray()
+      for (index in 0 until captured.length()) {
+        val route = captured.optJSONObject(index) ?: continue
+        if (route.optString("requestRoute").isBlank()) continue
+        routes.pushMap(Arguments.createMap().apply {
+          putString("requestRoute", route.optString("requestRoute"))
+          putString("backend", route.optString("backend"))
+        })
+      }
+      active?.promise?.resolve(Arguments.createMap().apply {
+        putString("url", "")
+        putArray("discoveredRoutes", routes)
+      })
+      completeRequest()
+      return@post
+    }
     if (!value.matches(Regex("^https?://.+", RegexOption.IGNORE_CASE))) {
       fail("音源未返回有效播放地址")
       return@post
@@ -280,7 +321,7 @@ internal class SourceScriptRuntime(
     settled = true
     cancelTimeout()
     Log.w(TAG, "failed source=${active?.source} quality=${active?.quality} terminal=$terminal")
-    (active?.promise ?: promise).reject("SOURCE_RUNTIME_FAILED", message)
+    (active?.promise ?: promise).reject(if (requestStatus.rateLimited) "SOURCE_RATE_LIMITED" else "SOURCE_RUNTIME_FAILED", message)
     if (terminal || poolKey == null || !initialized) {
       cleanup()
       poolKey?.let { discard(it, this) }
@@ -302,6 +343,7 @@ internal class SourceScriptRuntime(
 
   private fun reuse(request: ResolveRequest) {
     check(resolutionContext == request.contextKey) { "音源运行时解析上下文不匹配" }
+    requestStatus = RequestStatus()
     active = request
     idle = false
     settled = false
@@ -492,6 +534,10 @@ internal class SourceScriptRuntime(
 
   private fun performHttp(requestId: String, urlText: String, options: JSONObject) {
     if (settled || destroyed) return
+    // Token requests may start before `inited`, while activeToken is still empty.
+    // Keep their result with this resolution; late callbacks can only mark the
+    // retired status object after reuse, never the next song's request.
+    val status = requestStatus
     val parsedUrl = urlText.toHttpUrlOrNull()
       ?: throw IllegalArgumentException("仅允许 HTTP/HTTPS 请求")
     if (parsedUrl.scheme != "http" && parsedUrl.scheme != "https")
@@ -559,6 +605,7 @@ internal class SourceScriptRuntime(
           if (httpTransfers[requestId] !== transfer || transfer.call !== call) return response.close()
           try {
             response.use responseBlock@ {
+              if (it.code == 429) status.rateLimited = true
               val quotedId = JSONObject.quote(requestId)
               val responseHeaders = JSONObject()
               for (name in it.headers.names())
@@ -713,6 +760,11 @@ internal class SourceScriptRuntime(
       const callbacks = Object.create(null);
       const responseTransfers = Object.create(null);
       let requestSequence = 0;
+      // Discovery must be request-free before the imported script is evaluated,
+      // including requests started before it sends the inited event.
+      globalThis.__liuliuDiscoverBackendRoutes = ${JSONObject(musicInfoJson).optBoolean("__lxDiscoverBackendRoutes")};
+      globalThis.__liuliuDiscoveredBackendRoutes = [];
+      globalThis.__liuliuDiscoveryNeedsInitialization = false;
       globalThis.__liuliuLastBackend = '';
       globalThis.__liuliuBackendUrls = [];
       globalThis.__liuliuActiveSource = '';
@@ -995,6 +1047,17 @@ internal class SourceScriptRuntime(
           // native evidence can decide its tier and enforce the user's ceiling.
           let requestRoute;
           try { requestRoute = globalThis.__liuliuRequestRoute(url, options); } catch (_error) {}
+          if (globalThis.__liuliuDiscoverBackendRoutes) {
+            if (!globalThis.__liuliuActiveSource)
+              globalThis.__liuliuDiscoveryNeedsInitialization = true;
+            const discovered = globalThis.__liuliuDiscoveredBackendRoutes;
+            const backend = globalThis.__liuliuCurrentBackend || '';
+            if (requestRoute && !discovered.some(item => item.requestRoute === requestRoute && item.backend === backend))
+              discovered.push({ requestRoute, backend });
+            const skipped = typeof callback === 'function' ? callback : () => {};
+            setTimeout(() => skipped(new Error('接口枚举：继续读取音源内其它分支'), null, null), 0);
+            return () => {};
+          }
           if (globalThis.__liuliuRejectedBackendRoutes.has(requestRoute)) {
             const skipped = typeof callback === 'function' ? callback : () => {};
             setTimeout(() => skipped(new Error('本曲该接口已返回较低真实音质，继续查找匹配上限的音频'), null, null), 0);

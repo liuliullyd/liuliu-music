@@ -2,6 +2,7 @@ import React from 'react';
 import { Pressable, StyleSheet } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { useApp } from '../state/AppContext';
+import { StickyPressable } from './StickyPressable';
 import {
   PLAYER_ACTION_ICON_SIZE,
   PLAYER_ACTION_SIZE,
@@ -11,14 +12,17 @@ export function PlayerQueueButton({
   scale = 1,
   color,
   testID = 'player-queue-button',
+  sticky = false,
 }: {
   scale?: number;
   color: string;
   testID?: string;
+  sticky?: boolean;
 }) {
   const app = useApp();
+  const Button = sticky ? StickyPressable : Pressable;
   return (
-    <Pressable
+    <Button
       testID={testID}
       accessibilityRole="button"
       accessibilityLabel="打开播放列表"
@@ -44,7 +48,7 @@ export function PlayerQueueButton({
           strokeLinecap="round"
         />
       </Svg>
-    </Pressable>
+    </Button>
   );
 }
 const s = StyleSheet.create({

@@ -43,11 +43,12 @@ export class CatalogRequestBudget {
 
   /** Ignore late adapter/native-fetch completion after cancellation. */
   wait<T>(work: Promise<T>): Promise<T> {
-    if (this.signal.aborted)
-      return Promise.reject(new Error('场景推荐请求已结束，请重试'));
     return new Promise<T>((resolve, reject) => {
       const abort = () => reject(new Error('场景推荐请求已结束，请重试'));
-      this.signal.addEventListener('abort', abort, { once: true });
+      if (this.signal.aborted) abort();
+      else this.signal.addEventListener('abort', abort, { once: true });
+      // The adapter promise already exists, even if cancellation won before
+      // wait() was entered. Always consume its eventual rejection.
       work.then(
         value => {
           this.signal.removeEventListener('abort', abort);

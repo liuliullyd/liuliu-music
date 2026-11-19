@@ -169,7 +169,7 @@ export interface MusicProfile {
   longTermTrackIds: string[];
   shortTermTrackIds: string[];
   sessionTrackIds: string[];
-  /** Local confirmed-play distribution; independent from the other recommendation signals. */
+  /** Local distribution of music heard for at least 30 actual seconds. */
   memoryStatistics?: MusicPreferenceStatistics;
   /** Current favorites captured only for a menu queue; recomputed from the saved favorite set. */
   favoriteStatistics?: MusicPreferenceStatistics;
@@ -182,6 +182,8 @@ export type MusicPreferenceDimension =
   | 'artists';
 export interface MusicPreferenceStatistics {
   version: 1;
+  /** Present only on recall aggregates proven to use the listening-time gate. */
+  minimumListenedSeconds?: 30;
   /** Effective sample weight, saturating at 100 for the 1% update rule. */
   samples: number;
   distributions: Record<MusicPreferenceDimension, Record<string, number>>;
@@ -208,13 +210,13 @@ export function normalizeReturnedQuality(
   if (typeof value !== 'string') return undefined;
   const raw = value.trim().toLowerCase();
   return playbackQualityOptions.find(
-    option => option.value === raw || option.playerLabel === raw,
+    (option) => option.value === raw || option.playerLabel === raw,
   )?.value;
 }
 export function returnedQualityLabel(value: unknown): string {
   const quality = normalizeReturnedQuality(value);
   return (
-    playbackQualityOptions.find(option => option.value === quality)
+    playbackQualityOptions.find((option) => option.value === quality)
       ?.playerLabel ?? ''
   );
 }
@@ -262,6 +264,7 @@ export interface AppSettings {
   wifiQuality?: PlaybackQuality;
   wifiDownloadQuality?: PlaybackQuality;
   desktopLyricsEnabled?: boolean;
+  lyricStyle?: import('./lyricStyle').LyricStyle;
   desktopLyricsStyle?: import('../services/desktopLyrics').DesktopLyricStyle;
   equalizer: EqualizerPreset;
   customEqualizerGains?: number[];
@@ -412,6 +415,12 @@ export interface HomeMenuProgressEntry {
   recentTrackKeys: string[];
 }
 export interface NativePlayerState {
+  listening?: {
+    sequence: number;
+    mediaId: string | null;
+    seconds: number;
+    qualified: Array<{ sequence: number; mediaId: string; seconds: number }>;
+  };
   audioEffectWarning?: string | null;
   playing: boolean;
   ended?: boolean;

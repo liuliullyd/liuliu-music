@@ -1,3 +1,4 @@
+import { normalizeLyricStyle } from '../domain/lyricStyle';
 import { NativeModules } from 'react-native';
 import type { CatalogItem, PersistedState, Track } from '../domain/types';
 import { playbackQualityOptions } from '../domain/types';
@@ -163,6 +164,7 @@ const defaults: PersistedState = {
     wifiQuality: '320k',
     wifiDownloadQuality: '320k',
     desktopLyricsEnabled: false,
+    lyricStyle: 'default',
     desktopLyricsStyle: 'center',
     equalizer: 'Flat',
     customEqualizerGains: flatEqualizerGains(),
@@ -270,7 +272,7 @@ const normalizeSearchHistory = (value: unknown) =>
         new Set(
           value
             .filter((item): item is string => typeof item === 'string')
-            .map(item => item.trim())
+            .map((item) => item.trim())
             .filter(Boolean),
         ),
       ).slice(0, 12)
@@ -280,8 +282,8 @@ const normalizeTracks = (value: unknown): Track[] =>
     ? [
         ...new Map(
           value
-            .filter(track => track && typeof track.id === 'string')
-            .map(track => {
+            .filter((track) => track && typeof track.id === 'string')
+            .map((track) => {
               const item = track as Track;
               return [
                 `${trackMediaKind(item)}:${item.provider}:${item.id}`,
@@ -297,12 +299,12 @@ const normalizeCollections = (value: unknown): CatalogItem[] =>
         ...new Map(
           value
             .filter(
-              item =>
+              (item) =>
                 item &&
                 typeof item.id === 'string' &&
                 typeof item.provider === 'string',
             )
-            .map(item => {
+            .map((item) => {
               const value = item as CatalogItem;
               return [collectionFavoriteKey(value), value] as const;
             }),
@@ -310,7 +312,7 @@ const normalizeCollections = (value: unknown): CatalogItem[] =>
       ]
     : [];
 const mergeUnique = <T>(values: T[], keyOf: (value: T) => string) => [
-  ...new Map(values.map(value => [keyOf(value), value])).values(),
+  ...new Map(values.map((value) => [keyOf(value), value])).values(),
 ];
 export function normalizeState(value: unknown): PersistedState {
   if (!value || typeof value !== 'object') return cloneDefaults();
@@ -319,14 +321,14 @@ export function normalizeState(value: unknown): PersistedState {
   };
   const legacyItems = Array.isArray(parsed.sources) ? parsed.sources : [];
   const importedSources = filterImportedSources(legacyItems);
-  const legacyPlatforms = legacyItems.filter(source => !source.script);
+  const legacyPlatforms = legacyItems.filter((source) => !source.script);
   const storedPlatforms = Array.isArray(parsed.platforms)
     ? parsed.platforms
     : [];
-  const platforms = defaults.platforms.map(platform => ({
+  const platforms = defaults.platforms.map((platform) => ({
     ...platform,
-    ...legacyPlatforms.find(item => item.id === platform.id),
-    ...storedPlatforms.find(item => item.id === platform.id),
+    ...legacyPlatforms.find((item) => item.id === platform.id),
+    ...storedPlatforms.find((item) => item.id === platform.id),
     id: platform.id,
     name: platform.name,
   }));
@@ -379,31 +381,32 @@ export function normalizeState(value: unknown): PersistedState {
     : undefined;
   settings.headphoneData = normalizeHeadphoneData(parsedSettings.headphoneData);
   settings.customEqualizerPresetId = settings.customEqualizerPresets.some(
-    preset => preset.id === parsedSettings.customEqualizerPresetId,
+    (preset) => preset.id === parsedSettings.customEqualizerPresetId,
   )
     ? parsedSettings.customEqualizerPresetId
     : undefined;
   Object.assign(settings, restoreEffectiveEffects(settings));
   settings.downloadQuality = playbackQualityOptions.some(
-    option => option.value === parsedSettings.downloadQuality,
+    (option) => option.value === parsedSettings.downloadQuality,
   )
     ? parsedSettings.downloadQuality!
     : playbackQualityOptions.some(
-        option => option.value === parsedSettings.quality,
+        (option) => option.value === parsedSettings.quality,
       )
     ? parsedSettings.quality!
     : defaults.settings.downloadQuality;
   settings.wifiQuality = playbackQualityOptions.some(
-    option => option.value === parsedSettings.wifiQuality,
+    (option) => option.value === parsedSettings.wifiQuality,
   )
     ? parsedSettings.wifiQuality!
     : settings.quality;
   settings.wifiDownloadQuality = playbackQualityOptions.some(
-    option => option.value === parsedSettings.wifiDownloadQuality,
+    (option) => option.value === parsedSettings.wifiDownloadQuality,
   )
     ? parsedSettings.wifiDownloadQuality!
     : settings.downloadQuality;
   settings.desktopLyricsEnabled = parsedSettings.desktopLyricsEnabled === true;
+  settings.lyricStyle = normalizeLyricStyle(parsedSettings.lyricStyle);
   settings.desktopLyricsStyle = [
     'center',
     'capsule',
@@ -418,7 +421,7 @@ export function normalizeState(value: unknown): PersistedState {
     Number(parsed.version ?? 0) < 2 ||
     Number(parsedSettings.themeSystemVersion ?? 0) < 2 ||
     Number(parsedSettings.themePaletteVersion ?? 0) < 1 ||
-    !themeOptions.some(option => option.id === settings.theme)
+    !themeOptions.some((option) => option.id === settings.theme)
   ) {
     settings.theme = 'white';
     settings.themeSystemVersion = 2;
@@ -447,7 +450,7 @@ export function normalizeState(value: unknown): PersistedState {
     (Array.isArray(parsed.localTracks) ? parsed.localTracks : []).filter(
       isRecommendationMusicTrack,
     ),
-    legacyDownloads.filter(entry => isRecommendationMusicTrack(entry.track)),
+    legacyDownloads.filter((entry) => isRecommendationMusicTrack(entry.track)),
   );
   const musicTracks = savedTracks.filter(isRecommendationMusicTrack);
   const musicCollections = savedCollections.filter(isMusicLibraryCollection);
@@ -481,9 +484,9 @@ export function normalizeState(value: unknown): PersistedState {
       savedTracks: musicTracks,
       savedCollections: musicCollections,
       favorites: legacyFavorites.filter(
-        id =>
+        (id) =>
           !savedTracks.some(
-            track => track.id === id && !isRecommendationMusicTrack(track),
+            (track) => track.id === id && !isRecommendationMusicTrack(track),
           ),
       ),
       favoriteCollections: normalizeCollectionFavoriteKeys(
